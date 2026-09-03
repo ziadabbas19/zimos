@@ -98,6 +98,7 @@ module.exports = {
         workspace_id: workspaceId,
         name: 'Demo T-Shirt',
         slug: 'demo-t-shirt',
+        product_code: '100200300',
         description: 'A sample product seeded for local development.',
         product_type: 'physical',
         status: 'active',

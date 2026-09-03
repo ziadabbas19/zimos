@@ -1,6 +1,6 @@
 {
   "info": {
-    "_postman_id": "8b66713f-e46c-4c57-9e5d-f9aa219b8ccd",
+    "_postman_id": "6289ef44-f498-4d6c-8d93-3a22d31e4417",
     "name": "Store Builder Backend",
     "description": "Every mounted endpoint of the Store Builder API, organised by module, with per-request PURPOSE / SEND / EXPECT notes taken from the actual Joi schemas, Sequelize models and controllers.\n\n## Setup\n1. Import this collection **and** `store-builder.postman_environment.json`; select the environment.\n2. Run **Auth > Login** once — its test script fills `{{accessToken}}` and `{{refreshToken}}` for every staff request.\n3. Set `{{workspaceId}}` (run **Workspaces & Team > List My Workspaces**, or **Quickstart Demo Flow > 02**).\n\n## Auth model\n- **Collection default:** `Authorization: Bearer {{accessToken}}` — inherited by all the staff folders (Auth, Workspaces & Team, Catalog, Inventory, Customers, Orders, COD Confirmation, Payments, Discounts, Shipping, Tax Rates, Pages, Funnels, Store Branding & Products, Custom Domains, Billing, Admin).\n- **No auth:** the `Public Storefront`, `Public Shop`, and `Cart` folders — this is what a buyer-facing frontend hits.\n- Login/Register/Refresh/etc. and a few HTML routes override to no-auth individually.\n\n## Conventions\n- `{{baseUrl}}` = `http://localhost:4000/api/v1`. `{{rootUrl}}` = `http://localhost:4000` (only `Public Shop`, `/health`, `/docs` live outside `/api/v1`).\n- All money is **integer minor units** (piastres/cents) — `19900` = 199.00.\n- Path ids shown as `:name` are Postman path variables — fill them per-request; ids captured by test scripts (workspaceId, productId, variantId, orderId, funnelId, …) are collection variables set for you as you go.\n- Errors follow `{ \"error\": { \"code\", \"message\", \"details\", \"requestId\" } }`.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
@@ -1539,7 +1539,7 @@
                 "products"
               ]
             },
-            "description": "**PURPOSE:** Add a product to the catalog (product editor \"create\").\n\n**SEND:**\nRequired: `name` (1–300). Optional: `slug` (auto from name if omitted), `description` (≤20000), `productType` (`physical`|`digital`|`service`, default `physical`), `status` (`draft`|`active`|`archived`, default `draft`), `options` (`[{ name, values:[] }]`), `media` (`[]`), `tags` (`[string]`), `seo` (`{}`), `websiteId`.\n\n**EXPECT:**\n`201` `{ product: { id, workspaceId, websiteId, name, slug, description, productType, status, options, media, tags, seo, createdAt, updatedAt } }`.\n- `401 UNAUTHENTICATED` — missing/expired Bearer token (run Auth > Login first).\n- `403 FORBIDDEN` — your workspace role lacks the required permission.\n- `422 VALIDATION_ERROR` — body/params failed the Joi schema; `error.details[]` names each bad field.",
+            "description": "**PURPOSE:** Add a product to the catalog (product editor \"create\").\n\n**SEND:**\nRequired: `name` (1–300). Optional: `slug` (auto from name if omitted), `description` (≤20000), `productType` (`physical`|`digital`|`service`, default `physical`), `status` (`draft`|`active`|`archived`, default `draft`), `options` (`[{ name, values:[] }]`), `media` (`[]`), `tags` (`[string]`), `seo` (`{}`), `websiteId`. `productCode` is **server-assigned**, not accepted in the body.\n\n**EXPECT:**\n`201` `{ product: { id, productCode: \"<9 digits>\", workspaceId, websiteId, name, slug, description, productType, status, options, media, tags, seo, createdAt, updatedAt } }`. `productCode` is a unique 9-digit numeric string, distinct from the UUID `id`.\n- `401 UNAUTHENTICATED` — missing/expired Bearer token (run Auth > Login first).\n- `403 FORBIDDEN` — your workspace role lacks the required permission.\n- `422 VALIDATION_ERROR` — body/params failed the Joi schema; `error.details[]` names each bad field.",
             "body": {
               "mode": "raw",
               "raw": "{\n  \"name\": \"T-Shirt\",\n  \"description\": \"Soft cotton tee\",\n  \"productType\": \"physical\",\n  \"status\": \"active\",\n  \"tags\": [\n    \"apparel\"\n  ]\n}",
@@ -1606,7 +1606,7 @@
                 }
               ]
             },
-            "description": "**PURPOSE:** The product list table in the dashboard.\n\n**SEND:**\nRequired: `products.view`. Query (all optional): `status` (`draft`|`active`|`archived`), `collectionId` (uuid), `limit` (1–200, default 50), `cursor` (uuid — pass the previous `nextCursor`).\n\n**EXPECT:**\n`200` `{ products: [ { ...product, variants: [...], offers: [...] } ], nextCursor: <uuid|null> }`.\n- `401 UNAUTHENTICATED` — missing/expired Bearer token (run Auth > Login first).\n- `403 FORBIDDEN` — your workspace role lacks the required permission."
+            "description": "**PURPOSE:** The product list table in the dashboard.\n\n**SEND:**\nRequired: `products.view`. Query (all optional): `status` (`draft`|`active`|`archived`), `collectionId` (uuid), `limit` (1–200, default 50), `cursor` (uuid — pass the previous `nextCursor`).\n\n**EXPECT:**\n`200` `{ products: [ { ...product (incl. `productCode`), variants: [...], offers: [...] } ], nextCursor: <uuid|null> }`.\n- `401 UNAUTHENTICATED` — missing/expired Bearer token (run Auth > Login first).\n- `403 FORBIDDEN` — your workspace role lacks the required permission."
           },
           "response": []
         },
@@ -1628,7 +1628,7 @@
                 "{{productId}}"
               ]
             },
-            "description": "**PURPOSE:** Full product detail for the editor — includes variants, offers (with their lines), and collections.\n\n**SEND:**\nRequired: `products.view`, `:productId`.\n\n**EXPECT:**\n`200` `{ product: { ...fields, variants:[...], offers:[{ ..., lines:[{ variantId, quantity }] }], collections:[...] } }`.\n- `401 UNAUTHENTICATED` — missing/expired Bearer token (run Auth > Login first).\n- `403 FORBIDDEN` — your workspace role lacks the required permission.\n- `404 NOT_FOUND` — not in this workspace."
+            "description": "**PURPOSE:** Full product detail for the editor — includes variants, offers (with their lines), and collections.\n\n**SEND:**\nRequired: `products.view`, `:productId`.\n\n**EXPECT:**\n`200` `{ product: { ...fields (incl. `productCode`, the 9-digit code), variants:[...], offers:[{ ..., lines:[{ variantId, quantity }] }], collections:[...] } }`.\n- `401 UNAUTHENTICATED` — missing/expired Bearer token (run Auth > Login first).\n- `403 FORBIDDEN` — your workspace role lacks the required permission.\n- `404 NOT_FOUND` — not in this workspace."
           },
           "response": []
         },
@@ -1655,7 +1655,7 @@
                 "{{productId}}"
               ]
             },
-            "description": "**PURPOSE:** Save edits from the product editor.\n\n**SEND:**\nRequired: `products.manage`. Body: any subset of the Create Product fields (all optional here).\n\n**EXPECT:**\n`200` `{ product }`.\n- `401 UNAUTHENTICATED` — missing/expired Bearer token (run Auth > Login first).\n- `403 FORBIDDEN` — your workspace role lacks the required permission.\n- `404 NOT_FOUND`.\n- `422 VALIDATION_ERROR` — body/params failed the Joi schema; `error.details[]` names each bad field.",
+            "description": "**PURPOSE:** Save edits from the product editor.\n\n**SEND:**\nRequired: `products.manage`. Body: any subset of the Create Product fields (all optional here). `productCode` is fixed at creation and cannot be changed.\n\n**EXPECT:**\n`200` `{ product }` (still carries the unchanged `productCode`).\n- `401 UNAUTHENTICATED` — missing/expired Bearer token (run Auth > Login first).\n- `403 FORBIDDEN` — your workspace role lacks the required permission.\n- `404 NOT_FOUND`.\n- `422 VALIDATION_ERROR` — body/params failed the Joi schema; `error.details[]` names each bad field.",
             "body": {
               "mode": "raw",
               "raw": "{\n  \"status\": \"active\",\n  \"description\": \"Updated copy\"\n}",

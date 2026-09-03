@@ -16,11 +16,14 @@ beforeAll(async () => {
   PNG = await bwipjs.toBuffer({ bcid: 'code128', text: 'media-test', scale: 1, height: 6, includetext: false });
 });
 
-// keep the disk tidy between/after runs
+// Clean out the per-workspace upload dirs this run created, but leave the
+// UPLOAD_ROOT itself (and its tracked .gitkeep) in place.
 afterAll(() => {
   try {
-    fs.rmSync(UPLOAD_ROOT, { recursive: true, force: true });
-    fs.mkdirSync(UPLOAD_ROOT, { recursive: true });
+    for (const entry of fs.readdirSync(UPLOAD_ROOT)) {
+      if (entry === '.gitkeep') continue;
+      fs.rmSync(path.join(UPLOAD_ROOT, entry), { recursive: true, force: true });
+    }
   } catch { /* ignore */ }
 });
 

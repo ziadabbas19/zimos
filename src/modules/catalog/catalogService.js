@@ -1,10 +1,17 @@
 'use strict';
 
+const crypto = require('crypto');
 const db = require('../../db/models');
 const { scoped } = require('../../core/utils/scopedRepository');
 const { NotFoundError, ValidationError } = require('../../core/errors/AppError');
 const { recordAudit } = require('../audit/auditService');
 const slugify = require('../../core/utils/slugify');
+
+// Server-assigned 9-digit product code — same random-then-retry-on-collision
+// idea as the order number / shipment tracking code.
+function generateProductCode() {
+  return String(crypto.randomInt(0, 1_000_000_000)).padStart(9, '0');
+}
 
 async function createProduct(workspaceId, data, req) {
   const products = scoped(db.Product, workspaceId);
@@ -15,7 +22,20 @@ async function createProduct(workspaceId, data, req) {
     slug = `${baseSlug}-${++n}`;
   }
 
-  const product = await products.create({ ...data, slug });
+  let product;
+  for (let attempt = 0; attempt < 6; attempt++) {
+    try {
+      product = await products.create({ ...data, slug, productCode: generateProductCode() });
+      break;
+    } catch (err) {
+      const clashOnCode =
+        err.name === 'SequelizeUniqueConstraintError' &&
+        /product_code/.test(`${err.message} ${JSON.stringify(err.fields || {})} ${(err.parent && err.parent.constraint) || ''}`);
+      if (clashOnCode && attempt < 5) continue;
+      throw err;
+    }
+  }
+
   await recordAudit({
     workspaceId,
     actorUserId: req.user.id,
@@ -407,6 +427,7 @@ async function addProductToCollection(workspaceId, productId, collectionId, req)
 }
 
 module.exports = {
+  generateProductCode,
   createProduct,
   listProducts,
   getProduct,

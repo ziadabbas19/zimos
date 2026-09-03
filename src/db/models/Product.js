@@ -9,6 +9,9 @@ module.exports = (sequelize, DataTypes) => {
       websiteId: { type: DataTypes.UUID, allowNull: true, field: 'website_id' },
       name: { type: DataTypes.STRING(300), allowNull: false },
       slug: { type: DataTypes.STRING(300), allowNull: false },
+      // Distinct 9-digit code, assigned by the server on create (not the UUID
+      // PK, not the order-number pattern). See catalogService.generateProductCode.
+      productCode: { type: DataTypes.STRING(9), allowNull: false, field: 'product_code' },
       description: { type: DataTypes.TEXT, allowNull: true },
       productType: {
         type: DataTypes.ENUM('physical', 'digital', 'service'),
@@ -35,6 +38,7 @@ module.exports = (sequelize, DataTypes) => {
       tableName: 'products',
       indexes: [
         { unique: true, fields: ['workspace_id', 'slug'] },
+        { unique: true, fields: ['product_code'] },
         { fields: ['workspace_id', 'status'] },
       ],
     }
