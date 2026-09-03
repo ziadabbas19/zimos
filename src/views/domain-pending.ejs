@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="en">
+<head><%- include('partials/head', { title: title }) %></head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <h1>Domain not verified yet</h1>
+      <p><code><%= hostname %></code> is pointed here but hasn't been verified.</p>
+      <p class="muted">The store owner needs to add the TXT record from their dashboard and run verification. Once verified, this domain will show the store.</p>
+    </div>
+  </div>
+</body>
+</html>

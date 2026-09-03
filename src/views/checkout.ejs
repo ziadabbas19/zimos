@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head><%- include('partials/head', { title: title }) %></head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <h1>Checkout</h1>
+      <p class="muted"><%= product.name %> &mdash; <%= product.priceLabel %></p>
+      <% if (error) { %><p style="color:#b91c1c"><%= error %></p><% } %>
+      <form method="POST" action="<%= actionUrl %>">
+        <% if (product.id) { %><input type="hidden" name="productId" value="<%= product.id %>" /><% } %>
+
+        <label for="fullName">Full name</label>
+        <input id="fullName" name="fullName" required value="<%= (form.fullName || '') %>" />
+
+        <label for="phone">Phone</label>
+        <input id="phone" name="phone" required value="<%= (form.phone || '') %>" />
+
+        <label for="addressLine">Address</label>
+        <input id="addressLine" name="addressLine" required value="<%= (form.addressLine || '') %>" />
+
+        <label for="city">City</label>
+        <input id="city" name="city" required value="<%= (form.city || '') %>" />
+
+        <label for="country">Country (2-letter code)</label>
+        <input id="country" name="country" maxlength="2" required value="<%= (form.country || 'EG') %>" />
+
+        <p style="margin-top:20px"><button class="btn" type="submit">Place order (Cash on delivery)</button></p>
+      </form>
+    </div>
+  </div>
+</body>
+</html>

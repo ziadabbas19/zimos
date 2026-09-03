@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head><%- include('partials/head', { title: title }) %></head>
+<body>
+  <div class="wrap wide">
+    <div class="store-head">
+      <% if (workspace.logoUrl) { %><img class="logo" src="<%= workspace.logoUrl %>" alt="<%= workspace.name %> logo" /><br /><% } %>
+      <h1><%= workspace.name %></h1>
+      <% if (workspace.tagline) { %><p class="tagline"><%= workspace.tagline %></p><% } %>
+    </div>
+
+    <% if (!products.length) { %>
+      <div class="card"><p class="muted">No products yet.</p></div>
+    <% } else { %>
+      <div class="grid">
+        <% products.forEach(function (p) { %>
+          <a class="product-card" href="<%= productBase %>/<%= p.id %>">
+            <% if (p.imageUrl) { %><img src="<%= p.imageUrl %>" alt="<%= p.name %>" /><% } %>
+            <div class="body">
+              <h3><%= p.name %></h3>
+              <div class="card-price"><%= p.priceLabel %></div>
+              <% if (p.description) { %><p class="card-desc"><%= p.description %></p><% } %>
+            </div>
+          </a>
+        <% }); %>
+      </div>
+    <% } %>
+
+    <p class="muted" style="text-align:center;margin-top:28px">Powered by Store Builder</p>
+  </div>
+</body>
+</html>

@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head><%- include('partials/head', { title: title }) %></head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <h1>My store</h1>
+      <% if (notice) { %><p class="ok"><%= notice %></p><% } %>
+      <% if (error) { %><p style="color:#b91c1c"><%= error %></p><% } %>
+      <p class="muted">Public store: <a href="<%= publicUrl %>"><code><%= publicUrl %></code></a></p>
+
+      <h2>Branding</h2>
+      <form method="POST" action="<%= base %>/branding">
+        <% if (token) { %><input type="hidden" name="token" value="<%= token %>" /><% } %>
+        <label for="name">Store name</label>
+        <input id="name" name="name" value="<%= workspace.name || '' %>" />
+        <label for="logoUrl">Logo URL</label>
+        <input id="logoUrl" name="logoUrl" value="<%= workspace.logoUrl || '' %>" placeholder="https://..." />
+        <label for="tagline">Tagline</label>
+        <input id="tagline" name="tagline" value="<%= workspace.tagline || '' %>" placeholder="Short subtitle under the name" />
+        <p style="margin-top:16px"><button class="btn" type="submit">Save branding</button></p>
+      </form>
+
+      <h2>Products (<%= products.length %>)</h2>
+      <table>
+        <thead><tr><th>Name</th><th>Price</th><th>Status</th></tr></thead>
+        <tbody>
+          <% products.forEach(function (p) { %>
+            <tr><td><%= p.name %></td><td><%= p.priceLabel %></td><td><%= p.status %></td></tr>
+          <% }); %>
+        </tbody>
+      </table>
+      <p style="margin-top:16px">
+        <a class="btn" href="<%= base %>?add=1<%= token ? '&token=' + token : '' %>">Add another product</a>
+      </p>
+    </div>
+  </div>
+</body>
+</html>

@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+<head><%- include('partials/head', { title: title }) %></head>
+<body>
+  <div class="wrap">
+    <p class="muted"><a href="<%= homeUrl %>">&larr; <%= workspace.name %></a></p>
+    <div class="card">
+      <h1><%= product.name %></h1>
+      <% if (product.imageUrl) { %><img class="hero-img" src="<%= product.imageUrl %>" alt="<%= product.name %>" /><% } %>
+      <p class="price"><%= product.priceLabel %></p>
+      <% if (product.description) { %><p><%= product.description %></p><% } %>
+      <% if (product.bullets && product.bullets.length) { %>
+        <ul class="bullets">
+          <% product.bullets.forEach(function (b) { %><li><%= b %></li><% }); %>
+        </ul>
+      <% } %>
+      <p><a class="btn" href="<%= checkoutUrl %>">Buy now</a></p>
+    </div>
+  </div>
+</body>
+</html>

@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="en">
+<head><%- include('partials/head', { title: title }) %></head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <h1 class="ok">Published &mdash; your store is live &#x2705;</h1>
+      <p>Share this link with customers:</p>
+      <p><a class="btn" href="<%= publicUrl %>">Open my store</a></p>
+      <p class="muted">Public URL: <code><%= publicUrl %></code></p>
+      <p><a href="<%= manageUrl %>">Manage store / add another product</a></p>
+    </div>
+  </div>
+</body>
+</html>

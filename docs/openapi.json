@@ -1,0 +1,180 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Store Builder API",
+    "version": "1.0.0",
+    "description": "Multi-tenant SaaS store/funnel builder backend. All workspace-scoped routes require an active Membership and a Bearer access token; see the README for tenant-isolation notes."
+  },
+  "servers": [{ "url": "/api/v1" }],
+  "security": [{ "bearerAuth": [] }],
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": { "type": "http", "scheme": "bearer", "bearerFormat": "JWT" }
+    },
+    "parameters": {
+      "workspaceId": { "name": "workspaceId", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } },
+      "idempotencyKey": { "name": "Idempotency-Key", "in": "header", "required": true, "schema": { "type": "string" }, "description": "Required for order creation; a retried request with the same key and body returns the original result instead of creating a duplicate." }
+    },
+    "schemas": {
+      "Error": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "object",
+            "properties": {
+              "code": { "type": "string" },
+              "message": { "type": "string" },
+              "requestId": { "type": "string" }
+            }
+          }
+        }
+      }
+    }
+  },
+  "paths": {
+    "/auth/register": {
+      "post": {
+        "summary": "Register a new user account",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "type": "object", "properties": {
+            "email": { "type": "string" }, "password": { "type": "string" }, "fullName": { "type": "string" }, "phone": { "type": "string" }
+          }, "required": ["email", "password", "fullName"] } } }
+        },
+        "responses": { "201": { "description": "User created, tokens issued" }, "409": { "description": "Email already registered" } }
+      }
+    },
+    "/auth/login": {
+      "post": {
+        "summary": "Log in with email and password",
+        "security": [],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": {
+          "email": { "type": "string" }, "password": { "type": "string" } }, "required": ["email", "password"] } } } },
+        "responses": { "200": { "description": "Tokens issued" }, "401": { "description": "Invalid credentials" } }
+      }
+    },
+    "/auth/refresh": {
+      "post": {
+        "summary": "Rotate a refresh token for a new access/refresh token pair",
+        "security": [],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "refreshToken": { "type": "string" } }, "required": ["refreshToken"] } } } },
+        "responses": { "200": { "description": "New token pair" }, "401": { "description": "Invalid, expired, or reused refresh token" } }
+      }
+    },
+    "/auth/logout": { "post": { "summary": "Revoke a single session", "security": [], "responses": { "200": { "description": "OK" } } } },
+    "/auth/me": { "get": { "summary": "Get the current authenticated user", "responses": { "200": { "description": "OK" }, "401": { "description": "Not authenticated" } } } },
+    "/auth/sessions": { "get": { "summary": "List sessions for the current user", "responses": { "200": { "description": "OK" } } } },
+    "/auth/sessions/revoke-all": { "post": { "summary": "Revoke every session for the current user", "responses": { "200": { "description": "OK" } } } },
+    "/auth/password-reset/request": { "post": { "summary": "Request a password reset email", "security": [], "responses": { "200": { "description": "Always 200, does not reveal account existence" } } } },
+    "/auth/password-reset/confirm": { "post": { "summary": "Confirm a password reset with a token", "security": [], "responses": { "200": { "description": "Password changed, sessions revoked" } } } },
+
+    "/workspaces": {
+      "post": { "summary": "Create a workspace (creator becomes Owner)", "responses": { "201": { "description": "Created" } } },
+      "get": { "summary": "List workspaces the current user belongs to", "responses": { "200": { "description": "OK" } } }
+    },
+    "/workspaces/{workspaceId}/members": {
+      "post": { "summary": "Invite/add a member (requires users.manage)", "parameters": [{ "$ref": "#/components/parameters/workspaceId" }], "responses": { "201": { "description": "Created" }, "403": { "description": "Forbidden" } } }
+    },
+    "/workspaces/{workspaceId}/members/{membershipId}": {
+      "patch": { "summary": "Change a member's role", "parameters": [{ "$ref": "#/components/parameters/workspaceId" }], "responses": { "200": { "description": "OK" }, "409": { "description": "Cannot demote the last Owner" } } },
+      "delete": { "summary": "Remove a member", "parameters": [{ "$ref": "#/components/parameters/workspaceId" }], "responses": { "200": { "description": "OK" } } }
+    },
+    "/workspaces/{workspaceId}/roles": {
+      "post": { "summary": "Create a custom role (requires roles.manage)", "parameters": [{ "$ref": "#/components/parameters/workspaceId" }], "responses": { "201": { "description": "Created" } } }
+    },
+
+    "/workspaces/{workspaceId}/catalog/products": {
+      "post": { "summary": "Create a product (requires products.manage)", "parameters": [{ "$ref": "#/components/parameters/workspaceId" }], "responses": { "201": { "description": "Created" } } },
+      "get": { "summary": "List products (cursor paginated)", "parameters": [{ "$ref": "#/components/parameters/workspaceId" }], "responses": { "200": { "description": "OK" } } }
+    },
+    "/workspaces/{workspaceId}/catalog/products/{productId}": {
+      "get": { "summary": "Get a product with variants/offers", "parameters": [{ "$ref": "#/components/parameters/workspaceId" }], "responses": { "200": { "description": "OK" }, "404": { "description": "Not found (including cross-tenant access)" } } },
+      "patch": { "summary": "Update a product", "parameters": [{ "$ref": "#/components/parameters/workspaceId" }], "responses": { "200": { "description": "OK" } } }
+    },
+    "/workspaces/{workspaceId}/catalog/products/{productId}/variants": {
+      "post": { "summary": "Create a variant (initial stock is applied via inventoryService, audited)", "parameters": [{ "$ref": "#/components/parameters/workspaceId" }], "responses": { "201": { "description": "Created" } } }
+    },
+    "/workspaces/{workspaceId}/catalog/variants/{variantId}": {
+      "patch": { "summary": "Update variant pricing/metadata (never stock — use /inventory)", "parameters": [{ "$ref": "#/components/parameters/workspaceId" }], "responses": { "200": { "description": "OK" } } }
+    },
+    "/workspaces/{workspaceId}/catalog/products/{productId}/offers": {
+      "post": { "summary": "Create an offer (bundle of variant lines) for a product", "parameters": [{ "$ref": "#/components/parameters/workspaceId" }], "responses": { "201": { "description": "Created" } } }
+    },
+    "/workspaces/{workspaceId}/catalog/collections": {
+      "post": { "summary": "Create a collection", "parameters": [{ "$ref": "#/components/parameters/workspaceId" }], "responses": { "201": { "description": "Created" } } }
+    },
+
+    "/workspaces/{workspaceId}/inventory/{variantId}": {
+      "get": { "summary": "Get stock levels for a variant", "parameters": [{ "$ref": "#/components/parameters/workspaceId" }], "responses": { "200": { "description": "OK" } } }
+    },
+    "/workspaces/{workspaceId}/inventory/{variantId}/adjust": {
+      "post": { "summary": "Manually adjust stock (audited, transactional)", "parameters": [{ "$ref": "#/components/parameters/workspaceId" }], "responses": { "200": { "description": "OK" } } }
+    },
+    "/workspaces/{workspaceId}/inventory/{variantId}/restock": {
+      "post": { "summary": "Restock a variant", "parameters": [{ "$ref": "#/components/parameters/workspaceId" }], "responses": { "200": { "description": "OK" } } }
+    },
+
+    "/workspaces/{workspaceId}/customers": {
+      "get": { "summary": "List customers", "parameters": [{ "$ref": "#/components/parameters/workspaceId" }], "responses": { "200": { "description": "OK" } } }
+    },
+    "/workspaces/{workspaceId}/customers/{customerId}": {
+      "get": { "summary": "Get a customer (reveal of sensitive fields is permission-gated and audited)", "parameters": [{ "$ref": "#/components/parameters/workspaceId" }], "responses": { "200": { "description": "OK" } } }
+    },
+    "/workspaces/{workspaceId}/customers/{customerId}/blacklist": {
+      "patch": { "summary": "Blacklist/un-blacklist a customer", "parameters": [{ "$ref": "#/components/parameters/workspaceId" }], "responses": { "200": { "description": "OK" } } }
+    },
+
+    "/workspaces/{workspaceId}/orders": {
+      "post": {
+        "summary": "Create an order (checkout) — server-priced, transactional, idempotent",
+        "parameters": [{ "$ref": "#/components/parameters/workspaceId" }, { "$ref": "#/components/parameters/idempotencyKey" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": {
+          "items": { "type": "array", "items": { "type": "object", "properties": { "variantId": {"type":"string"}, "offerId": {"type":"string"}, "quantity": {"type":"integer"} } } },
+          "contact": { "type": "object", "properties": { "fullName": {"type":"string"}, "phone": {"type":"string"}, "email": {"type":"string"} } },
+          "shippingAddress": { "type": "object" },
+          "paymentMethod": { "type": "string", "enum": ["cod", "card", "wallet", "bank_transfer"] },
+          "discountCode": { "type": "string" }
+        }, "required": ["items", "contact", "paymentMethod"] } } } },
+        "responses": {
+          "201": { "description": "Order created (or idempotent replay of a prior identical request)" },
+          "400": { "description": "Missing Idempotency-Key header" },
+          "409": { "description": "Idempotency-Key reused with a different payload" },
+          "422": { "description": "Insufficient stock / invalid discount / validation error" }
+        }
+      },
+      "get": { "summary": "List orders (filterable by confirmation/financial/fulfillment state)", "parameters": [{ "$ref": "#/components/parameters/workspaceId" }], "responses": { "200": { "description": "OK" } } }
+    },
+    "/workspaces/{workspaceId}/orders/{orderId}": {
+      "get": { "summary": "Get an order with items/payments/shipments", "parameters": [{ "$ref": "#/components/parameters/workspaceId" }], "responses": { "200": { "description": "OK" }, "404": { "description": "Not found (including cross-tenant access)" } } }
+    },
+
+    "/workspaces/{workspaceId}/confirmation-tasks": {
+      "get": { "summary": "List the COD confirmation queue", "parameters": [{ "$ref": "#/components/parameters/workspaceId" }], "responses": { "200": { "description": "OK" } } }
+    },
+    "/workspaces/{workspaceId}/confirmation-tasks/{taskId}/claim": {
+      "post": { "summary": "Claim a task (pessimistic lock — fails if already claimed)", "parameters": [{ "$ref": "#/components/parameters/workspaceId" }], "responses": { "200": { "description": "OK" }, "409": { "description": "Already locked by another agent" } } }
+    },
+    "/workspaces/{workspaceId}/confirmation-tasks/{taskId}/outcome": {
+      "post": { "summary": "Record a confirmation outcome (confirmed/rejected/unreachable/postponed)", "parameters": [{ "$ref": "#/components/parameters/workspaceId" }], "responses": { "200": { "description": "OK" } } }
+    },
+
+    "/workspaces/{workspaceId}/orders/{orderId}/payments": {
+      "post": { "summary": "Initialize a payment for an order", "parameters": [{ "$ref": "#/components/parameters/workspaceId" }], "responses": { "201": { "description": "Created" } } }
+    },
+    "/workspaces/{workspaceId}/payments/{paymentId}/capture": {
+      "post": { "summary": "Capture an initialized payment; updates order.financialState", "parameters": [{ "$ref": "#/components/parameters/workspaceId" }], "responses": { "200": { "description": "OK" } } }
+    },
+    "/workspaces/{workspaceId}/orders/{orderId}/refunds": {
+      "post": { "summary": "Process a refund (never exceeds eligible amount); creates a credit note", "parameters": [{ "$ref": "#/components/parameters/workspaceId" }], "responses": { "201": { "description": "Created" }, "422": { "description": "Refund exceeds eligible amount" } } }
+    },
+
+    "/workspaces/{workspaceId}/discounts": {
+      "post": { "summary": "Create a discount code", "parameters": [{ "$ref": "#/components/parameters/workspaceId" }], "responses": { "201": { "description": "Created" } } },
+      "get": { "summary": "List discounts", "parameters": [{ "$ref": "#/components/parameters/workspaceId" }], "responses": { "200": { "description": "OK" } } }
+    },
+    "/workspaces/{workspaceId}/discounts/{discountId}/status": {
+      "patch": { "summary": "Enable/disable a discount", "parameters": [{ "$ref": "#/components/parameters/workspaceId" }], "responses": { "200": { "description": "OK" } } }
+    }
+  }
+}

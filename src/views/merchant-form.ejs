@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head><%- include('partials/head', { title: title }) %></head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <h1>Quick store setup</h1>
+      <p class="muted">Fill in a product. Submitting publishes it to your live store.</p>
+      <% if (error) { %><p style="color:#b91c1c"><%= error %></p><% } %>
+      <form method="POST" action="<%= actionUrl %>">
+        <% if (token) { %><input type="hidden" name="token" value="<%= token %>" /><% } %>
+
+        <label for="productName">Product name</label>
+        <input id="productName" name="productName" required value="<%= existing.productName || '' %>" />
+
+        <label for="price">Price (e.g. 199.00)</label>
+        <input id="price" name="price" required value="<%= existing.price || '' %>" />
+
+        <label for="stock">Stock quantity (optional)</label>
+        <input id="stock" name="stock" type="number" min="0" value="<%= existing.stock || '' %>" placeholder="100" />
+
+        <label for="imageUrl">Image URL</label>
+        <input id="imageUrl" name="imageUrl" value="<%= existing.imageUrl || '' %>" placeholder="https://..." />
+
+        <label for="description">Description</label>
+        <textarea id="description" name="description"><%= existing.description || '' %></textarea>
+
+        <label for="bullets">Selling points (one per line)</label>
+        <textarea id="bullets" name="bullets"><%= existing.bullets || '' %></textarea>
+
+        <p style="margin-top:20px"><button class="btn" type="submit">Publish product</button></p>
+      </form>
+    </div>
+  </div>
+</body>
+</html>

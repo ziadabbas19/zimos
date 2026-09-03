@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head><%- include('partials/head', { title: title }) %></head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <h1>Thank you! 🎉</h1>
+      <p>Your order has been placed. We'll be in touch to confirm delivery.</p>
+      <h2>Order summary</h2>
+      <table>
+        <tr><th>Order number</th><td><code><%= order.orderNumber %></code></td></tr>
+        <tr><th>Store</th><td><%= storeName %></td></tr>
+        <tr><th>Total</th><td><%= totalLabel %></td></tr>
+        <tr><th>Payment</th><td>Cash on delivery</td></tr>
+      </table>
+      <p style="margin-top:20px"><a class="btn" href="<%= homeUrl %>">Back to store</a></p>
+    </div>
+  </div>
+</body>
+</html>

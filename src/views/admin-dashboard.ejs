@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head><%- include('partials/head', { title: title }) %></head>
+<body>
+  <div class="wrap" style="max-width: 980px">
+    <div class="card">
+      <h1>Platform admin</h1>
+      <p class="muted"><%= rows.length %> workspace(s)</p>
+      <table>
+        <thead>
+          <tr><th>Workspace</th><th>Plan</th><th>Status</th><th>Trial ends</th><th>Orders</th></tr>
+        </thead>
+        <tbody>
+          <% rows.forEach(function (r) { %>
+            <tr>
+              <td><%= r.workspaceName %></td>
+              <td><%= r.plan %></td>
+              <td><%= r.status %></td>
+              <td><%= r.trialEndsAt ? new Date(r.trialEndsAt).toISOString().slice(0, 10) : '—' %></td>
+              <td><%= r.orderCount %></td>
+            </tr>
+          <% }); %>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</body>
+</html>
