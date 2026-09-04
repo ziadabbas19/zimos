@@ -12,8 +12,8 @@ const base = {
 };
 
 module.exports = {
-  development: { ...base, database: process.env.DB_NAME || 'storebuilder_dev' },
-  test: { ...base, database: process.env.DB_NAME_TEST || 'storebuilder_test' },
+  development: { ...base, database: process.env.DB_NAME || 'zimos_dev' },
+  test: { ...base, database: process.env.DB_NAME_TEST || 'zimos_test' },
   production: {
     ...base,
     database: process.env.DB_NAME,

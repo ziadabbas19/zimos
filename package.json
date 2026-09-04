@@ -1,7 +1,7 @@
 {
-  "name": "store-builder-backend",
+  "name": "zimos-backend",
   "version": "1.0.0",
-  "description": "Multi-tenant SaaS website/store builder backend",
+  "description": "Multi-tenant SaaS storefront and funnel builder backend",
   "main": "src/server.js",
   "type": "commonjs",
   "scripts": {

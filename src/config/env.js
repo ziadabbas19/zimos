@@ -19,15 +19,15 @@ const env = {
   port: parseInt(process.env.PORT || '4000', 10),
   appUrl: process.env.APP_URL || 'http://localhost:4000',
   apiVersion: process.env.API_VERSION || 'v1',
-  platformRootDomain: process.env.PLATFORM_ROOT_DOMAIN || 'storebuilder.test',
+  platformRootDomain: process.env.PLATFORM_ROOT_DOMAIN || 'zimos.test',
 
   db: {
     host: process.env.DB_HOST || 'localhost',
     port: parseInt(process.env.DB_PORT || '5432', 10),
     name:
       process.env.NODE_ENV === 'test'
-        ? process.env.DB_NAME_TEST || 'storebuilder_test'
-        : required('DB_NAME', 'storebuilder_dev'),
+        ? process.env.DB_NAME_TEST || 'zimos_test'
+        : required('DB_NAME', 'zimos_dev'),
     user: process.env.DB_USER || 'postgres',
     password: process.env.DB_PASSWORD || 'postgres',
     ssl: process.env.DB_SSL === 'true',
@@ -78,7 +78,7 @@ const env = {
     brevo: {
       apiKey: process.env.BREVO_API_KEY || '',
       fromAddress: process.env.EMAIL_FROM_ADDRESS || '',
-      fromName: process.env.EMAIL_FROM_NAME || 'Store Builder',
+      fromName: process.env.EMAIL_FROM_NAME || 'Zimos',
     },
     // Twilio SMS (only used when SMS_PROVIDER=twilio).
     twilio: {

@@ -11,7 +11,7 @@ const twilioSmsProvider = require('./twilioSmsProvider');
 // terse template-name + data dump so nothing sends blank.
 function smsBody(template, data = {}) {
   if (data.code) {
-    return `Your Store Builder verification code is ${data.code}. It expires in 5 minutes.`;
+    return `Your Zimos verification code is ${data.code}. It expires in 5 minutes.`;
   }
   const extra = Object.entries(data)
     .map(([k, v]) => `${k}: ${v}`)

@@ -33,7 +33,7 @@ describe('custom domains', () => {
     expect(res.body.domain.hostname).toBe('ahmedstore.com');
     expect(res.body.domain.status).toBe('pending_verification');
     expect(res.body.record.type).toBe('TXT');
-    expect(res.body.record.value).toMatch(/^storebuilder-verify=[0-9a-f]{32}$/);
+    expect(res.body.record.value).toMatch(/^zimos-verify=[0-9a-f]{32}$/);
 
     const row = await db.Domain.findOne({ where: { workspaceId: wid, hostname: 'ahmedstore.com' } });
     expect(row.status).toBe('pending_verification');
@@ -53,7 +53,7 @@ describe('custom domains', () => {
     const { wid, H } = await setupStore();
     const add = await addDomain(wid, H);
     const domainId = add.body.domain.id;
-    const token = add.body.record.value; // "storebuilder-verify=<token>"
+    const token = add.body.record.value; // "zimos-verify=<token>"
 
     // No record yet -> stays pending, 400.
     lookupTxt.mockResolvedValueOnce([['v=spf1 include:_spf.example.com ~all']]);

@@ -12,7 +12,7 @@ const { lookupTxt } = require('./dnsVerifier');
  * TXT record. TLS is handled by Cloudflare in front of the domain, not here.
  */
 
-const TXT_PREFIX = 'storebuilder-verify=';
+const TXT_PREFIX = 'zimos-verify=';
 
 function normalizeHostname(raw) {
   return String(raw || '')

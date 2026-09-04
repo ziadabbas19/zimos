@@ -28,7 +28,7 @@ module.exports = {
     await queryInterface.bulkInsert('users', [
       {
         id: userId,
-        email: 'demo@storebuilder.test',
+        email: 'demo@zimos.test',
         password_hash: passwordHash,
         full_name: 'Demo Owner',
         status: 'active',
@@ -218,6 +218,6 @@ module.exports = {
     await queryInterface.bulkDelete('memberships', null, {});
     await queryInterface.bulkDelete('roles', null, {});
     await queryInterface.bulkDelete('workspaces', null, {});
-    await queryInterface.bulkDelete('users', { email: 'demo@storebuilder.test' }, {});
+    await queryInterface.bulkDelete('users', { email: 'demo@zimos.test' }, {});
   },
 };

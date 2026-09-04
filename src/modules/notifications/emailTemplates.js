@@ -60,10 +60,10 @@ const templates = {
       subject: `You've been invited to ${store}`,
       ...wrap(
         `<p>Hi,</p>
-<p>You've been invited to join <strong>${store}</strong>${role} on Store Builder.</p>
+<p>You've been invited to join <strong>${store}</strong>${role} on Zimos.</p>
 <p><a href="${url}">View the invitation</a></p>
 <p>If you don't have an account yet, sign up with this email address and the invite will be waiting for you.</p>`,
-        `Hi,\n\nYou've been invited to join ${store}${role} on Store Builder.\nView the invitation: ${url}`
+        `Hi,\n\nYou've been invited to join ${store}${role} on Zimos.\nView the invitation: ${url}`
       ),
     };
   },

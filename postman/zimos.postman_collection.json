@@ -1,8 +1,8 @@
 {
   "info": {
-    "_postman_id": "6289ef44-f498-4d6c-8d93-3a22d31e4417",
-    "name": "Store Builder Backend",
-    "description": "Every mounted endpoint of the Store Builder API, organised by module, with per-request PURPOSE / SEND / EXPECT notes taken from the actual Joi schemas, Sequelize models and controllers.\n\n## Setup\n1. Import this collection **and** `store-builder.postman_environment.json`; select the environment.\n2. Run **Auth > Login** once — its test script fills `{{accessToken}}` and `{{refreshToken}}` for every staff request.\n3. Set `{{workspaceId}}` (run **Workspaces & Team > List My Workspaces**, or **Quickstart Demo Flow > 02**).\n\n## Auth model\n- **Collection default:** `Authorization: Bearer {{accessToken}}` — inherited by all the staff folders (Auth, Workspaces & Team, Catalog, Inventory, Customers, Orders, COD Confirmation, Payments, Discounts, Shipping, Tax Rates, Pages, Funnels, Store Branding & Products, Custom Domains, Billing, Admin).\n- **No auth:** the `Public Storefront`, `Public Shop`, and `Cart` folders — this is what a buyer-facing frontend hits.\n- Login/Register/Refresh/etc. and a few HTML routes override to no-auth individually.\n\n## Conventions\n- `{{baseUrl}}` = `http://localhost:4000/api/v1`. `{{rootUrl}}` = `http://localhost:4000` (only `Public Shop`, `/health`, `/docs` live outside `/api/v1`).\n- All money is **integer minor units** (piastres/cents) — `19900` = 199.00.\n- Path ids shown as `:name` are Postman path variables — fill them per-request; ids captured by test scripts (workspaceId, productId, variantId, orderId, funnelId, …) are collection variables set for you as you go.\n- Errors follow `{ \"error\": { \"code\", \"message\", \"details\", \"requestId\" } }`.",
+    "_postman_id": "7221dbdf-c260-4aea-a3da-f5a8b481f9e7",
+    "name": "Zimos Backend",
+    "description": "Every mounted endpoint of the Zimos API, organised by module, with per-request PURPOSE / SEND / EXPECT notes taken from the actual Joi schemas, Sequelize models and controllers.\n\n## Setup\n1. Import this collection **and** `zimos.postman_environment.json`; select the environment.\n2. Run **Auth > Login** once — its test script fills `{{accessToken}}` and `{{refreshToken}}` for every staff request.\n3. Set `{{workspaceId}}` (run **Workspaces & Team > List My Workspaces**, or **Quickstart Demo Flow > 02**).\n\n## Auth model\n- **Collection default:** `Authorization: Bearer {{accessToken}}` — inherited by all the staff folders (Auth, Workspaces & Team, Catalog, Inventory, Customers, Orders, COD Confirmation, Payments, Discounts, Shipping, Tax Rates, Pages, Funnels, Store Branding & Products, Custom Domains, Billing, Admin).\n- **No auth:** the `Public Storefront`, `Public Shop`, and `Cart` folders — this is what a buyer-facing frontend hits.\n- Login/Register/Refresh/etc. and a few HTML routes override to no-auth individually.\n\n## Conventions\n- `{{baseUrl}}` = `http://localhost:4000/api/v1`. `{{rootUrl}}` = `http://localhost:4000` (only `Public Shop`, `/health`, `/docs` live outside `/api/v1`).\n- All money is **integer minor units** (piastres/cents) — `19900` = 199.00.\n- Path ids shown as `:name` are Postman path variables — fill them per-request; ids captured by test scripts (workspaceId, productId, variantId, orderId, funnelId, …) are collection variables set for you as you go.\n- Errors follow `{ \"error\": { \"code\", \"message\", \"details\", \"requestId\" } }`.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "auth": {
@@ -195,7 +195,7 @@
             "description": "**PURPOSE:** Authenticate and set up auth for every other request in this collection.\n\n**SEND:**\nRequired: `email`, `password`. Example above uses the demo seed account.\n\n**EXPECT:**\n`200` `{ user, accessToken, refreshToken, sessionId, expiresAt }`. The test script stores `accessToken`/`refreshToken` as collection variables.\n- `401 INVALID_CREDENTIALS` — wrong email or password (same message for both).\n- `401 ACCOUNT_SUSPENDED`.\n- `422 VALIDATION_ERROR`.",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"email\": \"demo@storebuilder.test\",\n  \"password\": \"DemoPassw0rd!123\"\n}",
+              "raw": "{\n  \"email\": \"demo@zimos.test\",\n  \"password\": \"DemoPassw0rd!123\"\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -752,7 +752,7 @@
             "description": "**PURPOSE:** Exchange email + password for tokens (sign-in screen). Test script auto-saves the tokens.\n\n**SEND:**\nRequired: `email`, `password`.\n\n**EXPECT:**\n`200` `{ user, accessToken, refreshToken, sessionId, expiresAt }`. `accessToken` is a ~15-min JWT (send as `Authorization: Bearer`); `refreshToken` is an opaque 30-day string.\n- `401 INVALID_CREDENTIALS` — wrong email or password (deliberately identical for both).\n- `401 ACCOUNT_SUSPENDED`.\n- `422` / `429 RATE_LIMITED`.",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"email\": \"demo@storebuilder.test\",\n  \"password\": \"DemoPassw0rd!123\"\n}",
+              "raw": "{\n  \"email\": \"demo@zimos.test\",\n  \"password\": \"DemoPassw0rd!123\"\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -5324,7 +5324,7 @@
                 "domains"
               ]
             },
-            "description": "**PURPOSE:** Register a domain the merchant owns. Stores it as `pending_verification` and returns the TXT record they must add.\n\n**SEND:**\nRequired: `hostname` (a bare domain like `ahmedstore.com`; protocol/path/trailing dot are stripped, lower-cased). The workspace must already have a store (a website) — add a product first. A `${PLATFORM_ROOT_DOMAIN}` subdomain is rejected (it already works).\n\n**EXPECT:**\n`201` `{ domain: { id, hostname, status:\"pending_verification\", verifiedAt:null }, record: { type:\"TXT\", name:\"<hostname>\", value:\"storebuilder-verify=<token>\" }, next: \"...\" }`. Test script captures `domainId`.\n- `409 STORE_NOT_SET_UP` — no store yet.\n- `409 DOMAIN_TAKEN` — hostname already connected to a store.\n- `422 VALIDATION_ERROR` — not a valid domain, or a platform subdomain.\n- `401 UNAUTHENTICATED` — missing/expired Bearer token (run Auth > Login first).\n- `403 FORBIDDEN` — your workspace role lacks the required permission.",
+            "description": "**PURPOSE:** Register a domain the merchant owns. Stores it as `pending_verification` and returns the TXT record they must add.\n\n**SEND:**\nRequired: `hostname` (a bare domain like `ahmedstore.com`; protocol/path/trailing dot are stripped, lower-cased). The workspace must already have a store (a website) — add a product first. A `${PLATFORM_ROOT_DOMAIN}` subdomain is rejected (it already works).\n\n**EXPECT:**\n`201` `{ domain: { id, hostname, status:\"pending_verification\", verifiedAt:null }, record: { type:\"TXT\", name:\"<hostname>\", value:\"zimos-verify=<token>\" }, next: \"...\" }`. Test script captures `domainId`.\n- `409 STORE_NOT_SET_UP` — no store yet.\n- `409 DOMAIN_TAKEN` — hostname already connected to a store.\n- `422 VALIDATION_ERROR` — not a valid domain, or a platform subdomain.\n- `401 UNAUTHENTICATED` — missing/expired Bearer token (run Auth > Login first).\n- `403 FORBIDDEN` — your workspace role lacks the required permission.",
             "body": {
               "mode": "raw",
               "raw": "{\n  \"hostname\": \"ahmedstore.com\"\n}",
@@ -5398,7 +5398,7 @@
                 }
               ]
             },
-            "description": "**PURPOSE:** Check that the TXT record is live. One DNS lookup, no retries — call it again after DNS propagates.\n\n**SEND:**\nRequired: `domain.manage`, `:domainId`. No body.\n\n**EXPECT:**\n`200` `{ domain: { id, hostname, status:\"verified\", verifiedAt } }` when the `storebuilder-verify=<token>` TXT record is found at the hostname (already-verified domains return `200` unchanged).\n- `400 DOMAIN_NOT_VERIFIED` — record not found yet (or the domain does not resolve); status stays `pending_verification`.\n- `404 NOT_FOUND` — domain not in this workspace.\n- `401 UNAUTHENTICATED` — missing/expired Bearer token (run Auth > Login first).\n- `403 FORBIDDEN` — your workspace role lacks the required permission.",
+            "description": "**PURPOSE:** Check that the TXT record is live. One DNS lookup, no retries — call it again after DNS propagates.\n\n**SEND:**\nRequired: `domain.manage`, `:domainId`. No body.\n\n**EXPECT:**\n`200` `{ domain: { id, hostname, status:\"verified\", verifiedAt } }` when the `zimos-verify=<token>` TXT record is found at the hostname (already-verified domains return `200` unchanged).\n- `400 DOMAIN_NOT_VERIFIED` — record not found yet (or the domain does not resolve); status stays `pending_verification`.\n- `404 NOT_FOUND` — domain not in this workspace.\n- `401 UNAUTHENTICATED` — missing/expired Bearer token (run Auth > Login first).\n- `403 FORBIDDEN` — your workspace role lacks the required permission.",
             "body": {
               "mode": "raw",
               "raw": "{}",
@@ -5950,7 +5950,7 @@
     },
     {
       "name": "Public Shop",
-      "description": "`http://localhost:4000/shop/:workspaceId/*` — **PUBLIC, server-rendered HTML.** The EJS storefront viewer: what a buyer sees for a store built with **Store Branding & Products**.\n\n⚠️ Host is `{{rootUrl}}` (`http://localhost:4000`), NOT `{{baseUrl}}` — these are mounted at the app root, outside `/api/v1`.\n\n**Subdomain / custom domain:** the same pages are also served when the `Host` header is `<workspace-slug>.${PLATFORM_ROOT_DOMAIN}` or a **verified** custom domain (see **Custom Domains**) — the request is internally routed to this store, no redirect. To try it in Postman, send these requests to `http://<slug>.storebuilder.test:4000/` with the path stripped of `/shop/:workspaceId` (a hosts-file entry mapping that name to 127.0.0.1 is needed).\n\nA custom storefront frontend would normally use **Public Storefront** (JSON) instead; this folder is the built-in no-frontend option.",
+      "description": "`http://localhost:4000/shop/:workspaceId/*` — **PUBLIC, server-rendered HTML.** The EJS storefront viewer: what a buyer sees for a store built with **Store Branding & Products**.\n\n⚠️ Host is `{{rootUrl}}` (`http://localhost:4000`), NOT `{{baseUrl}}` — these are mounted at the app root, outside `/api/v1`.\n\n**Subdomain / custom domain:** the same pages are also served when the `Host` header is `<workspace-slug>.${PLATFORM_ROOT_DOMAIN}` or a **verified** custom domain (see **Custom Domains**) — the request is internally routed to this store, no redirect. To try it in Postman, send these requests to `http://<slug>.zimos.test:4000/` with the path stripped of `/shop/:workspaceId` (a hosts-file entry mapping that name to 127.0.0.1 is needed).\n\nA custom storefront frontend would normally use **Public Storefront** (JSON) instead; this folder is the built-in no-frontend option.",
       "item": [
         {
           "name": "Store Home",

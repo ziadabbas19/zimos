@@ -23,7 +23,7 @@ beforeEach(() => {
   env.notifications.emailProvider = 'brevo';
   env.notifications.brevo.apiKey = 'test-key';
   env.notifications.brevo.fromAddress = 'store@example.com';
-  env.notifications.brevo.fromName = 'Store Builder';
+  env.notifications.brevo.fromName = 'Zimos';
 });
 
 afterAll(() => {
@@ -82,10 +82,10 @@ describe('Brevo email adapter', () => {
       html: '<p>x</p>',
       text: 'x',
       fromAddress: 'store@example.com',
-      fromName: 'Store Builder',
+      fromName: 'Zimos',
     });
     expect(p).toEqual({
-      sender: { email: 'store@example.com', name: 'Store Builder' },
+      sender: { email: 'store@example.com', name: 'Zimos' },
       to: [{ email: 'a@b.com' }],
       subject: 'Hi',
       htmlContent: '<p>x</p>',

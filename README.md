@@ -1,8 +1,8 @@
-# Store Builder Backend
+# Zimos Backend
 
-A multi-tenant SaaS website/store builder backend: merchants register, create a
-workspace, build a catalog, and take orders (store checkout, COD or online
-payment) through a single shared commerce engine.
+Zimos is a multi-tenant SaaS website and funnel builder backend: merchants
+register, create a workspace, build a catalog, and take orders (store
+checkout, COD or online payment) through a single shared commerce engine.
 
 ## Tech stack
 
@@ -110,10 +110,10 @@ can exceed the safe-integer range) — `money.js` coerces this on the way in.
 ```bash
 npm install
 cp .env.example .env        # edit JWT secrets etc. for anything beyond local dev
-createdb storebuilder_dev
-createdb storebuilder_test  # only needed to run the test suite
+createdb zimos_dev
+createdb zimos_test  # only needed to run the test suite
 npm run migrate
-npx sequelize-cli db:seed:all   # optional demo data (demo@storebuilder.test / DemoPassw0rd!123)
+npx sequelize-cli db:seed:all   # optional demo data (demo@zimos.test / DemoPassw0rd!123)
 npm run dev                 # local development — nodemon restarts on any change under src/
 ```
 
@@ -134,13 +134,13 @@ put). See `src/core/middleware/hostResolver.js`.
 To try it locally, map a fake subdomain to `127.0.0.1` in your hosts file
 (`C:\Windows\System32\drivers\etc\hosts` on Windows, `/etc/hosts` on
 Mac/Linux), using whatever `PLATFORM_ROOT_DOMAIN` is in your `.env` (default
-`storebuilder.test`):
+`zimos.test`):
 
 ```
-127.0.0.1  demo-store.storebuilder.test
+127.0.0.1  demo-store.zimos.test
 ```
 
-Then open `http://demo-store.storebuilder.test:4000/` — you get that
+Then open `http://demo-store.zimos.test:4000/` — you get that
 workspace's store home. Any host that does not match (plain `localhost`, an
 IP, an unknown name) falls through to the normal path-based routes untouched.
 
@@ -157,7 +157,7 @@ front of the domain and handles the padlock. Merchant steps:
 1. **Add the domain in your dashboard** — `POST /api/v1/workspaces/:workspaceId/domains`
    with `{ "hostname": "ahmedstore.com" }`. You get back a TXT record to add.
 2. **Create a free Cloudflare account** and add your domain there.
-3. **Add the TXT record** we gave you (`storebuilder-verify=<token>` at the
+3. **Add the TXT record** we gave you (`zimos-verify=<token>` at the
    domain root) in Cloudflare's DNS, plus an A/CNAME record pointing the domain
    at this server.
 4. **Point your domain's nameservers to Cloudflare** (Cloudflare shows you the
@@ -182,7 +182,7 @@ is not applied automatically — run
 ### Tests
 
 ```bash
-createdb storebuilder_test
+createdb zimos_test
 NODE_ENV=test npx sequelize-cli db:migrate
 npm test
 ```

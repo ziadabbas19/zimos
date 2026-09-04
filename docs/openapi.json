@@ -1,9 +1,9 @@
 {
   "openapi": "3.0.3",
   "info": {
-    "title": "Store Builder API",
+    "title": "Zimos API",
     "version": "1.0.0",
-    "description": "Multi-tenant SaaS store/funnel builder backend. All workspace-scoped routes require an active Membership and a Bearer access token; see the README for tenant-isolation notes."
+    "description": "Multi-tenant SaaS storefront and funnel builder backend. All workspace-scoped routes require an active Membership and a Bearer access token; see the README for tenant-isolation notes."
   },
   "servers": [{ "url": "/api/v1" }],
   "security": [{ "bearerAuth": [] }],
