@@ -2,6 +2,8 @@
 
 require('dotenv').config();
 
+const { parseDbUrl } = require('./parseDbUrl');
+
 function required(name, fallback) {
   const value = process.env[name] ?? fallback;
   if (value === undefined) {
@@ -10,6 +12,11 @@ function required(name, fallback) {
   }
   return value;
 }
+
+// A single DATABASE_URL (Railway / Heroku) wins over the separate DB_* vars,
+// except under NODE_ENV=test — tests always use the dedicated test database
+// so a deploy's DATABASE_URL can never point them at a live one.
+const dbUrl = process.env.NODE_ENV === 'test' ? null : parseDbUrl(process.env.DATABASE_URL);
 
 const env = {
   nodeEnv: process.env.NODE_ENV || 'development',
@@ -22,15 +29,16 @@ const env = {
   platformRootDomain: process.env.PLATFORM_ROOT_DOMAIN || 'zimos.test',
 
   db: {
-    host: process.env.DB_HOST || 'localhost',
-    port: parseInt(process.env.DB_PORT || '5432', 10),
+    url: process.env.DATABASE_URL || null,
+    host: (dbUrl && dbUrl.host) || process.env.DB_HOST || 'localhost',
+    port: (dbUrl && dbUrl.port) || parseInt(process.env.DB_PORT || '5432', 10),
     name:
       process.env.NODE_ENV === 'test'
         ? process.env.DB_NAME_TEST || 'zimos_test'
-        : required('DB_NAME', 'zimos_dev'),
-    user: process.env.DB_USER || 'postgres',
-    password: process.env.DB_PASSWORD || 'postgres',
-    ssl: process.env.DB_SSL === 'true',
+        : (dbUrl && dbUrl.name) || required('DB_NAME', 'zimos_dev'),
+    user: (dbUrl && dbUrl.user) || process.env.DB_USER || 'postgres',
+    password: (dbUrl && dbUrl.password) || process.env.DB_PASSWORD || 'postgres',
+    ssl: dbUrl ? dbUrl.ssl || process.env.DB_SSL === 'true' : process.env.DB_SSL === 'true',
     poolMax: parseInt(process.env.DB_POOL_MAX || '10', 10),
     poolMin: parseInt(process.env.DB_POOL_MIN || '0', 10),
   },

@@ -307,7 +307,19 @@ email/SMS).
 ## Environment variables
 
 See `.env.example` for the full list with comments. Nothing in it is a real
-credential. `EMAIL_PROVIDER`/`SMS_PROVIDER`/`WHATSAPP_PROVIDER` default to
+credential.
+
+**Database:** local dev/test use the separate `DB_HOST` / `DB_PORT` /
+`DB_NAME` / `DB_USER` / `DB_PASSWORD` vars. A managed host (Railway, Heroku,
+…) instead provides a single `DATABASE_URL` connection string
+(`postgresql://user:pass@host:port/dbname`); when it's set, both the app
+(`src/config/env.js`) and the migration CLI (`src/config/sequelize-cli.js`)
+parse it and ignore the separate vars — `?sslmode=require` in the URL (or
+`DB_SSL=true`) turns on TLS. `NODE_ENV=test` always uses `DB_NAME_TEST`
+regardless of `DATABASE_URL`, so a deploy's URL can never point the suite at
+a live database.
+
+`EMAIL_PROVIDER`/`SMS_PROVIDER`/`WHATSAPP_PROVIDER` default to
 `console`, which logs+persists to `notification_logs` instead of sending.
 Real adapters are wired: set `EMAIL_PROVIDER=brevo` with `BREVO_API_KEY` +
 `EMAIL_FROM_ADDRESS` (transactional email via `api.brevo.com`, no SDK), or
