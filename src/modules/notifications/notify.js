@@ -23,10 +23,13 @@ function smsBody(template, data = {}) {
 // never touch a vendor SDK. Email is rendered from a template (subject +
 // HTML + text, with a shared footer) then sent via whichever provider
 // EMAIL_PROVIDER selects: `console` (logs + notification_logs, the default)
-// or `brevo`. Every send is recorded in notification_logs.
+// or `brevo`. The real provider call retries transient failures (see
+// core/utils/retry). Every send — success or failure, with its attempt
+// count — is recorded in notification_logs; a failed send never throws up
+// to the caller, so the triggering action still succeeds.
 
-async function persist({ workspaceId, channel, provider, recipient, template, status, error }) {
-  await db.NotificationLog.create({ workspaceId, channel, provider, recipient, template, status, error });
+async function persist({ workspaceId, channel, provider, recipient, template, status, error, attempts }) {
+  await db.NotificationLog.create({ workspaceId, channel, provider, recipient, template, status, error, attempts });
 }
 
 async function sendEmail({ recipient, template, data, workspaceId = null }) {
@@ -35,43 +38,49 @@ async function sendEmail({ recipient, template, data, workspaceId = null }) {
 
   let status = 'sent';
   let error = null;
+  let attempts = 1;
   try {
     if (provider === 'console') {
       logger.info(`[notification:email] ${template} -> ${recipient} :: ${subject}`, { data });
     } else if (provider === 'brevo') {
-      await brevoEmailProvider.sendEmail({ to: recipient, subject, html, text });
+      const sent = await brevoEmailProvider.sendEmail({ to: recipient, subject, html, text });
+      attempts = sent.attempts || attempts;
     } else {
       throw new Error(`Email provider "${provider}" is not configured`);
     }
   } catch (err) {
     status = 'failed';
     error = err.message;
-    logger.error(`[notification:email] ${template} -> ${recipient} failed: ${err.message}`);
+    attempts = err.attempts || attempts;
+    logger.error(`[notification:email] ${template} -> ${recipient} failed after ${attempts} attempt(s): ${err.message}`);
   }
 
-  await persist({ workspaceId, channel: 'email', provider, recipient, template, status, error });
-  return { status, error, subject };
+  await persist({ workspaceId, channel: 'email', provider, recipient, template, status, error, attempts });
+  return { status, error, subject, attempts };
 }
 
 async function sendChannel(channel, provider, { recipient, template, data, workspaceId = null }) {
   let status = 'sent';
   let error = null;
+  let attempts = 1;
   try {
     if (provider === 'console') {
       logger.info(`[notification:${channel}] ${template} -> ${recipient}`, { data });
     } else if (channel === 'sms' && provider === 'twilio') {
-      await twilioSmsProvider.sendSms({ to: recipient, body: smsBody(template, data) });
+      const sent = await twilioSmsProvider.sendSms({ to: recipient, body: smsBody(template, data) });
+      attempts = sent.attempts || attempts;
     } else {
       throw new Error(`Notification provider "${provider}" is not configured with credentials`);
     }
   } catch (err) {
     status = 'failed';
     error = err.message;
-    logger.error(`[notification:${channel}] ${template} -> ${recipient} failed: ${err.message}`);
+    attempts = err.attempts || attempts;
+    logger.error(`[notification:${channel}] ${template} -> ${recipient} failed after ${attempts} attempt(s): ${err.message}`);
   }
 
-  await persist({ workspaceId, channel, provider, recipient, template, status, error });
-  return { status, error };
+  await persist({ workspaceId, channel, provider, recipient, template, status, error, attempts });
+  return { status, error, attempts };
 }
 
 const notify = {

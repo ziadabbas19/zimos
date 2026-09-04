@@ -326,7 +326,12 @@ Real adapters are wired: set `EMAIL_PROVIDER=brevo` with `BREVO_API_KEY` +
 `SMS_PROVIDER=twilio` with `TWILIO_ACCOUNT_SID` / `TWILIO_AUTH_TOKEN` /
 `TWILIO_FROM_NUMBER`. Both adapters (`src/modules/notifications/brevoEmail
 Provider.js`, `twilioSmsProvider.js`) are mockable seams and are never
-called by the test suite. Same provider pattern for
+called by the test suite. Each provider call retries a transient failure
+(network error / 429 / 5xx) up to 3 times with backoff (immediate, ~1s,
+~3s — `src/core/utils/retry.js`); a permanent 4xx is not retried. Sends stay
+inline in the request (no queue yet); if every attempt fails the send is
+recorded in `notification_logs` as `failed` with its `attempts` count and
+the triggering request still succeeds. Same provider pattern for
 `PAYMENTS_DEFAULT_PROVIDER` (`src/modules/payments/providers/`).
 
 ### Image storage

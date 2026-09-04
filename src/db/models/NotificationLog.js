@@ -12,6 +12,7 @@ module.exports = (sequelize, DataTypes) => {
       template: { type: DataTypes.STRING(100), allowNull: false },
       status: { type: DataTypes.ENUM('sent', 'failed'), allowNull: false },
       error: { type: DataTypes.STRING(500), allowNull: true },
+      attempts: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 1 },
     },
     { tableName: 'notification_logs', updatedAt: false }
   );
