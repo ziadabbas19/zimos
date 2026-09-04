@@ -1,14 +1,10 @@
 'use strict';
 
-const fs = require('fs');
-const path = require('path');
 const crypto = require('crypto');
-const env = require('../../config/env');
 const { AppError } = require('../../core/errors/AppError');
 const { recordAudit } = require('../audit/auditService');
+const { getStorage, UPLOAD_ROOT } = require('./storage');
 
-// public/uploads at the project root — served statically by app.js at /uploads.
-const UPLOAD_ROOT = path.resolve(__dirname, '../../../public/uploads');
 const MAX_BYTES = 5 * 1024 * 1024;
 
 // Type is decided by the actual file bytes, never the filename or the
@@ -37,18 +33,15 @@ async function storeImage(workspaceId, file, req) {
     throw new AppError('UNSUPPORTED_MEDIA_TYPE', 'Only PNG, JPEG, GIF or WEBP images are accepted', 415);
   }
 
-  const dir = path.join(UPLOAD_ROOT, workspaceId);
-  await fs.promises.mkdir(dir, { recursive: true });
   const filename = `${crypto.randomUUID()}.${sig.ext}`;
-  await fs.promises.writeFile(path.join(dir, filename), file.buffer);
+  const { url, path } = await getStorage().put({
+    workspaceId,
+    filename,
+    buffer: file.buffer,
+    contentType: sig.mime,
+  });
 
-  const relPath = `/uploads/${workspaceId}/${filename}`;
-  const result = {
-    url: `${env.appUrl.replace(/\/$/, '')}${relPath}`,
-    path: relPath,
-    mimeType: sig.mime,
-    size: file.size,
-  };
+  const result = { url, path, mimeType: sig.mime, size: file.size };
 
   await recordAudit({
     workspaceId,
@@ -56,7 +49,7 @@ async function storeImage(workspaceId, file, req) {
     action: 'media.upload',
     entityType: 'Media',
     entityId: filename,
-    after: { path: relPath, mimeType: sig.mime, size: file.size },
+    after: result,
     req,
   });
 

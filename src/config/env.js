@@ -96,6 +96,21 @@ const env = {
     },
   },
 
+  // Uploaded-image storage. `local` (default) writes to public/uploads and is
+  // fine for local dev; `r2` puts objects in a Cloudflare R2 bucket so images
+  // survive a redeploy on an ephemeral filesystem. R2 credentials are only
+  // required when STORAGE_PROVIDER=r2.
+  storage: {
+    provider: process.env.STORAGE_PROVIDER || 'local',
+    r2: {
+      accountId: process.env.R2_ACCOUNT_ID || '',
+      accessKeyId: process.env.R2_ACCESS_KEY_ID || '',
+      secretAccessKey: process.env.R2_SECRET_ACCESS_KEY || '',
+      bucketName: process.env.R2_BUCKET_NAME || '',
+      publicUrl: (process.env.R2_PUBLIC_URL || '').replace(/\/$/, ''),
+    },
+  },
+
   payments: {
     defaultProvider: process.env.PAYMENTS_DEFAULT_PROVIDER || 'mock',
   },

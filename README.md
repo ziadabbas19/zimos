@@ -51,7 +51,7 @@ src/
     tax/                      tax calculation + tax-rate CRUD
     invoices/                 atomic counter-based invoice numbering, credit notes
     otp/                      generic SMS one-time codes (hash-only, rate-limited)
-    media/                    disk-backed image upload, type validated by content
+    media/                    image upload (local disk or Cloudflare R2), content-validated type
     waybill/                  order shipping-label PDF (pdfkit + Code128 barcode)
     audit/                    append-only audit log writer
     notifications/            provider-abstracted email/sms/whatsapp — console default,
@@ -328,6 +328,39 @@ Real adapters are wired: set `EMAIL_PROVIDER=brevo` with `BREVO_API_KEY` +
 Provider.js`, `twilioSmsProvider.js`) are mockable seams and are never
 called by the test suite. Same provider pattern for
 `PAYMENTS_DEFAULT_PROVIDER` (`src/modules/payments/providers/`).
+
+### Image storage
+
+`STORAGE_PROVIDER` selects where `POST /api/v1/workspaces/:workspaceId/media`
+puts uploaded images: `local` (default) writes to `public/uploads/` and
+serves them at `/uploads/...`; `r2` puts them in a Cloudflare R2 bucket
+(`src/modules/media/storage/`). **Use `r2` in production** — a container
+filesystem is wiped on every redeploy, so `local` there loses every
+merchant's images. The response shape (`{ url, path, mimeType, size }`) and
+the 5MB / content-sniffed-type validation are identical either way; only the
+returned `url` host differs.
+
+#### Cloudflare R2 setup (do this once in the Cloudflare dashboard)
+
+1. **Create the bucket.** Cloudflare dashboard → **R2** → **Create bucket**.
+   Give it a name (e.g. `zimos-media`), pick a location hint near your
+   users, create it. That name is `R2_BUCKET_NAME`.
+2. **Enable public access.** Open the bucket → **Settings** → under **Public
+   access** either enable the **r2.dev subdomain** (fine to start) or connect
+   a **custom domain** (e.g. `cdn.yourdomain.com`, needs the domain on
+   Cloudflare). Copy the resulting public base URL — that is `R2_PUBLIC_URL`
+   (no trailing slash, e.g. `https://pub-abc123.r2.dev`).
+3. **Get your account ID.** On the R2 overview page (right-hand sidebar, or
+   any bucket's settings) copy **Account ID** → `R2_ACCOUNT_ID`.
+4. **Create an API token.** R2 overview → **Manage R2 API Tokens** → **Create
+   API token**. Permissions: **Object Read & Write**; scope it to just the
+   one bucket. Create it, then copy the **Access Key ID** → `R2_ACCESS_KEY_ID`
+   and **Secret Access Key** → `R2_SECRET_ACCESS_KEY` (the secret is shown
+   only once).
+5. **Set the env vars** on the host: `STORAGE_PROVIDER=r2` plus the five
+   `R2_*` values above. Restart. Existing images already on local disk are
+   not migrated automatically — re-upload them or copy `public/uploads/` into
+   the bucket with the same keys (`<workspaceId>/<filename>`).
 
 ### SMS one-time codes
 

@@ -8,7 +8,8 @@ const { PERMISSIONS } = require('../../core/security/permissions');
 const controller = require('./mediaController');
 
 // Mounted at /api/v1/workspaces/:workspaceId/media — staff. Uploaded images
-// are written to local disk under public/uploads and served at /uploads/...
+// go to the storage backend STORAGE_PROVIDER selects (local disk under
+// public/uploads, or a Cloudflare R2 bucket).
 const router = Router({ mergeParams: true });
 router.use(authenticate, resolveTenant, requirePermission(PERMISSIONS.PRODUCTS_MANAGE));
 
