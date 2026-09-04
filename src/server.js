@@ -8,14 +8,19 @@ const logger = require('./core/utils/logger');
 async function start() {
   try {
     await db.sequelize.authenticate();
-    logger.info('Database connection established');
+    // Report the database this process is actually on — queried live, not
+    // read from .env — so it's obvious at a glance on every boot.
+    const [rows] = await db.sequelize.query('SELECT current_database() AS name');
+    const liveName = rows[0].name;
+    const { host, port } = db.sequelize.config;
+    logger.info(`Connected to database: ${liveName} (${host}:${port})`);
   } catch (err) {
     logger.error('Unable to connect to the database', { message: err.message });
     process.exit(1);
   }
 
   const server = app.listen(env.port, () => {
-    logger.info(`Store Builder backend listening on port ${env.port}`, { env: env.nodeEnv });
+    logger.info(`Zimos backend listening on port ${env.port}`, { env: env.nodeEnv });
   });
 
   const shutdown = (signal) => {
