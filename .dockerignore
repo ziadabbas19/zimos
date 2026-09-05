@@ -1,0 +1,26 @@
+# Never bake local env/secrets into the image — config comes from the host's
+# environment (Railway service variables, docker -e, etc.).
+.env
+.env.*
+!.env.example
+
+node_modules
+npm-debug.log*
+
+.git
+.gitignore
+.github
+
+# Local-only
+public/uploads/*
+!public/uploads/.gitkeep
+coverage
+*.log
+*.zip
+tests
+**/*.test.js
+.vscode
+.idea
+.DS_Store
+Thumbs.db
+PHASE_PLAN.md

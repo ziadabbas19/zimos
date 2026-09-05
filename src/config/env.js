@@ -99,15 +99,23 @@ const env = {
   // Uploaded-image storage. `local` (default) writes to public/uploads and is
   // fine for local dev; `r2` puts objects in a Cloudflare R2 bucket so images
   // survive a redeploy on an ephemeral filesystem. R2 credentials are only
-  // required when STORAGE_PROVIDER=r2.
+  // required when STORAGE_PROVIDER=r2. Values are trimmed/lower-cased because
+  // dashboard env editors (Railway, etc.) routinely leave a trailing space or
+  // newline that would otherwise make "r2 " an unknown provider. Under
+  // NODE_ENV=test the provider is pinned to `local` so a stray
+  // STORAGE_PROVIDER=r2 in a dev .env can't make the suite hit real R2 (a
+  // test that wants r2 sets env.storage.provider at runtime).
   storage: {
-    provider: process.env.STORAGE_PROVIDER || 'local',
+    provider:
+      process.env.NODE_ENV === 'test'
+        ? 'local'
+        : (process.env.STORAGE_PROVIDER || 'local').trim().toLowerCase(),
     r2: {
-      accountId: process.env.R2_ACCOUNT_ID || '',
-      accessKeyId: process.env.R2_ACCESS_KEY_ID || '',
-      secretAccessKey: process.env.R2_SECRET_ACCESS_KEY || '',
-      bucketName: process.env.R2_BUCKET_NAME || '',
-      publicUrl: (process.env.R2_PUBLIC_URL || '').replace(/\/$/, ''),
+      accountId: (process.env.R2_ACCOUNT_ID || '').trim(),
+      accessKeyId: (process.env.R2_ACCESS_KEY_ID || '').trim(),
+      secretAccessKey: (process.env.R2_SECRET_ACCESS_KEY || '').trim(),
+      bucketName: (process.env.R2_BUCKET_NAME || '').trim(),
+      publicUrl: (process.env.R2_PUBLIC_URL || '').trim().replace(/\/+$/, ''),
     },
   },
 

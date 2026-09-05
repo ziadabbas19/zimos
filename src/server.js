@@ -4,6 +4,7 @@ const app = require('./app');
 const env = require('./config/env');
 const db = require('./db/models');
 const logger = require('./core/utils/logger');
+const { describeStorage, r2ConfigError } = require('./modules/media/storage');
 
 async function start() {
   try {
@@ -18,6 +19,12 @@ async function start() {
     logger.error('Unable to connect to the database', { message: err.message });
     process.exit(1);
   }
+
+  // Same idea for image storage: print what STORAGE_PROVIDER actually
+  // resolved to in THIS process, so a deploy log settles "is it on R2?".
+  logger.info(`Storage backend: ${describeStorage()}`);
+  const storageProblem = r2ConfigError();
+  if (storageProblem) logger.error(`Storage misconfigured: ${storageProblem} — uploads will fail until this is fixed`);
 
   const server = app.listen(env.port, () => {
     logger.info(`Zimos backend listening on port ${env.port}`, { env: env.nodeEnv });

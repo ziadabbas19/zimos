@@ -12,6 +12,7 @@ jest.mock('@aws-sdk/client-s3', () => ({
 
 const fs = require('fs');
 const path = require('path');
+const { execFileSync } = require('child_process');
 const bwipjs = require('bwip-js');
 const { PutObjectCommand } = require('@aws-sdk/client-s3');
 const { app, request, setupWorkspaceWithProduct } = require('../helpers/factories');
@@ -20,7 +21,7 @@ const { UPLOAD_ROOT } = require('../../src/modules/media/mediaService');
 const r2Storage = require('../../src/modules/media/storage/r2Storage');
 
 const bearer = (t) => ({ Authorization: `Bearer ${t}` });
-const R2_PUBLIC = 'https://pub-test.r2.dev';
+const R2_PUBLIC = 'https://media.zimos.co';
 const ORIGINAL_PROVIDER = env.storage.provider;
 
 let PNG;
@@ -115,5 +116,30 @@ describe('media upload — R2 backend', () => {
     const res = await upload(workspace.id, auth.accessToken, PNG, { filename: 'logo.png', contentType: 'image/png' });
     expect(res.status).toBe(500);
     expect(mockS3Send).not.toHaveBeenCalled();
+  });
+});
+
+// Resolve env.storage in a clean child process, as a non-test (deploy) env —
+// dotenv reads the real .env but our explicit vars win (override is off).
+function resolveStorage(overrides) {
+  const script =
+    "const s = require('./src/config/env').storage; process.stdout.write('@@' + JSON.stringify({ provider: s.provider, publicUrl: s.r2.publicUrl }))";
+  const out = execFileSync(process.execPath, ['-e', script], {
+    cwd: path.resolve(__dirname, '../..'),
+    env: { ...process.env, NODE_ENV: 'production', DATABASE_URL: '', ...overrides },
+  }).toString();
+  return JSON.parse(out.slice(out.lastIndexOf('@@') + 2));
+}
+
+describe('STORAGE_PROVIDER value handling', () => {
+  it('normalizes whitespace/case so a pasted " R2 " still selects the r2 backend', () => {
+    const r = resolveStorage({ STORAGE_PROVIDER: '  R2\n', R2_PUBLIC_URL: 'https://media.zimos.co/  ' });
+    expect(r.provider).toBe('r2');
+    expect(r.publicUrl).toBe('https://media.zimos.co'); // trailing space + slash trimmed
+  });
+
+  it('defaults to local when STORAGE_PROVIDER is unset', () => {
+    const r = resolveStorage({ STORAGE_PROVIDER: '' });
+    expect(r.provider).toBe('local');
   });
 });

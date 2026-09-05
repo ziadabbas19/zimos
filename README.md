@@ -363,9 +363,21 @@ returned `url` host differs.
    and **Secret Access Key** → `R2_SECRET_ACCESS_KEY` (the secret is shown
    only once).
 5. **Set the env vars** on the host: `STORAGE_PROVIDER=r2` plus the five
-   `R2_*` values above. Restart. Existing images already on local disk are
+   `R2_*` values above, then **redeploy** (a plain restart can reuse the old
+   container without the new vars). Existing images already on local disk are
    not migrated automatically — re-upload them or copy `public/uploads/` into
    the bucket with the same keys (`<workspaceId>/<filename>`).
+
+**Verifying it took effect.** On boot the server logs one line —
+`Storage backend: r2 (bucket=..., public=...)` or `Storage backend: local
+(...)` — so the deploy log is the source of truth for what the process
+actually resolved. If it says `local` while you expect `r2`, the env var is
+not reaching the process (wrong environment/scope in the host dashboard, or
+not redeployed); if it says `r2 — MISSING R2_...`, one of the `R2_*` vars
+isn't set. Values are trimmed and lower-cased, so a stray trailing space
+from a dashboard paste is tolerated. Config always comes from the host
+environment — `.env` is excluded from the Docker image by `.dockerignore`,
+so secrets never get baked into a build.
 
 ### SMS one-time codes
 
