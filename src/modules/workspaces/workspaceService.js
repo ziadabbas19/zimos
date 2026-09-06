@@ -3,7 +3,7 @@
 const slugify = require('../../core/utils/slugify');
 const db = require('../../db/models');
 const { SYSTEM_ROLES } = require('../../core/security/permissions');
-const { ConflictError, NotFoundError, AppError } = require('../../core/errors/AppError');
+const { ConflictError, NotFoundError, AppError, ValidationError } = require('../../core/errors/AppError');
 const { recordAudit } = require('../audit/auditService');
 const notify = require('../notifications/notify');
 const billingService = require('../billing/billingService');
@@ -71,6 +71,56 @@ async function createWorkspace({ name, ownerUserId }, req) {
 
     return workspace;
   });
+}
+
+// PATCH /workspaces/:workspaceId — the merchant's basic store settings.
+// name is the workspace name; logoUrl / tagline / themeSettings are storefront
+// branding (themeSettings is an opaque blob owned by the frontend, stored as-is).
+async function updateWorkspace({ workspaceId, patch }, req) {
+  const workspace = await db.Workspace.findByPk(workspaceId);
+  if (!workspace) throw new NotFoundError('Workspace');
+
+  const before = {
+    name: workspace.name,
+    logoUrl: workspace.logoUrl,
+    tagline: workspace.tagline,
+    themeSettings: workspace.themeSettings,
+  };
+
+  const next = {};
+  if (patch.name !== undefined) next.name = patch.name;
+  if (patch.logoUrl !== undefined) next.logoUrl = patch.logoUrl || null;
+  if (patch.tagline !== undefined) next.tagline = patch.tagline || null;
+  if (patch.themeSettings !== undefined) {
+    const blob = patch.themeSettings || {};
+    if (JSON.stringify(blob).length > 5000) {
+      throw new ValidationError(
+        [{ field: 'themeSettings', message: 'themeSettings is too large (max ~5KB)' }],
+        'themeSettings is too large'
+      );
+    }
+    next.themeSettings = blob;
+  }
+
+  await workspace.update(next);
+
+  await recordAudit({
+    workspaceId,
+    actorUserId: req.user.id,
+    action: 'workspace.update',
+    entityType: 'Workspace',
+    entityId: workspaceId,
+    before,
+    after: {
+      name: workspace.name,
+      logoUrl: workspace.logoUrl,
+      tagline: workspace.tagline,
+      themeSettings: workspace.themeSettings,
+    },
+    req,
+  });
+
+  return workspace;
 }
 
 async function listWorkspacesForUser(userId) {
@@ -246,6 +296,7 @@ async function createCustomRole({ workspaceId, name, key, permissions }, req) {
 
 module.exports = {
   createWorkspace,
+  updateWorkspace,
   listWorkspacesForUser,
   inviteMember,
   listMembers,

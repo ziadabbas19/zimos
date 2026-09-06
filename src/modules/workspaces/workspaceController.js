@@ -13,6 +13,11 @@ const list = asyncHandler(async (req, res) => {
   res.json({ workspaces });
 });
 
+const updateWorkspace = asyncHandler(async (req, res) => {
+  const workspace = await service.updateWorkspace({ workspaceId: req.tenant.workspaceId, patch: req.body }, req);
+  res.json({ workspace });
+});
+
 const inviteMember = asyncHandler(async (req, res) => {
   const membership = await service.inviteMember(
     { workspaceId: req.tenant.workspaceId, email: req.body.email, roleId: req.body.roleId },
@@ -62,6 +67,7 @@ const createRole = asyncHandler(async (req, res) => {
 module.exports = {
   create,
   list,
+  updateWorkspace,
   inviteMember,
   listMembers,
   listPendingInvites,

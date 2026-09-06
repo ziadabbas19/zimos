@@ -48,6 +48,9 @@ const createWebsite = {
       .max(63)
       .pattern(/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/)
       .optional(),
+    // Start the site from a ready-made template (from GET /api/v1/templates).
+    // Its pages are deep-copied into this website; there is no live link back.
+    templateVersionId: uuid.optional(),
     globalStyles: styles.default({}),
     seo: seo.default({}),
   }),

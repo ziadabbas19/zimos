@@ -39,6 +39,7 @@ const adminRoutes = require('./modules/billing/adminRoutes');
 const domainsRoutes = require('./modules/domains/domainsRoutes');
 const mediaRoutes = require('./modules/media/mediaRoutes');
 const reviewRoutes = require('./modules/reviews/reviewRoutes');
+const templateRoutes = require('./modules/templates/templateRoutes');
 
 const app = express();
 
@@ -93,6 +94,8 @@ app.use(hostResolver);
 // --- API v1 --------------------------------------------------------------
 const v1 = express.Router();
 v1.use('/auth', authRoutes);
+// Public template gallery — no auth, shown before a workspace even exists.
+v1.use('/templates', templateRoutes);
 // Must be registered BEFORE the generic '/workspaces' mount: workspaceRoutes
 // runs the strict `authenticate` for every path under '/workspaces', which
 // would reject the quickstart query-string / hidden-field token before it

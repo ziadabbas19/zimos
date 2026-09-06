@@ -21,6 +21,16 @@ const Op = db.Sequelize.Op;
  * `WebsitePage.publishedData` is a convenience mirror, never the render source.
  */
 
+// --- helpers --------------------------------------------------------------
+
+// One-time deep copy — the result shares no reference with the source, so a
+// later edit to a template can never reach a website already created from it.
+function deepClone(v) {
+  return v == null ? v : JSON.parse(JSON.stringify(v));
+}
+
+const PAGE_TYPES = ['home', 'product', 'collection', 'static', 'blog_post', 'cart', 'custom'];
+
 // --- path helpers -----------------------------------------------------------
 
 function normalizePath(input) {
@@ -64,24 +74,80 @@ async function loadPage(workspaceId, websiteId, pageId, transaction) {
 // --- websites -----------------------------------------------------------
 
 async function createWebsite(workspaceId, data, req) {
-  const subdomain = await ensureUniqueSubdomain(data.subdomain || data.name);
-  const website = await scoped(db.Website, workspaceId).create({
-    name: data.name,
-    subdomain,
-    status: 'draft',
-    globalStyles: data.globalStyles || {},
-    seo: data.seo || {},
+  return db.sequelize.transaction(async (t) => {
+    // Optionally seed the site from a ready-made template.
+    let templateVersion = null;
+    if (data.templateVersionId) {
+      templateVersion = await db.TemplateVersion.findOne({
+        where: { id: data.templateVersionId, isActive: true },
+        transaction: t,
+      });
+      if (!templateVersion) throw new NotFoundError('TemplateVersion');
+    }
+
+    const subdomain = await ensureUniqueSubdomain(data.subdomain || data.name);
+
+    // Template's globalStyles is the starting point; any globalStyles the
+    // merchant sent in THIS request override it per key (not the other way).
+    const baseStyles = templateVersion ? deepClone(templateVersion.globalStyles || {}) : {};
+    const globalStyles = { ...baseStyles, ...(data.globalStyles || {}) };
+
+    const website = await scoped(db.Website, workspaceId).create(
+      {
+        name: data.name,
+        subdomain,
+        status: 'draft',
+        sourceTemplateVersionId: templateVersion ? templateVersion.id : null,
+        globalStyles,
+        seo: data.seo || {},
+      },
+      { transaction: t }
+    );
+
+    // Deep-copy every template page into a real WebsitePage. After this the
+    // website owns its own copy — editing the template never touches it.
+    const createdPages = [];
+    if (templateVersion) {
+      const templatePages = Array.isArray(templateVersion.pages) ? templateVersion.pages : [];
+      for (const tp of templatePages) {
+        const path = normalizePath(tp.path || '/');
+        const draftData = deepClone(tp.builderData || EMPTY_TREE);
+        validatePageTree(draftData, { label: `template page "${path}"` });
+        const pageType = PAGE_TYPES.includes(tp.pageType) ? tp.pageType : path === '/' ? 'home' : 'custom';
+
+        const page = await db.WebsitePage.create(
+          {
+            workspaceId,
+            websiteId: website.id,
+            path,
+            title: tp.title || 'Untitled',
+            pageType,
+            draftData,
+            publishedData: null,
+            seo: deepClone(tp.seo || {}) || {},
+          },
+          { transaction: t }
+        );
+        createdPages.push(page);
+      }
+    }
+
+    await recordAudit({
+      workspaceId,
+      actorUserId: req.user.id,
+      action: 'website.create',
+      entityType: 'Website',
+      entityId: website.id,
+      after: website.toJSON(),
+      metadata: templateVersion
+        ? { fromTemplateVersionId: templateVersion.id, pagesCopied: createdPages.length }
+        : undefined,
+      req,
+      transaction: t,
+    });
+
+    return { website, pages: createdPages };
   });
-  await recordAudit({
-    workspaceId,
-    actorUserId: req.user.id,
-    action: 'website.create',
-    entityType: 'Website',
-    entityId: website.id,
-    after: website.toJSON(),
-    req,
-  });
-  return website;
 }
 
 async function listWebsites(workspaceId) {

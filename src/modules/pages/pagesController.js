@@ -6,8 +6,8 @@ const quickstartService = require('../quickstart/quickstartService');
 
 // --- websites ---
 const createWebsite = asyncHandler(async (req, res) => {
-  const website = await service.createWebsite(req.tenant.workspaceId, req.body, req);
-  res.status(201).json({ website });
+  const { website, pages } = await service.createWebsite(req.tenant.workspaceId, req.body, req);
+  res.status(201).json({ website, pages });
 });
 
 const listWebsites = asyncHandler(async (req, res) => {

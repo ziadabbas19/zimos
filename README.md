@@ -258,6 +258,19 @@ staff auth, OG defaults, and a 404 for any page not in the live revision;
 and slug-change 301 redirects, recorded when a published page is renamed and
 activated on the next publish (draft-only renames record none).
 
+**Templates** (`src/modules/templates/`, `tests/integration/templates.test.js`)
+back the "pick a ready-made design" screen off the existing `templates` /
+`template_versions` tables. `GET /api/v1/templates` and
+`GET /api/v1/templates/:id` are **public** (the picker is shown before a
+workspace exists). `POST /websites` takes an optional `templateVersionId`:
+the template's `globalStyles` seed the site (any `globalStyles` in the same
+request override per key) and every template page is **deep-copied** into a
+real `WebsitePage` — `sourceTemplateVersionId` is recorded but there is no
+live link, so editing a template never touches sites already built from it.
+`db:seed:all` loads five starter templates (minimal, fashion, electronics,
+food & drink, single-product funnel), each with a real home page and a
+blue `primaryColor`.
+
 The funnel engine (`src/modules/funnels/`,
 `tests/integration/funnelEngine.test.js` — 23 tests) applies the same
 discipline to funnels as a directed graph of steps: funnel / step / edge
@@ -294,7 +307,7 @@ are subscription-gated, but **no payment gateway is connected** (see
 a single boolean flag on `User`, not a role system.
 
 **Modeled and migrated, with working CRUD services, but not yet as deep or
-covered by the test suite**: website theme templates + template versioning,
+covered by the test suite**:
 A/B testing (experiment models exist; funnel-step and
 page split-test *execution* is not wired up), analytics/tracking event
 ingestion + reporting endpoints, webhooks (model + HMAC signing utility

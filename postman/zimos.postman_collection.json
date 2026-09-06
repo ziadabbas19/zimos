@@ -1,6 +1,6 @@
 {
   "info": {
-    "_postman_id": "7221dbdf-c260-4aea-a3da-f5a8b481f9e7",
+    "_postman_id": "71a04bf6-70eb-49a4-9587-c00ce93fa210",
     "name": "Zimos Backend",
     "description": "Every mounted endpoint of the Zimos API, organised by module, with per-request PURPOSE / SEND / EXPECT notes taken from the actual Joi schemas, Sequelize models and controllers.\n\n## Setup\n1. Import this collection **and** `zimos.postman_environment.json`; select the environment.\n2. Run **Auth > Login** once — its test script fills `{{accessToken}}` and `{{refreshToken}}` for every staff request.\n3. Set `{{workspaceId}}` (run **Workspaces & Team > List My Workspaces**, or **Quickstart Demo Flow > 02**).\n\n## Auth model\n- **Collection default:** `Authorization: Bearer {{accessToken}}` — inherited by all the staff folders (Auth, Workspaces & Team, Catalog, Inventory, Customers, Orders, COD Confirmation, Payments, Discounts, Shipping, Tax Rates, Pages, Funnels, Store Branding & Products, Custom Domains, Billing, Admin).\n- **No auth:** the `Public Storefront`, `Public Shop`, and `Cart` folders — this is what a buyer-facing frontend hits.\n- Login/Register/Refresh/etc. and a few HTML routes override to no-auth individually.\n\n## Conventions\n- `{{baseUrl}}` = `http://localhost:4000/api/v1`. `{{rootUrl}}` = `http://localhost:4000` (only `Public Shop`, `/health`, `/docs` live outside `/api/v1`).\n- All money is **integer minor units** (piastres/cents) — `19900` = 199.00.\n- Path ids shown as `:name` are Postman path variables — fill them per-request; ids captured by test scripts (workspaceId, productId, variantId, orderId, funnelId, …) are collection variables set for you as you go.\n- Errors follow `{ \"error\": { \"code\", \"message\", \"details\", \"requestId\" } }`.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
@@ -113,6 +113,16 @@
     },
     {
       "key": "taxRateId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "templateId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "templateVersionId",
       "value": "",
       "type": "string"
     },
@@ -1229,6 +1239,70 @@
       ]
     },
     {
+      "name": "Templates",
+      "description": "`/api/v1/templates/*` — **PUBLIC, no auth.** The ready-made website templates a merchant picks from right after registering (before a workspace/website exists).\n\nTo use one: take a `templateVersionId` from here and pass it to **Pages (website builder) > Create Website**. Its pages are deep-copied into the new site — editing the template later never affects sites already created from it.",
+      "item": [
+        {
+          "name": "List Templates",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/templates",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "templates"
+              ]
+            },
+            "description": "**PURPOSE:** The template picker grid.\n\n**SEND:**\nRequired: nothing (public). No params.\n\n**EXPECT:**\n`200` `{ templates: [ { id, name, category, thumbnailUrl, templateVersionId } ] }` — only published templates that have an active version, ordered by name. `templateVersionId` is what you pass to Create Website.",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const b = pm.response.json();",
+                  "if (b.templates && b.templates.length) { pm.collectionVariables.set('templateId', b.templates[0].id); pm.collectionVariables.set('templateVersionId', b.templates[0].templateVersionId); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Template",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/templates/{{templateId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "templates",
+                "{{templateId}}"
+              ]
+            },
+            "description": "**PURPOSE:** Full detail of one template — its latest active version, for a live preview.\n\n**SEND:**\nRequired: `:id` (a published template id). Public.\n\n**EXPECT:**\n`200` `{ template: { id, name, category, thumbnailUrl, isPublished:true, templateVersionId, version, globalStyles: { primaryColor, ... }, pages: [ { path, title, pageType?, builderData: { version, sections:[...] }, seo } ], sections: [] } }`.\n- `404 NOT_FOUND` — unknown id, or the template is not published / has no active version.",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": []
+        }
+      ],
+      "auth": {
+        "type": "noauth"
+      }
+    },
+    {
       "name": "Workspaces & Team",
       "description": "`/api/v1/workspaces/*` — the tenant boundary + team management. **All staff (Bearer).**\n\n`Create Workspace` and `List My Workspaces` only need a valid token. The member/role endpoints also need `resolveTenant` (you must be an active member of `:workspaceId`) plus a permission (`users.manage` / `roles.manage`).\n\nCreating a workspace also seeds its 6 system roles, an owner Membership, an invoice counter, and a `trialing` Subscription.",
       "item": [
@@ -1290,6 +1364,39 @@
               ]
             },
             "description": "**PURPOSE:** The workspace switcher — every workspace the signed-in user belongs to, plus their role in each.\n\n**SEND:**\nRequired: Bearer token only.\n\n**EXPECT:**\n`200` `{ workspaces: [ { workspace: { id, name, slug, status, ... }, role: { key, name } } ] }`.\n- `401 UNAUTHENTICATED` — missing/expired Bearer token (run Auth > Login first)."
+          },
+          "response": []
+        },
+        {
+          "name": "Update Workspace Settings",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/workspaces/{{workspaceId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "workspaces",
+                "{{workspaceId}}"
+              ]
+            },
+            "description": "**PURPOSE:** Update the merchant store settings: workspace name and storefront branding.\n\n**SEND:**\nRequired: `website.edit` permission, `:workspaceId`. Body — at least one of: `name` (2–200), `logoUrl` (URL or \"\" / null to clear), `tagline` (≤300 or \"\" / null to clear), `themeSettings` (opaque object, ≤50 keys / ~5KB, stored as-is). Empty body → `422`.\n\n**EXPECT:**\n`200` `{ workspace: { id, name, slug, ownerUserId, status, defaultCurrency, logoUrl, tagline, themeSettings, ... } }`. Writes a `workspace.update` audit log.\n- `401 UNAUTHENTICATED` — missing/expired Bearer token (run Auth > Login first).\n- `403 FORBIDDEN` — your workspace role lacks the required permission.\n- `404 NOT_FOUND` — you are not a member of `:workspaceId` (identical response whether it exists or not).\n- `422 VALIDATION_ERROR` — body/params failed the Joi schema; `error.details[]` names each bad field.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"My Store\",\n  \"logoUrl\": \"https://media.zimos.co/logo.png\",\n  \"tagline\": \"Only the good stuff\",\n  \"themeSettings\": {\n    \"accent\": \"blue\",\n    \"radius\": 8\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
           },
           "response": []
         },
@@ -4089,10 +4196,10 @@
                 "websites"
               ]
             },
-            "description": "**PURPOSE:** Create a website container (one workspace can have several).\n\n**SEND:**\nRequired: `name` (1–200). Optional: `subdomain` (3–63, `^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$`; auto-generated from name if omitted), `globalStyles` (`{}`), `seo` (`{}`). Permission: `website.edit` + active subscription.\n\n**EXPECT:**\n`201` `{ website: { id, workspaceId, sourceTemplateVersionId, name, subdomain, status:\"draft\", globalStyles, seo, publishedRevisionId:null } }`.\n- `402 SUBSCRIPTION_REQUIRED` — workspace not `trialing`/`active`.\n- `401 UNAUTHENTICATED` — missing/expired Bearer token (run Auth > Login first).\n- `403 FORBIDDEN` — your workspace role lacks the required permission.\n- `422 VALIDATION_ERROR` — body/params failed the Joi schema; `error.details[]` names each bad field.",
+            "description": "**PURPOSE:** Create a website container (one workspace can have several). Optionally start it from a ready-made template.\n\n**SEND:**\nRequired: `name` (1–200). Optional: `subdomain` (3–63, `^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$`; auto-generated from name if omitted), `templateVersionId` (a `templateVersionId` from **Templates** — its pages are **deep-copied** into this site, no live link back), `globalStyles` (`{}` — merged over the template's, merchant keys win), `seo` (`{}`). Permission: `website.edit` + active subscription.\n\n**EXPECT:**\n`201` `{ website: { id, workspaceId, sourceTemplateVersionId, name, subdomain, status:\"draft\", globalStyles, seo, publishedRevisionId:null }, pages: [ { id, workspaceId, websiteId, path, title, pageType, draftData, publishedData:null, seo } ] }`. `pages` is `[]` unless a template was used; `sourceTemplateVersionId` is the template version it was seeded from (or `null`).\n- `404 NOT_FOUND` — `templateVersionId` not found or not active (nothing is created).\n- `402 SUBSCRIPTION_REQUIRED` — workspace not `trialing`/`active`.\n- `401 UNAUTHENTICATED` — missing/expired Bearer token (run Auth > Login first).\n- `403 FORBIDDEN` — your workspace role lacks the required permission.\n- `422 VALIDATION_ERROR` — body/params failed the Joi schema; `error.details[]` names each bad field.",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"name\": \"Acme Store\",\n  \"globalStyles\": {},\n  \"seo\": {}\n}",
+              "raw": "{\n  \"name\": \"Acme Store\",\n  \"templateVersionId\": \"\",\n  \"globalStyles\": {},\n  \"seo\": {}\n}",
               "options": {
                 "raw": {
                   "language": "json"

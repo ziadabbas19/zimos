@@ -141,7 +141,7 @@ async function regenerateStorePage(workspaceId, req) {
   const workspace = await db.Workspace.findByPk(workspaceId);
 
   let website = await db.Website.findOne({ where: { workspaceId }, order: [['createdAt', 'ASC']] });
-  if (!website) website = await pagesService.createWebsite(workspaceId, { name: workspace.name }, req);
+  if (!website) ({ website } = await pagesService.createWebsite(workspaceId, { name: workspace.name }, req));
 
   const tree = storeHomeTree(workspace.name);
   const seo = { title: workspace.name, _store: { storeName: workspace.name, regeneratedAt: new Date().toISOString() } };

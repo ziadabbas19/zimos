@@ -16,6 +16,14 @@ router.use(authenticate);
 router.post('/', validate(schemas.create), controller.create);
 router.get('/', controller.list);
 
+router.patch(
+  '/:workspaceId',
+  validate(schemas.updateWorkspace),
+  resolveTenant,
+  requirePermission(PERMISSIONS.WEBSITE_EDIT),
+  controller.updateWorkspace
+);
+
 router.get(
   '/:workspaceId/members',
   validate(schemas.listMembers),
