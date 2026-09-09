@@ -3,10 +3,11 @@
 const Joi = require('joi');
 
 const uuid = Joi.string().uuid();
+const workspaceIdParam = Joi.alternatives().try(uuid, Joi.string().pattern(/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/)).required();
 
 // Add-a-product form (urlencoded).
 const provision = {
-  params: Joi.object({ workspaceId: uuid.required() }),
+  params: Joi.object({ workspaceId: workspaceIdParam }),
   body: Joi.object({
     token: Joi.string().optional().strip(), // flex-auth token, not persisted
     productName: Joi.string().min(1).max(200).required(),
@@ -21,7 +22,7 @@ const provision = {
 
 // Branding form submit (urlencoded, EJS flow).
 const branding = {
-  params: Joi.object({ workspaceId: uuid.required() }),
+  params: Joi.object({ workspaceId: workspaceIdParam }),
   body: Joi.object({
     token: Joi.string().optional().strip(),
     name: Joi.string().min(2).max(200).optional(),
@@ -32,7 +33,7 @@ const branding = {
 
 // Branding + theme update (JSON).
 const brandingJson = {
-  params: Joi.object({ workspaceId: uuid.required() }),
+  params: Joi.object({ workspaceId: workspaceIdParam }),
   body: Joi.object({
     name: Joi.string().min(2).max(200).optional(),
     logoUrl: Joi.string().uri().allow('', null).max(1000).optional(),
@@ -42,19 +43,19 @@ const brandingJson = {
   }).min(1),
 };
 
-const workspaceParam = { params: Joi.object({ workspaceId: uuid.required() }) };
+const workspaceParam = { params: Joi.object({ workspaceId: workspaceIdParam }) };
 
 const productDetail = {
-  params: Joi.object({ workspaceId: uuid.required(), productId: Joi.string().max(300).required() }),
+  params: Joi.object({ workspaceId: workspaceIdParam, productId: Joi.string().max(300).required() }),
 };
 
 const checkoutView = {
-  params: Joi.object({ workspaceId: uuid.required() }),
+  params: Joi.object({ workspaceId: workspaceIdParam }),
   query: Joi.object({ productId: Joi.string().max(300).optional() }),
 };
 
 const checkout = {
-  params: Joi.object({ workspaceId: uuid.required() }),
+  params: Joi.object({ workspaceId: workspaceIdParam }),
   body: Joi.object({
     productId: Joi.string().max(300).allow('').optional(),
     fullName: Joi.string().min(1).max(200).required(),
@@ -66,7 +67,7 @@ const checkout = {
 };
 
 const thankYou = {
-  params: Joi.object({ workspaceId: uuid.required(), orderId: uuid.required() }),
+  params: Joi.object({ workspaceId: workspaceIdParam, orderId: uuid.required() }),
 };
 
 module.exports = { provision, branding, brandingJson, workspaceParam, productDetail, checkoutView, checkout, thankYou };

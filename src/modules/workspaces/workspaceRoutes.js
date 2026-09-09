@@ -25,6 +25,13 @@ router.patch(
 );
 
 router.get(
+  '/:workspaceId/roles',
+  validate(schemas.listMembers),
+  resolveTenant,
+  requirePermission(PERMISSIONS.USERS_MANAGE),
+  controller.listRoles
+);
+router.get(
   '/:workspaceId/members',
   validate(schemas.listMembers),
   resolveTenant,

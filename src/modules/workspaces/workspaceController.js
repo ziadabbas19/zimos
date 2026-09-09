@@ -56,6 +56,8 @@ const removeMember = asyncHandler(async (req, res) => {
   res.json(result);
 });
 
+const listRoles = asyncHandler(async (req, res) => res.json({ roles: await service.listRoles(req.tenant.workspaceId) }));
+
 const createRole = asyncHandler(async (req, res) => {
   const role = await service.createCustomRole(
     { workspaceId: req.tenant.workspaceId, name: req.body.name, key: req.body.key, permissions: req.body.permissions },
@@ -74,5 +76,6 @@ module.exports = {
   resendInvite,
   updateMemberRole,
   removeMember,
+  listRoles,
   createRole,
 };

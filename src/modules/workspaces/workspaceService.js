@@ -280,6 +280,10 @@ async function removeMember({ workspaceId, membershipId }, req) {
   return { success: true };
 }
 
+async function listRoles(workspaceId) {
+  return db.Role.findAll({ where: { workspaceId }, order: [['isSystem', 'DESC'], ['name', 'ASC']] });
+}
+
 async function createCustomRole({ workspaceId, name, key, permissions }, req) {
   const role = await db.Role.create({ workspaceId, key, name, isSystem: false, permissions });
   await recordAudit({
@@ -304,5 +308,6 @@ module.exports = {
   resendInvite,
   updateMemberRole,
   removeMember,
+  listRoles,
   createCustomRole,
 };

@@ -1,10 +1,11 @@
 'use strict';
 const Joi = require('joi');
 const uuid = Joi.string().uuid();
+const workspaceIdParam = Joi.alternatives().try(uuid, Joi.string().pattern(/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/)).required();
 
 module.exports = {
   listProducts: {
-    params: Joi.object({ workspaceId: uuid.required() }),
+    params: Joi.object({ workspaceId: workspaceIdParam }),
     query: Joi.object({
       collectionId: uuid.optional(),
       tag: Joi.string().max(100).optional(),
@@ -14,8 +15,8 @@ module.exports = {
     }),
   },
   getProduct: {
-    params: Joi.object({ workspaceId: uuid.required(), idOrSlug: Joi.string().max(300).required() }),
+    params: Joi.object({ workspaceId: workspaceIdParam, idOrSlug: Joi.string().max(300).required() }),
   },
-  workspaceParam: { params: Joi.object({ workspaceId: uuid.required() }) },
-  getCollection: { params: Joi.object({ workspaceId: uuid.required(), collectionId: uuid.required() }) },
+  workspaceParam: { params: Joi.object({ workspaceId: workspaceIdParam }) },
+  getCollection: { params: Joi.object({ workspaceId: workspaceIdParam, collectionId: uuid.required() }) },
 };

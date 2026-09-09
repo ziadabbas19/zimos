@@ -30,3 +30,5 @@ Thumbs.db
 # Uploaded media (kept locally, never committed)
 public/uploads/*
 !public/uploads/.gitkeep
+
+wipe-db.js

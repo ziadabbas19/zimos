@@ -19,10 +19,11 @@ const address = Joi.object({
 });
 
 const uuid = Joi.string().uuid();
+const workspaceIdParam = Joi.alternatives().try(uuid, Joi.string().pattern(/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/)).required();
 
 module.exports = {
   checkout: {
-    params: Joi.object({ workspaceId: uuid.required() }),
+    params: Joi.object({ workspaceId: workspaceIdParam }),
     body: Joi.object({
       contact: contact.required(),
       shippingAddress: address.optional(),

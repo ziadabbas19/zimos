@@ -12,7 +12,10 @@ const { NotFoundError } = require('../errors/AppError');
  */
 const resolvePublicWorkspace = asyncHandler(async (req, res, next) => {
   const workspaceId = req.params.workspaceId;
-  const workspace = await db.Workspace.findOne({ where: { id: workspaceId, status: 'active' } });
+  const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(workspaceId);
+  const workspace = await db.Workspace.findOne({
+    where: { status: 'active', ...(isUuid ? { id: workspaceId } : { slug: workspaceId }) },
+  });
 
   if (!workspace) {
     throw new NotFoundError('Workspace');
