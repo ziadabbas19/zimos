@@ -6,37 +6,65 @@ const uuid = Joi.string().uuid();
 const country = Joi.string().length(2).uppercase();
 const rateType = Joi.string().valid('flat', 'weight_based', 'quantity_based', 'order_value_based', 'free');
 
-const zoneBody = Joi.object({
-  name: Joi.string().min(1).max(150).required(),
-  countries: Joi.array().items(country).default([]),
-  regions: Joi.array().items(Joi.string().max(100)).default([]),
-  excludedRegions: Joi.array().items(Joi.string().max(100)).default([]),
+// Bare field definitions shared by the create and update schemas. The create
+// bodies below re-apply `.required()` / `.default(...)`; the update bodies use
+// these as-is so a PATCH only writes the fields it actually sends — an
+// unspecified array or flag is never reset to a default.
+const zoneFields = {
+  name: Joi.string().min(1).max(150),
+  countries: Joi.array().items(country),
+  regions: Joi.array().items(Joi.string().max(100)),
+  excludedRegions: Joi.array().items(Joi.string().max(100)),
+  isActive: Joi.boolean(),
+};
+
+const rateFields = {
+  name: Joi.string().min(1).max(150),
+  rateType,
+  config: Joi.object(),
+  carrierCode: Joi.string().max(100).allow(null, ''),
+  isActive: Joi.boolean(),
+  // Nullable so a PATCH can clear a previously set estimate.
+  estimatedDeliveryMinDays: Joi.number().integer().min(0).max(3650).allow(null),
+  estimatedDeliveryMaxDays: Joi.number().integer().min(0).max(3650).allow(null),
+};
+
+const createZoneBody = Joi.object({
+  ...zoneFields,
+  name: zoneFields.name.required(),
+  countries: zoneFields.countries.default([]),
+  regions: zoneFields.regions.default([]),
+  excludedRegions: zoneFields.excludedRegions.default([]),
 });
 
-const rateBody = Joi.object({
-  name: Joi.string().min(1).max(150).required(),
-  rateType: rateType.required(),
-  config: Joi.object().default({}),
-  carrierCode: Joi.string().max(100).allow(null, '').optional(),
+const updateZoneBody = Joi.object(zoneFields).min(1);
+
+const createRateBody = Joi.object({
+  ...rateFields,
+  name: rateFields.name.required(),
+  rateType: rateFields.rateType.required(),
+  config: rateFields.config.default({}),
 });
+
+const updateRateBody = Joi.object(rateFields).min(1);
 
 module.exports = {
   listZones: { params: Joi.object({ workspaceId: uuid.required() }) },
   zoneParams: { params: Joi.object({ workspaceId: uuid.required(), zoneId: uuid.required() }) },
   rateParams: { params: Joi.object({ workspaceId: uuid.required(), rateId: uuid.required() }) },
 
-  createZone: { params: Joi.object({ workspaceId: uuid.required() }), body: zoneBody },
+  createZone: { params: Joi.object({ workspaceId: uuid.required() }), body: createZoneBody },
   updateZone: {
     params: Joi.object({ workspaceId: uuid.required(), zoneId: uuid.required() }),
-    body: zoneBody.fork(['name'], (s) => s.optional()).min(1),
+    body: updateZoneBody,
   },
 
   createRate: {
     params: Joi.object({ workspaceId: uuid.required(), zoneId: uuid.required() }),
-    body: rateBody,
+    body: createRateBody,
   },
   updateRate: {
     params: Joi.object({ workspaceId: uuid.required(), rateId: uuid.required() }),
-    body: rateBody.fork(['name', 'rateType'], (s) => s.optional()).min(1),
+    body: updateRateBody,
   },
 };

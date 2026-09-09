@@ -16,6 +16,15 @@ module.exports = {
       tagline: Joi.string().allow('', null).max(300).optional(),
       // Opaque theme blob; light key cap here, ~5KB size cap in the service.
       themeSettings: Joi.object().unknown(true).max(50).optional(),
+      // Merchant-tunable store settings merged into workspaces.settings JSONB.
+      // Amounts are integer minor currency units (piastres/cents), the same
+      // convention as every amount column. `null` clears a value back to
+      // "not configured"; unknown keys are stripped by the validate middleware.
+      settings: Joi.object({
+        free_shipping_threshold_amount: Joi.number().integer().min(0).allow(null).optional(),
+        default_shipping_rate_amount: Joi.number().integer().min(0).allow(null).optional(),
+        tax_enabled: Joi.boolean().optional(),
+      }).optional(),
     }).min(1),
   },
   invite: {

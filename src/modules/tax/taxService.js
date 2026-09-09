@@ -11,8 +11,15 @@ const { applyBasisPoints } = require('../../core/utils/money');
  * (returning 0 additional tax, since the amount was already collected) —
  * callers that need the *implied* tax portion for reporting can derive it
  * from rateBasisPoints separately.
+ *
+ * Tax is opt-in: unless workspace.settings.tax_enabled is true this returns
+ * zero tax regardless of how many TaxRate rows exist.
  */
 async function calculateTax(workspaceId, { country, region, lines, shippingAmount }) {
+  const workspace = await db.Workspace.findByPk(workspaceId);
+  const taxEnabled = Boolean(workspace && workspace.settings && workspace.settings.tax_enabled);
+  if (!taxEnabled) return { taxAmount: 0, pricesIncludeTax: false };
+
   const rates = await db.TaxRate.findAll({ where: { workspaceId } });
   if (rates.length === 0) return { taxAmount: 0, pricesIncludeTax: false };
 

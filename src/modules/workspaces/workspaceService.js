@@ -101,9 +101,30 @@ async function createWorkspace({ name, ownerUserId }, req) {
   });
 }
 
+// Known keys inside workspaces.settings that the PATCH endpoint may touch.
+// Anything else in that JSONB blob is left alone by an update.
+const MERCHANT_SETTINGS_KEYS = [
+  'free_shipping_threshold_amount',
+  'default_shipping_rate_amount',
+  'tax_enabled',
+];
+
+// Merge only the known keys of `patch` onto `current`; a null value clears
+// that key (back to "not configured").
+function applyMerchantSettings(current, patch) {
+  const next = { ...(current || {}) };
+  for (const key of MERCHANT_SETTINGS_KEYS) {
+    if (!(key in patch)) continue;
+    if (patch[key] === null) delete next[key];
+    else next[key] = patch[key];
+  }
+  return next;
+}
+
 // PATCH /workspaces/:workspaceId — the merchant's basic store settings.
 // name is the workspace name; logoUrl / tagline / themeSettings are storefront
-// branding (themeSettings is an opaque blob owned by the frontend, stored as-is).
+// branding (themeSettings is an opaque blob owned by the frontend, stored
+// as-is); settings carries the merchant-tunable shipping/tax knobs.
 async function updateWorkspace({ workspaceId, patch }, req) {
   const workspace = await db.Workspace.findByPk(workspaceId);
   if (!workspace) throw new NotFoundError('Workspace');
@@ -113,6 +134,7 @@ async function updateWorkspace({ workspaceId, patch }, req) {
     logoUrl: workspace.logoUrl,
     tagline: workspace.tagline,
     themeSettings: workspace.themeSettings,
+    settings: workspace.settings,
   };
 
   const next = {};
@@ -129,6 +151,9 @@ async function updateWorkspace({ workspaceId, patch }, req) {
     }
     next.themeSettings = blob;
   }
+  if (patch.settings !== undefined) {
+    next.settings = applyMerchantSettings(workspace.settings, patch.settings);
+  }
 
   await workspace.update(next);
 
@@ -144,6 +169,7 @@ async function updateWorkspace({ workspaceId, patch }, req) {
       logoUrl: workspace.logoUrl,
       tagline: workspace.tagline,
       themeSettings: workspace.themeSettings,
+      settings: workspace.settings,
     },
     req,
   });

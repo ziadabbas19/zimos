@@ -18,6 +18,13 @@ module.exports = (sequelize, DataTypes) => {
       // order_value_based: [{ minSubtotal: 0, amount: 5000 }, { minSubtotal: 100000, amount: 0 }]
       config: { type: DataTypes.JSONB, allowNull: false, defaultValue: {} },
       carrierCode: { type: DataTypes.STRING(100), allowNull: true, field: 'carrier_code' },
+      // Deactivated rates stay visible in the admin CRUD but are excluded as
+      // candidates by shippingPricing.calculateShippingAmount.
+      isActive: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: true, field: 'is_active' },
+      // Optional delivery-time estimate (days), surfaced at checkout; no
+      // effect on the priced amount.
+      estimatedDeliveryMinDays: { type: DataTypes.INTEGER, allowNull: true, field: 'estimated_delivery_min_days' },
+      estimatedDeliveryMaxDays: { type: DataTypes.INTEGER, allowNull: true, field: 'estimated_delivery_max_days' },
     },
     { tableName: 'shipping_rates', indexes: [{ fields: ['zone_id'] }] }
   );
