@@ -72,16 +72,57 @@ async function register({ email, password, fullName, phone }, req) {
 
 async function verifyEmail(rawToken) {
   const tokenHash = hashToken(rawToken);
-  const record = await db.VerificationToken.findOne({
-    where: { tokenHash, type: 'email_verification' },
+  // One transaction, with the token row locked, so the account is activated
+  // and the token burned atomically: a failure half-way can't leave the user
+  // still `pending_verification` *and* their token spent (which would force a
+  // fresh "resend" every time), and two concurrent submissions of the same
+  // token can't both pass the used/expired check.
+  return db.sequelize.transaction(async (t) => {
+    const record = await db.VerificationToken.findOne({
+      where: { tokenHash, type: 'email_verification' },
+      transaction: t,
+      lock: t.LOCK.UPDATE,
+    });
+    if (!record || record.usedAt || record.expiresAt < new Date()) {
+      throw new AppError('INVALID_VERIFICATION_TOKEN', 'Verification token is invalid or expired', 400);
+    }
+    const user = await db.User.findByPk(record.userId, { transaction: t });
+    if (!user) {
+      throw new AppError('INVALID_VERIFICATION_TOKEN', 'Verification token is invalid or expired', 400);
+    }
+    await user.update({ status: 'active', emailVerifiedAt: new Date() }, { transaction: t });
+    await record.update({ usedAt: new Date() }, { transaction: t });
+    return user.toSafeJSON();
   });
-  if (!record || record.usedAt || record.expiresAt < new Date()) {
-    throw new AppError('INVALID_VERIFICATION_TOKEN', 'Verification token is invalid or expired', 400);
+}
+
+async function resendVerificationEmail(email) {
+  const user = await db.User.findOne({ where: { email } });
+  // Enumeration-safe: identical `{ success: true }` response whether the
+  // account doesn't exist, is already verified/active, or is suspended.
+  // Only a still-pending account actually triggers an email.
+  if (user && user.status === 'pending_verification') {
+    // Invalidate every previous unused email-verification token for this
+    // user so only the link we're about to send will work.
+    await db.VerificationToken.update(
+      { usedAt: new Date() },
+      { where: { userId: user.id, type: 'email_verification', usedAt: null } }
+    );
+
+    const rawToken = generateOpaqueToken();
+    await db.VerificationToken.create({
+      userId: user.id,
+      type: 'email_verification',
+      tokenHash: hashToken(rawToken),
+      expiresAt: new Date(Date.now() + EMAIL_VERIFICATION_TTL_MS),
+    });
+    await notify.email({
+      recipient: user.email,
+      template: 'email_verification',
+      data: { token: rawToken, fullName: user.fullName },
+    });
   }
-  await record.update({ usedAt: new Date() });
-  const user = await db.User.findByPk(record.userId);
-  await user.update({ status: 'active', emailVerifiedAt: new Date() });
-  return user.toSafeJSON();
+  return { success: true };
 }
 
 async function login({ email, password }, req) {
@@ -304,6 +345,7 @@ async function resetPasswordSms(phone, code, newPassword) {
 module.exports = {
   register,
   verifyEmail,
+  resendVerificationEmail,
   login,
   getGoogleAuthUrl,
   loginWithGoogle,

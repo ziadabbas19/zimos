@@ -16,6 +16,11 @@ const verifyEmail = asyncHandler(async (req, res) => {
   res.json({ user });
 });
 
+const resendVerification = asyncHandler(async (req, res) => {
+  const result = await authService.resendVerificationEmail(req.body.email);
+  res.json(result);
+});
+
 const login = asyncHandler(async (req, res) => {
   const result = await authService.login(req.body, req);
   res.json(result);
@@ -111,6 +116,7 @@ const resetPasswordSms = asyncHandler(async (req, res) => {
 module.exports = {
   register,
   verifyEmail,
+  resendVerification,
   login,
   googleRedirect,
   googleCallback,

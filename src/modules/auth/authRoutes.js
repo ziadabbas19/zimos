@@ -10,6 +10,7 @@ const router = Router();
 
 router.post('/register', authLimiter, validate(schemas.register), controller.register);
 router.post('/verify-email', authLimiter, validate(schemas.verifyEmail), controller.verifyEmail);
+router.post('/resend-verification', authLimiter, validate(schemas.resendVerification), controller.resendVerification);
 router.post('/login', authLimiter, validate(schemas.login), controller.login);
 router.get('/google', controller.googleRedirect);
 router.get('/google/callback', authLimiter, validate(schemas.googleCallback), controller.googleCallback);

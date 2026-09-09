@@ -665,7 +665,7 @@
     },
     {
       "name": "Auth",
-      "description": "`/api/v1/auth/*` — account + session lifecycle.\n\n**Public (no login):** Register, Verify Email, Login, Login with Google, Google OAuth Callback, Refresh Token, Logout, Password Reset (email or SMS) Request/Confirm. This is what a public sign-in / sign-up screen hits.\n**Staff (Bearer):** Get Me, List Sessions, Revoke All Sessions, Verify Phone Request/Confirm — an account-settings screen (Verify Phone also accepts a just-registered `pending_verification` token).\n\nRun **Login** once and its test script fills `{{accessToken}}` / `{{refreshToken}}` for the whole collection.\n\nTransactional email (verification, password reset, workspace invites) is rendered from a template with a shared \"check your spam folder\" footer and sent via `EMAIL_PROVIDER` — `console` (logs the token, default / tests) or `brevo` (real send via the Brevo API using `BREVO_API_KEY` + `EMAIL_FROM_ADDRESS`).",
+      "description": "`/api/v1/auth/*` — account + session lifecycle.\n\n**Public (no login):** Register, Verify Email, Resend Verification Email, Login, Login with Google, Google OAuth Callback, Refresh Token, Logout, Password Reset (email or SMS) Request/Confirm. This is what a public sign-in / sign-up screen hits.\n**Staff (Bearer):** Get Me, List Sessions, Revoke All Sessions, Verify Phone Request/Confirm — an account-settings screen (Verify Phone also accepts a just-registered `pending_verification` token).\n\nRun **Login** once and its test script fills `{{accessToken}}` / `{{refreshToken}}` for the whole collection.\n\nTransactional email (verification, password reset, workspace invites) is rendered from a template with a shared \"check your spam folder\" footer and sent via `EMAIL_PROVIDER` — `console` (logs the token, default / tests) or `brevo` (real send via the Brevo API using `BREVO_API_KEY` + `EMAIL_FROM_ADDRESS`).",
       "item": [
         {
           "name": "Register",
@@ -727,6 +727,42 @@
             "body": {
               "mode": "raw",
               "raw": "{\n  \"token\": \"paste-token-from-email\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Resend Verification Email",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/resend-verification",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "resend-verification"
+              ]
+            },
+            "description": "**PURPOSE:** \"Didn't get the email?\" button on the post-signup screen — issues a fresh verification token and re-sends the `email_verification` email. Any earlier unused verification link for that account stops working.\n\n**SEND:**\nRequired: `email`. No auth.\n\n**EXPECT:**\n`200` `{ success: true }` **always** — identical whether the account doesn't exist, is already verified, or is suspended (no account enumeration). An email is only actually sent when the account is still `pending_verification`.\n- `422` — missing/invalid email.\n- `429 RATE_LIMITED` — auth endpoints are throttled per IP+email.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"you@example.com\"\n}",
               "options": {
                 "raw": {
                   "language": "json"

@@ -23,6 +23,9 @@ module.exports = {
   verifyEmail: {
     body: Joi.object({ token: Joi.string().required() }),
   },
+  resendVerification: {
+    body: Joi.object({ email: joiEmail().required() }),
+  },
   googleCallback: {
     // Query comes straight from Google's redirect; keep it lenient.
     query: Joi.object({
