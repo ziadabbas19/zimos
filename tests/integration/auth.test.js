@@ -27,12 +27,24 @@ describe('Authentication', () => {
       expect(res.body.error.code).toBe('EMAIL_TAKEN');
     });
 
-    it('rejects a weak/short password', async () => {
+    it('rejects passwords that are too short or missing a character class', async () => {
+      // too short, no lowercase, no uppercase, no digit-or-special
+      const weak = ['123', 'PASSW0RD!', 'passw0rd!', 'Passwordxx'];
+      for (const password of weak) {
+        const res = await request(app)
+          .post('/api/v1/auth/register')
+          .send({ email: uniqueEmail(), password, fullName: 'Weak Pw' });
+        expect(res.status).toBe(422);
+        expect(res.body.error.code).toBe('VALIDATION_ERROR');
+        expect(res.body.error.details.some((d) => d.field === 'password')).toBe(true);
+      }
+    });
+
+    it('accepts a password with lowercase, uppercase and a digit/special char', async () => {
       const res = await request(app)
         .post('/api/v1/auth/register')
-        .send({ email: uniqueEmail(), password: '123', fullName: 'A' });
-      expect(res.status).toBe(422);
-      expect(res.body.error.code).toBe('VALIDATION_ERROR');
+        .send({ email: uniqueEmail(), password: 'Passw0rd!123', fullName: 'Strong Pw' });
+      expect(res.status).toBe(201);
     });
   });
 
@@ -169,6 +181,33 @@ describe('Authentication', () => {
         .post('/api/v1/auth/login')
         .send({ email: auth.email, password: 'NewPassw0rd!456' });
       expect(loginRes.status).toBe(200);
+    });
+
+    it('rejects a weak newPassword on confirm with 422 (same rule as registration)', async () => {
+      const auth = await registerAndActivate();
+      const user = await db.User.findOne({ where: { email: auth.email } });
+
+      const rawToken = 'test-raw-token-weak-reset-1';
+      const { hashToken } = require('../../src/core/security/tokens');
+      await db.VerificationToken.create({
+        userId: user.id,
+        type: 'password_reset',
+        tokenHash: hashToken(rawToken),
+        expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+      });
+
+      const resetRes = await request(app)
+        .post('/api/v1/auth/password-reset/confirm')
+        .send({ token: rawToken, newPassword: 'alllowercase1' });
+      expect(resetRes.status).toBe(422);
+      expect(resetRes.body.error.code).toBe('VALIDATION_ERROR');
+      expect(resetRes.body.error.details.some((d) => d.field === 'newPassword')).toBe(true);
+
+      // The token was never consumed, so a strong password still resets fine.
+      const ok = await request(app)
+        .post('/api/v1/auth/password-reset/confirm')
+        .send({ token: rawToken, newPassword: 'NewPassw0rd!456' });
+      expect(ok.status).toBe(200);
     });
   });
 });

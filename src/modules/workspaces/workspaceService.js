@@ -1,5 +1,6 @@
 'use strict';
 
+const crypto = require('crypto');
 const slugify = require('../../core/utils/slugify');
 const db = require('../../db/models');
 const { SYSTEM_ROLES } = require('../../core/security/permissions');
@@ -21,19 +22,46 @@ async function createWorkspace({ name, ownerUserId }, req) {
   const baseSlug = slugify(name);
 
   return db.sequelize.transaction(async (t) => {
-    // Guarantee a unique slug even under concurrent creation of workspaces
-    // with the same name, by retrying with a numeric suffix inside the same
-    // transaction rather than checking-then-inserting (which would race).
+    // Pick a slug that's free right now, then insert it. The pre-check keeps
+    // the common "someone already took this store name" case tidy
+    // (my-store, my-store-2, …). The retry loop around the insert covers the
+    // race where two simultaneous signups with the same name both clear the
+    // pre-check and only the DB unique index (workspaces_slug_idx) catches the
+    // duplicate — without it the loser's whole signup fails. Same
+    // retry-on-unique-index idea as the product code / shipment tracking code.
     let slug = baseSlug;
-    let suffix = 1;
-    // eslint-disable-next-line no-constant-condition
-    while (true) {
-      const clash = await db.Workspace.findOne({ where: { slug }, transaction: t });
-      if (!clash) break;
-      slug = `${baseSlug}-${++suffix}`;
+    let n = 1;
+    while (await db.Workspace.findOne({ where: { slug }, transaction: t })) {
+      slug = `${baseSlug}-${++n}`;
     }
 
-    const workspace = await db.Workspace.create({ name, slug, ownerUserId }, { transaction: t });
+    let workspace;
+    for (let attempt = 0; attempt < 6; attempt++) {
+      try {
+        // Savepoint: a duplicate-slug insert only rolls back to here, leaving
+        // the outer transaction alive to retry (see orderService.createShipment).
+        workspace = await db.sequelize.transaction({ transaction: t }, (sp) =>
+          db.Workspace.create({ name, slug, ownerUserId }, { transaction: sp })
+        );
+        break;
+      } catch (err) {
+        const clashOnSlug =
+          err.name === 'SequelizeUniqueConstraintError' &&
+          /slug/.test(`${err.message} ${JSON.stringify(err.fields || {})} ${(err.parent && err.parent.constraint) || ''}`);
+        if (clashOnSlug && attempt < 5) {
+          slug = `${baseSlug}-${crypto.randomBytes(4).toString('hex')}`;
+          continue;
+        }
+        throw err;
+      }
+    }
+    if (!workspace) {
+      throw new AppError(
+        'WORKSPACE_SLUG_UNAVAILABLE',
+        'Could not assign a unique store address, please try again',
+        503
+      );
+    }
 
     // Sequential, not Promise.all: a single Sequelize transaction runs on one
     // pooled connection, and concurrent queries against the same connection

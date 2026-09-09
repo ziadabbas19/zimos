@@ -166,7 +166,10 @@ async function loginWithGoogle(code, req) {
   if (!user) {
     const byEmail = await db.User.findOne({ where: { email: profile.email } });
     if (byEmail) {
-      await byEmail.update({ googleId: profile.googleId });
+      // Google has already verified this email, so a still-`pending_verification`
+      // password account gets activated here too — otherwise it stays stuck as
+      // pending forever (Google login never goes through resend-verification).
+      await byEmail.update({ googleId: profile.googleId, status: 'active', emailVerifiedAt: new Date() });
       user = byEmail;
       action = 'user.link.google';
     } else {

@@ -109,6 +109,53 @@ describe('Google OAuth login', () => {
     expect(after[0].passwordHash).toBe(before.passwordHash); // password still there — both methods now work
   });
 
+  it('Google login on a pending_verification password account activates it and its tokens reach protected routes', async () => {
+    // Registering leaves the account `pending_verification` with no verified email.
+    const reg = await request(app)
+      .post('/api/v1/auth/register')
+      .send({ email: 'pending-google@example.com', password: 'Passw0rd!123', fullName: 'Pending Person' });
+    expect(reg.status).toBe(201);
+
+    const before = await db.User.findOne({ where: { email: 'pending-google@example.com' } });
+    expect(before.status).toBe('pending_verification');
+    expect(before.emailVerifiedAt).toBeNull();
+
+    // While pending, the tokens from registration are locked out of protected routes.
+    const lockedOut = await request(app)
+      .get('/api/v1/workspaces')
+      .set('Authorization', `Bearer ${reg.body.accessToken}`);
+    expect(lockedOut.status).toBe(401);
+
+    // Now the same person signs in with Google using the same email address.
+    googleClient.fetchProfile.mockResolvedValueOnce({
+      googleId: 'g-4004',
+      email: 'pending-google@example.com',
+      emailVerified: true,
+      fullName: 'Pending Person',
+    });
+
+    const res = await callback('code=activate-code');
+    expect(res.status).toBe(302);
+    const q = query(res.headers.location);
+    expect(q.accessToken).toBeTruthy();
+    expect(q.refreshToken).toBeTruthy();
+
+    // The account is now active and email-verified — not stuck as pending.
+    const after = await db.User.findAll({ where: { email: 'pending-google@example.com' } });
+    expect(after).toHaveLength(1); // linked, not duplicated
+    expect(after[0].id).toBe(before.id);
+    expect(after[0].googleId).toBe('g-4004');
+    expect(after[0].status).toBe('active');
+    expect(after[0].emailVerifiedAt).not.toBeNull();
+
+    // And the tokens from that Google login can immediately hit a protected route.
+    const ws = await request(app)
+      .get('/api/v1/workspaces')
+      .set('Authorization', `Bearer ${q.accessToken}`);
+    expect(ws.status).toBe(200);
+    expect(Array.isArray(ws.body.workspaces)).toBe(true);
+  });
+
   it('a Google denial (?error=access_denied) redirects to the frontend with the error, no user created', async () => {
     const res = await callback('error=access_denied');
     expect(res.status).toBe(302);
