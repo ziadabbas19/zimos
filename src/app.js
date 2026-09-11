@@ -8,7 +8,7 @@ const cookieParser = require('cookie-parser');
 const swaggerUi = require('swagger-ui-express');
 const env = require('./config/env');
 const requestId = require('./core/middleware/requestId');
-const { generalLimiter } = require('./core/middleware/rateLimiters');
+const { generalLimiter, storefrontLimiter } = require('./core/middleware/rateLimiters');
 const { errorHandler, notFoundHandler } = require('./core/middleware/errorHandler');
 const { hostResolver } = require('./core/middleware/hostResolver');
 const logger = require('./core/utils/logger');
@@ -69,6 +69,9 @@ if (!env.isTest) {
   });
 }
 
+// The public storefront API is limited per shopper rather than per IP (see
+// rateLimiters.js); generalLimiter skips whatever this limiter handled.
+app.use(`/api/${env.apiVersion}/store`, storefrontLimiter);
 app.use(generalLimiter);
 
 // --- Health / readiness -----------------------------------------------

@@ -18,6 +18,13 @@ function required(name, fallback) {
 // so a deploy's DATABASE_URL can never point them at a live one.
 const dbUrl = process.env.NODE_ENV === 'test' ? null : parseDbUrl(process.env.DATABASE_URL);
 
+// Checked at boot so a weak value fails the deploy instead of quietly letting
+// anyone who guesses it choose their own storefront rate-limit key.
+const storefrontProxySecret = (process.env.STOREFRONT_PROXY_SECRET || '').trim();
+if (storefrontProxySecret && storefrontProxySecret.length < 32) {
+  throw new Error('STOREFRONT_PROXY_SECRET must be at least 32 characters (generate one with `openssl rand -hex 32`)');
+}
+
 const env = {
   nodeEnv: process.env.NODE_ENV || 'development',
   isProduction: process.env.NODE_ENV === 'production',
@@ -70,6 +77,25 @@ const env = {
     windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS || '60000', 10),
     max: parseInt(process.env.RATE_LIMIT_MAX || '100', 10),
     authMax: parseInt(process.env.AUTH_RATE_LIMIT_MAX || '10', 10),
+    // Public storefront API only (see core/middleware/rateLimiters.js). Each
+    // shopper still gets `max`; these are the ceilings per connecting IP — for
+    // everyone sharing one IP (NAT, rotating cart tokens), and for our own
+    // storefront server, which fetches on behalf of every shopper.
+    storefrontIpMax: parseInt(process.env.STOREFRONT_IP_RATE_LIMIT_MAX || '500', 10),
+    storefrontServerMax: parseInt(process.env.STOREFRONT_SERVER_RATE_LIMIT_MAX || '5000', 10),
+  },
+
+  // How the backend recognises our own Next.js storefront server. The secret is
+  // sent server-to-server only (never to a browser); a request carrying it may
+  // forward the shopper's IP for rate limiting. STOREFRONT_SERVER_IP
+  // (comma-separated IPs or CIDR ranges) only raises that IP's limit — it never
+  // makes a forwarded shopper IP trusted on its own.
+  storefrontProxy: {
+    secret: storefrontProxySecret,
+    serverIps: (process.env.STOREFRONT_SERVER_IP || '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean),
   },
 
   notifications: {
