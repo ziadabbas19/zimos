@@ -206,7 +206,14 @@ function productCurrency(p) {
   return (v && v.currency) || ((p.offers || [])[0] && p.offers[0].currency) || 'EGP';
 }
 
-async function storeHomeLocals(workspaceId) {
+/*
+ * The public /shop pages take two identifiers: `workspaceId` is the resolved
+ * UUID every query runs against, and `ref` is whatever the shopper actually
+ * has in their URL bar (that UUID, or the store slug). Links are built from
+ * `ref` so a slug-addressed store keeps slug URLs instead of bouncing the
+ * shopper onto UUID ones halfway through a visit.
+ */
+async function storeHomeLocals(workspaceId, ref = workspaceId) {
   await assertPublishedStore(workspaceId);
   const workspace = await db.Workspace.findByPk(workspaceId);
   const { products } = await storefrontService.listProducts(workspaceId, { limit: 100 });
@@ -220,11 +227,11 @@ async function storeHomeLocals(workspaceId) {
       imageUrl: productCardImage(p),
       priceLabel: formatMoney(productPriceMinor(p), productCurrency(p)),
     })),
-    productBase: `/shop/${workspaceId}/products`,
+    productBase: `/shop/${ref}/products`,
   };
 }
 
-async function productDetailLocals(workspaceId, productId) {
+async function productDetailLocals(workspaceId, productId, ref = workspaceId) {
   await assertPublishedStore(workspaceId);
   const workspace = await db.Workspace.findByPk(workspaceId);
   let product;
@@ -244,8 +251,8 @@ async function productDetailLocals(workspaceId, productId) {
       bullets: (product.seo && product.seo.bullets) || [],
       priceLabel: formatMoney(productPriceMinor(product), productCurrency(product)),
     },
-    homeUrl: `/shop/${workspaceId}`,
-    checkoutUrl: `/shop/${workspaceId}/checkout?productId=${product.id}`,
+    homeUrl: `/shop/${ref}`,
+    checkoutUrl: `/shop/${ref}/checkout?productId=${product.id}`,
   };
 }
 
@@ -280,7 +287,7 @@ async function resolveCheckoutVariant(workspaceId, productId) {
   return { product: products[0], variantId: v.id };
 }
 
-async function checkoutLocals(workspaceId, productId) {
+async function checkoutLocals(workspaceId, productId, ref = workspaceId) {
   await assertPublishedStore(workspaceId);
   const { product } = await resolveCheckoutVariant(workspaceId, productId);
   return {
@@ -289,7 +296,7 @@ async function checkoutLocals(workspaceId, productId) {
       name: product.name,
       priceLabel: formatMoney(productPriceMinor(product), productCurrency(product)),
     },
-    actionUrl: `/shop/${workspaceId}/checkout`,
+    actionUrl: `/shop/${ref}/checkout`,
   };
 }
 

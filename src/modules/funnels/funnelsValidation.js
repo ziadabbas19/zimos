@@ -1,6 +1,7 @@
 'use strict';
 
 const Joi = require('joi');
+const { workspaceRef } = require('../../core/utils/workspaceSlug');
 
 const uuid = Joi.string().uuid();
 
@@ -133,8 +134,11 @@ const rollback = {
 
 // --- public runtime (no staff auth) -----------------------------------
 
+// Mounted under /store/:workspaceId/funnels, where the workspace may be named
+// by UUID or by store slug — resolvePublicWorkspace accepts both, so these
+// schemas have to as well.
 const startSession = {
-  params: Joi.object({ workspaceId: uuid.required(), funnelRef: Joi.string().max(100).required() }),
+  params: Joi.object({ workspaceId: workspaceRef().required(), funnelRef: Joi.string().max(100).required() }),
   body: Joi.object({
     visitorId: Joi.string().min(1).max(64).required(),
     attribution: Joi.object().unknown(true).default({}),
@@ -143,7 +147,7 @@ const startSession = {
 
 const sessionStep = {
   params: Joi.object({
-    workspaceId: uuid.required(),
+    workspaceId: workspaceRef().required(),
     funnelId: uuid.required(),
     sessionId: uuid.required(),
   }),
@@ -151,7 +155,7 @@ const sessionStep = {
 
 const advance = {
   params: Joi.object({
-    workspaceId: uuid.required(),
+    workspaceId: workspaceRef().required(),
     funnelId: uuid.required(),
     sessionId: uuid.required(),
   }),

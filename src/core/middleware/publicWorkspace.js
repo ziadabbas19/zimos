@@ -3,6 +3,7 @@
 const asyncHandler = require('express-async-handler');
 const db = require('../../db/models');
 const { NotFoundError } = require('../errors/AppError');
+const { isUuid, normalizeSlug } = require('../utils/workspaceSlug');
 
 /**
  * Public storefront scoping (no membership check) — resolves an active
@@ -11,10 +12,13 @@ const { NotFoundError } = require('../errors/AppError');
  * shopper or a staff member. A suspended/closed workspace 404s.
  */
 const resolvePublicWorkspace = asyncHandler(async (req, res, next) => {
-  const workspaceId = req.params.workspaceId;
-  const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(workspaceId);
+  // A public store is addressed either by workspace UUID or by its slug, so
+  // links minted before subdomain addressing keep working. Slugs are stored
+  // lower-cased and hostnames are case-insensitive, so the lookup matches
+  // however the shopper happened to type it.
+  const ref = req.params.workspaceId;
   const workspace = await db.Workspace.findOne({
-    where: { status: 'active', ...(isUuid ? { id: workspaceId } : { slug: workspaceId }) },
+    where: { status: 'active', ...(isUuid(ref) ? { id: ref } : { slug: normalizeSlug(ref) }) },
   });
 
   if (!workspace) {

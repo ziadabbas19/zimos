@@ -1,6 +1,7 @@
 'use strict';
 
 const Joi = require('joi');
+const { workspaceRef } = require('../../core/utils/workspaceSlug');
 
 const uuid = Joi.string().uuid();
 
@@ -111,8 +112,11 @@ const rollback = {
 };
 
 // --- public (buyer-facing, no staff auth) ---
+// These are reached as /store/:workspaceId/pages, where :workspaceId is the
+// workspace UUID *or* the store slug — resolvePublicWorkspace accepts both, so
+// the schema has to as well.
 const publicGetHome = {
-  params: Joi.object({ workspaceId: uuid.required() }),
+  params: Joi.object({ workspaceId: workspaceRef().required() }),
   query: Joi.object({
     path: Joi.string().max(300).optional(),
     format: Joi.string().valid('json', 'html').optional(), // optional HTML rendering for browsers
@@ -120,7 +124,8 @@ const publicGetHome = {
 };
 
 const publicGetPage = {
-  params: Joi.object({ workspaceId: uuid.required(), slug: Joi.string().max(300).required() }),
+  // `slug` here is the *page* path segment, unrelated to the store slug.
+  params: Joi.object({ workspaceId: workspaceRef().required(), slug: Joi.string().max(300).required() }),
   query: Joi.object({ format: Joi.string().valid('json', 'html').optional() }),
 };
 

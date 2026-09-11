@@ -16,6 +16,10 @@ router.use(authenticate);
 router.post('/', validate(schemas.create), controller.create);
 router.get('/', controller.list);
 
+// Stays above every '/:workspaceId' route so "check-slug" can never be read
+// as a workspace id.
+router.get('/check-slug', validate(schemas.checkSlug), controller.checkSlug);
+
 router.patch(
   '/:workspaceId',
   validate(schemas.updateWorkspace),

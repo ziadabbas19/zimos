@@ -1,6 +1,7 @@
 'use strict';
 const Joi = require('joi');
 const joiEmail = require('../../core/utils/joiEmail');
+const { workspaceRef } = require('../../core/utils/workspaceSlug');
 
 const contact = Joi.object({
   fullName: Joi.string().max(200).required(),
@@ -19,7 +20,7 @@ const address = Joi.object({
 });
 
 const uuid = Joi.string().uuid();
-const workspaceIdParam = Joi.alternatives().try(uuid, Joi.string().pattern(/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/)).required();
+const workspaceIdParam = workspaceRef().required();
 
 module.exports = {
   checkout: {

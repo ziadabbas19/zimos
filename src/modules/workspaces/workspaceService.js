@@ -1,10 +1,22 @@
 'use strict';
 
 const crypto = require('crypto');
-const slugify = require('../../core/utils/slugify');
+const {
+  toWorkspaceSlug,
+  suffixSlug,
+  slugRejectionReason,
+  normalizeSlug,
+  REASON_MESSAGES,
+} = require('../../core/utils/workspaceSlug');
 const db = require('../../db/models');
-const { SYSTEM_ROLES } = require('../../core/security/permissions');
-const { ConflictError, NotFoundError, AppError, ValidationError } = require('../../core/errors/AppError');
+const { SYSTEM_ROLES, PERMISSIONS } = require('../../core/security/permissions');
+const {
+  ConflictError,
+  NotFoundError,
+  AppError,
+  ValidationError,
+  AuthorizationError,
+} = require('../../core/errors/AppError');
 const { recordAudit } = require('../audit/auditService');
 const notify = require('../notifications/notify');
 const billingService = require('../billing/billingService');
@@ -19,7 +31,7 @@ async function sendInviteEmail(workspace, email, role) {
 }
 
 async function createWorkspace({ name, ownerUserId }, req) {
-  const baseSlug = slugify(name);
+  const baseSlug = toWorkspaceSlug(name);
 
   return db.sequelize.transaction(async (t) => {
     // Pick a slug that's free right now, then insert it. The pre-check keeps
@@ -29,10 +41,13 @@ async function createWorkspace({ name, ownerUserId }, req) {
     // pre-check and only the DB unique index (workspaces_slug_idx) catches the
     // duplicate — without it the loser's whole signup fails. Same
     // retry-on-unique-index idea as the product code / shipment tracking code.
+    // A candidate is unusable either because someone already holds it or
+    // because it is one of the labels the platform keeps for itself; both are
+    // settled the same way, by falling through to my-store-2, my-store-3, …
     let slug = baseSlug;
     let n = 1;
-    while (await db.Workspace.findOne({ where: { slug }, transaction: t })) {
-      slug = `${baseSlug}-${++n}`;
+    while (slugRejectionReason(slug) || (await db.Workspace.findOne({ where: { slug }, transaction: t }))) {
+      slug = suffixSlug(baseSlug, ++n);
     }
 
     let workspace;
@@ -49,7 +64,7 @@ async function createWorkspace({ name, ownerUserId }, req) {
           err.name === 'SequelizeUniqueConstraintError' &&
           /slug/.test(`${err.message} ${JSON.stringify(err.fields || {})} ${(err.parent && err.parent.constraint) || ''}`);
         if (clashOnSlug && attempt < 5) {
-          slug = `${baseSlug}-${crypto.randomBytes(4).toString('hex')}`;
+          slug = suffixSlug(baseSlug, crypto.randomBytes(4).toString('hex'));
           continue;
         }
         throw err;
@@ -131,6 +146,7 @@ async function updateWorkspace({ workspaceId, patch }, req) {
 
   const before = {
     name: workspace.name,
+    slug: workspace.slug,
     logoUrl: workspace.logoUrl,
     tagline: workspace.tagline,
     themeSettings: workspace.themeSettings,
@@ -139,6 +155,29 @@ async function updateWorkspace({ workspaceId, patch }, req) {
 
   const next = {};
   if (patch.name !== undefined) next.name = patch.name;
+  // Re-submitting the address a store already has is a no-op, not a clash.
+  if (patch.slug !== undefined && normalizeSlug(patch.slug) !== workspace.slug) {
+    const slug = normalizeSlug(patch.slug);
+
+    // Moving the store's address breaks every link that points at the old one,
+    // so it takes workspace.manage — the rest of this PATCH only needs the
+    // website.edit the route already requires.
+    if (!req.tenant.hasPermission(PERMISSIONS.WORKSPACE_MANAGE)) {
+      throw new AuthorizationError('Changing the store address requires the workspace.manage permission');
+    }
+
+    // The route's Joi schema already refuses these, so this only catches a
+    // caller reaching the service directly.
+    const reason = slugRejectionReason(slug);
+    if (reason) {
+      throw new ValidationError([{ field: 'slug', message: REASON_MESSAGES[reason] }], REASON_MESSAGES[reason]);
+    }
+
+    if (await db.Workspace.findOne({ where: { slug }, attributes: ['id'] })) {
+      throw new ConflictError(REASON_MESSAGES.taken, 'SLUG_TAKEN');
+    }
+    next.slug = slug;
+  }
   if (patch.logoUrl !== undefined) next.logoUrl = patch.logoUrl || null;
   if (patch.tagline !== undefined) next.tagline = patch.tagline || null;
   if (patch.themeSettings !== undefined) {
@@ -155,7 +194,17 @@ async function updateWorkspace({ workspaceId, patch }, req) {
     next.settings = applyMerchantSettings(workspace.settings, patch.settings);
   }
 
-  await workspace.update(next);
+  try {
+    await workspace.update(next);
+  } catch (err) {
+    // Two merchants claiming the same address at once: only the unique index
+    // sees the loser, and it reads as the same 409 as losing the pre-check.
+    const clashOnSlug =
+      err.name === 'SequelizeUniqueConstraintError' &&
+      /slug/.test(`${err.message} ${JSON.stringify(err.fields || {})} ${(err.parent && err.parent.constraint) || ''}`);
+    if (clashOnSlug) throw new ConflictError(REASON_MESSAGES.taken, 'SLUG_TAKEN');
+    throw err;
+  }
 
   await recordAudit({
     workspaceId,
@@ -166,6 +215,7 @@ async function updateWorkspace({ workspaceId, patch }, req) {
     before,
     after: {
       name: workspace.name,
+      slug: workspace.slug,
       logoUrl: workspace.logoUrl,
       tagline: workspace.tagline,
       themeSettings: workspace.themeSettings,
@@ -175,6 +225,21 @@ async function updateWorkspace({ workspaceId, patch }, req) {
   });
 
   return workspace;
+}
+
+/**
+ * Is `slug` free for a merchant to take? Returns exactly what
+ * GET /workspaces/check-slug emits: { available, reason? }, where reason is a
+ * stable key ('taken', 'reserved', 'too_short', 'too_long', 'invalid_format').
+ */
+async function checkSlugAvailability(rawSlug) {
+  const slug = normalizeSlug(rawSlug);
+
+  const reason = slugRejectionReason(slug);
+  if (reason) return { available: false, reason };
+
+  const existing = await db.Workspace.findOne({ where: { slug }, attributes: ['id'] });
+  return existing ? { available: false, reason: 'taken' } : { available: true };
 }
 
 async function listWorkspacesForUser(userId) {
@@ -355,6 +420,7 @@ async function createCustomRole({ workspaceId, name, key, permissions }, req) {
 module.exports = {
   createWorkspace,
   updateWorkspace,
+  checkSlugAvailability,
   listWorkspacesForUser,
   inviteMember,
   listMembers,

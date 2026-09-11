@@ -3,15 +3,26 @@
 const Joi = require('joi');
 const joiEmail = require('../../core/utils/joiEmail');
 const { ALL_PERMISSIONS } = require('../../core/security/permissions');
+const { workspaceSlug, SLUG_LOOKUP_MAX } = require('../../core/utils/workspaceSlug');
 
 const uuid = Joi.string().uuid();
 
 module.exports = {
   create: { body: Joi.object({ name: Joi.string().min(2).max(200).required() }) },
+  // Only the length is policed here: every other rule comes back as a `reason`
+  // in a 200 response instead of a validation error, so the merchant UI can
+  // explain what is wrong with an address as it is typed.
+  checkSlug: {
+    query: Joi.object({ slug: Joi.string().trim().min(1).max(SLUG_LOOKUP_MAX).required() }),
+  },
   updateWorkspace: {
     params: Joi.object({ workspaceId: uuid.required() }),
     body: Joi.object({
       name: Joi.string().min(2).max(200).optional(),
+      // The store's public address (<slug>.PLATFORM_ROOT_DOMAIN). A reserved
+      // or malformed value is refused here as 422; one another workspace
+      // already holds comes back from the service as 409.
+      slug: workspaceSlug().optional(),
       logoUrl: Joi.string().uri().allow('', null).max(1000).optional(),
       tagline: Joi.string().allow('', null).max(300).optional(),
       // Opaque theme blob; light key cap here, ~5KB size cap in the service.

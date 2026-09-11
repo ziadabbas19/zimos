@@ -103,28 +103,34 @@ const submitBranding = asyncHandler(async (req, res) => {
 
 // --- public /shop viewer ----------------------------------------------
 
+// The shopper may have arrived by store slug or by workspace UUID. Every
+// lookup uses the workspace resolvePublicWorkspace settled on, while links
+// keep the ref they actually used — see quickstartService.storeHomeLocals.
 const renderStoreHome = asyncHandler(async (req, res) => {
-  res.render('store-home', await service.storeHomeLocals(req.params.workspaceId));
+  res.render('store-home', await service.storeHomeLocals(req.tenant.workspaceId, req.params.workspaceId));
 });
 
 const renderProductDetail = asyncHandler(async (req, res) => {
-  res.render('store-product', await service.productDetailLocals(req.params.workspaceId, req.params.productId));
+  res.render(
+    'store-product',
+    await service.productDetailLocals(req.tenant.workspaceId, req.params.productId, req.params.workspaceId)
+  );
 });
 
 const renderCheckout = asyncHandler(async (req, res) => {
-  const locals = await service.checkoutLocals(req.params.workspaceId, req.query.productId);
+  const locals = await service.checkoutLocals(req.tenant.workspaceId, req.query.productId, req.params.workspaceId);
   res.render('checkout', { title: `Checkout — ${locals.product.name}`, ...locals, form: {}, error: null });
 });
 
 const submitCheckout = asyncHandler(async (req, res) => {
   try {
-    const order = await service.placeSimpleOrder(req.params.workspaceId, req.body, req);
+    const order = await service.placeSimpleOrder(req.tenant.workspaceId, req.body, req);
     return res.redirect(303, `/shop/${req.params.workspaceId}/thanks/${order.id}`);
   } catch (err) {
     const status = err instanceof AppError && err.statusCode < 500 ? err.statusCode : 400;
     let locals;
     try {
-      locals = await service.checkoutLocals(req.params.workspaceId, req.body.productId);
+      locals = await service.checkoutLocals(req.tenant.workspaceId, req.body.productId, req.params.workspaceId);
     } catch (e2) {
       locals = { product: { name: 'your order', priceLabel: '' }, actionUrl: `/shop/${req.params.workspaceId}/checkout` };
     }
@@ -138,7 +144,7 @@ const submitCheckout = asyncHandler(async (req, res) => {
 });
 
 const renderThankYou = asyncHandler(async (req, res) => {
-  const { order, storeName } = await service.getOrderForThankYou(req.params.workspaceId, req.params.orderId);
+  const { order, storeName } = await service.getOrderForThankYou(req.tenant.workspaceId, req.params.orderId);
   res.render('thankyou', {
     title: 'Thank you',
     order,

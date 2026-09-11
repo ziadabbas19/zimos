@@ -1,7 +1,9 @@
 'use strict';
 const Joi = require('joi');
+const { workspaceRef } = require('../../core/utils/workspaceSlug');
+
 const uuid = Joi.string().uuid();
-const workspaceIdParam = Joi.alternatives().try(uuid, Joi.string().pattern(/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/)).required();
+const workspaceIdParam = workspaceRef().required();
 
 module.exports = {
   listProducts: {

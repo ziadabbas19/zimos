@@ -73,6 +73,12 @@
       "post": { "summary": "Create a workspace (creator becomes Owner)", "responses": { "201": { "description": "Created" } } },
       "get": { "summary": "List workspaces the current user belongs to", "responses": { "200": { "description": "OK" } } }
     },
+    "/workspaces/check-slug": {
+      "get": { "summary": "Check whether a store address (slug) is free", "responses": { "200": { "description": "{ available, reason? } — reason is taken | reserved | too_short | too_long | invalid_format" }, "422": { "description": "Missing slug query parameter" } } }
+    },
+    "/workspaces/{workspaceId}": {
+      "patch": { "summary": "Update workspace name, branding, settings, or slug (the slug requires workspace.manage)", "parameters": [{ "$ref": "#/components/parameters/workspaceId" }], "responses": { "200": { "description": "OK" }, "403": { "description": "Slug change without workspace.manage" }, "409": { "description": "Slug already taken" }, "422": { "description": "Slug reserved or malformed" } } }
+    },
     "/workspaces/{workspaceId}/members": {
       "post": { "summary": "Invite/add a member (requires users.manage)", "parameters": [{ "$ref": "#/components/parameters/workspaceId" }], "responses": { "201": { "description": "Created" }, "403": { "description": "Forbidden" } } }
     },
