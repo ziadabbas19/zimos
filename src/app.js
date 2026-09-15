@@ -36,6 +36,7 @@ const quickstartRoutes = require('./modules/quickstart/quickstartRoutes');
 const quickstartPublicRoutes = require('./modules/quickstart/quickstartPublicRoutes');
 const billingRoutes = require('./modules/billing/billingRoutes');
 const adminRoutes = require('./modules/billing/adminRoutes');
+const platformAdminRoutes = require('./modules/platformAdmin/platformAdminRoutes');
 const domainsRoutes = require('./modules/domains/domainsRoutes');
 const mediaRoutes = require('./modules/media/mediaRoutes');
 const reviewRoutes = require('./modules/reviews/reviewRoutes');
@@ -122,6 +123,9 @@ v1.use('/workspaces/:workspaceId/media', mediaRoutes);
 v1.use('/workspaces/:workspaceId/reviews', reviewRoutes);
 v1.use('/billing', billingRoutes);
 v1.use('/admin', adminRoutes);
+// Plans, subscriptions, feature flags and announcements. Shares the /admin
+// mount with adminRoutes above, which owns /workspaces and /dashboard.
+v1.use('/admin', platformAdminRoutes);
 
 // --- Public storefront (no staff auth) ------------------------------------
 v1.use('/store/:workspaceId/pages', pagesPublicRoutes);

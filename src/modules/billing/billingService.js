@@ -135,13 +135,25 @@ async function listWorkspacesOverview() {
   return workspaces.map((w) => {
     const sub = w.subscription;
     return {
-      workspaceId: w.id,
-      workspaceName: w.name,
+      // Plain workspace entity fields, named as the API names them everywhere
+      // else, so an admin client can treat a row as a Workspace.
+      id: w.id,
+      name: w.name,
+      slug: w.slug,
+      status: w.status,
+      defaultCurrency: w.defaultCurrency,
+      createdAt: w.createdAt,
+      // Billing overview, flattened onto the same row.
       plan: sub && sub.plan ? sub.plan.name : sub && sub.planId ? sub.planId : '—',
-      status: sub ? sub.status : 'none',
+      planId: sub ? sub.planId : null,
+      billingCycle: sub ? sub.billingCycle : null,
+      subscriptionStatus: sub ? sub.status : 'none',
       trialEndsAt: sub ? sub.trialEndsAt : null,
       currentPeriodEnd: sub ? sub.currentPeriodEnd : null,
       orderCount: countMap[w.id] || 0,
+      // Legacy aliases — the EJS dashboard at /admin/dashboard reads these.
+      workspaceId: w.id,
+      workspaceName: w.name,
     };
   });
 }

@@ -120,11 +120,16 @@ describe('subscription scaffolding (no gateway)', () => {
     const ok = await request(app).get('/api/v1/admin/workspaces').set(H);
     expect(ok.status).toBe(200);
 
-    const row = ok.body.workspaces.find((w) => w.workspaceId === wid);
+    const row = ok.body.workspaces.find((w) => w.id === wid);
     expect(row).toBeDefined();
-    expect(row.workspaceName).toBe('Billing Co');
-    expect(row.status).toBe('trialing');
+    expect(row.name).toBe('Billing Co');
+    expect(row.subscriptionStatus).toBe('trialing');
     expect(row).toHaveProperty('orderCount');
+    // The admin client treats a row as a Workspace, so the entity fields
+    // have to be present and correctly named.
+    expect(row.slug).toEqual(expect.any(String));
+    expect(row.defaultCurrency).toEqual(expect.any(String));
+    expect(row.createdAt).toBeTruthy();
   });
 
   it('renders the platform-admin dashboard as HTML', async () => {

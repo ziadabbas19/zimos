@@ -6644,7 +6644,7 @@
                 "workspaces"
               ]
             },
-            "description": "**PURPOSE:** Operator overview of every workspace on the platform with billing status.\n\n**SEND:**\nRequired: Bearer token of a platform admin.\n\n**EXPECT:**\n`200` `{ workspaces: [ { workspaceId, workspaceName, plan, status, trialEndsAt, currentPeriodEnd, orderCount } ] }`.\n- `401 UNAUTHENTICATED`.\n- `403 FORBIDDEN` — not a platform admin."
+            "description": "**PURPOSE:** Operator overview of every workspace on the platform with billing status.\n\n**SEND:**\nRequired: Bearer token of a platform admin.\n\n**EXPECT:**\n`200` `{ workspaces: [ { id, name, slug, status, defaultCurrency, createdAt, plan, planId, billingCycle, subscriptionStatus, trialEndsAt, currentPeriodEnd, orderCount } ] }`.\n- `workspaces` is always an array; each row carries the plain workspace entity fields so a client can treat it as a `Workspace`.\n- `status` is the **workspace** status; the subscription's is `subscriptionStatus`.\n- `workspaceId` / `workspaceName` are kept as legacy aliases of `id` / `name`.\n- `401 UNAUTHENTICATED`. `403 FORBIDDEN` — not a platform admin."
           },
           "response": []
         },
@@ -6675,6 +6675,321 @@
             "auth": {
               "type": "noauth"
             }
+          },
+          "response": []
+        },
+        {
+          "name": "List Plans",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/admin/plans",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "plans"
+              ]
+            },
+            "description": "**PURPOSE:** Every billing plan, cheapest first, for the plan editor.\n\n**SEND:**\nRequired: Bearer token of a platform admin.\n\n**EXPECT:**\n`200` `{ plans: [ { id, name, code, monthlyPrice, yearlyPrice, currency, trialDays, orderQuota, transactionFeeBp, codFeeBp, features, active, createdAt, updatedAt } ] }`.\n- `plans` is always an array.\n- Prices are integers in minor units; `orderQuota: null` = unlimited.\n- `features` is always an array, even for rows seeded with a `{}` map.\n- `401 UNAUTHENTICATED`. `403 FORBIDDEN` — not a platform admin."
+          },
+          "response": []
+        },
+        {
+          "name": "Create Plan",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/plans",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "plans"
+              ]
+            },
+            "description": "**PURPOSE:** Add a billing plan.\n\n**SEND:**\nRequired: `name`, `code` (lowercase/hyphens, unique), `monthlyPrice`, `yearlyPrice`, `trialDays`.\nOptional: `currency`, `orderQuota` (null = unlimited), `transactionFeeBp`, `codFeeBp`, `features[]`, `active`.\n\n**EXPECT:**\n`201` `{ plan }`.\n- `422 VALIDATION_ERROR` — malformed code or a negative price.\n- `409 PLAN_CODE_TAKEN` — another plan already uses that code.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Scale\",\n  \"code\": \"scale\",\n  \"monthlyPrice\": 149900,\n  \"yearlyPrice\": 1499900,\n  \"trialDays\": 30,\n  \"orderQuota\": 10000,\n  \"transactionFeeBp\": 250,\n  \"codFeeBp\": 400,\n  \"features\": [\n    \"custom_domain\",\n    \"funnels\"\n  ],\n  \"active\": true\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Update Plan",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/plans/:planId",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "plans",
+                ":planId"
+              ]
+            },
+            "description": "**PURPOSE:** Edit a plan. Send the full body — this replaces every editable field.\n\n**SEND:**\nSame body as create. `:planId` is the plan UUID.\n\n**EXPECT:**\n`200` `{ plan }`.\n- `404 NOT_FOUND`. `409 PLAN_CODE_TAKEN`.\n- Deactivating (`active: false`) is the safe way to retire a plan that still has subscribers.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Scale Plus\",\n  \"code\": \"scale\",\n  \"monthlyPrice\": 149900,\n  \"yearlyPrice\": 1499900,\n  \"trialDays\": 30,\n  \"orderQuota\": 10000,\n  \"transactionFeeBp\": 250,\n  \"codFeeBp\": 400,\n  \"features\": [\n    \"custom_domain\",\n    \"funnels\"\n  ],\n  \"active\": true\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Delete Plan",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/admin/plans/:planId",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "plans",
+                ":planId"
+              ]
+            },
+            "description": "**PURPOSE:** Permanently remove a plan.\n\n**SEND:**\n`:planId` is the plan UUID.\n\n**EXPECT:**\n`200` `{ success: true }`.\n- `409 PLAN_IN_USE` — subscriptions still reference it; deactivate instead.\n- `404 NOT_FOUND`."
+          },
+          "response": []
+        },
+        {
+          "name": "List Subscriptions",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/admin/subscriptions?status=past_due",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "subscriptions"
+              ],
+              "query": [
+                {
+                  "key": "status",
+                  "value": "past_due",
+                  "description": "optional filter",
+                  "disabled": true
+                }
+              ]
+            },
+            "description": "**PURPOSE:** Every subscription on the platform, joined to its workspace and plan.\n\n**SEND:**\nOptional `status` filter: `trialing` | `active` | `past_due` | `suspended` | `cancelled`.\n\n**EXPECT:**\n`200` `{ subscriptions: [ { id, workspaceId, workspaceName, workspaceSlug, planId, planName, planCode, billingCycle, status, trialEndsAt, currentPeriodStart, currentPeriodEnd, graceUntil, cancelAtPeriodEnd, externalProvider, mrr, createdAt } ] }`.\n- `mrr` is in minor units, normalised to a month (a yearly cycle is divided by 12) and is `0` unless the status is `active` or `past_due`, so the column can be summed directly.\n- `422 VALIDATION_ERROR` — unknown status value."
+          },
+          "response": []
+        },
+        {
+          "name": "List Feature Flags",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/admin/feature-flags",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "feature-flags"
+              ]
+            },
+            "description": "**PURPOSE:** Platform-wide feature flags, by key.\n\n**SEND:**\nRequired: Bearer token of a platform admin.\n\n**EXPECT:**\n`200` `{ featureFlags: [ { id, key, description, enabled, rollout, targetWorkspaceIds, createdAt, updatedAt } ] }`.\n- A flag is on for a workspace when `enabled` **and** (the workspace is in `targetWorkspaceIds` **or** it falls inside the `rollout` percentage)."
+          },
+          "response": []
+        },
+        {
+          "name": "Create Feature Flag",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/feature-flags",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "feature-flags"
+              ]
+            },
+            "description": "**PURPOSE:** Add a feature flag.\n\n**SEND:**\nRequired: `key` — lowercase letters, numbers, dots and underscores (e.g. `checkout.one_page_v2`).\nOptional: `description`, `enabled`, `rollout` (0-100), `targetWorkspaceIds[]`.\n\n**EXPECT:**\n`201` `{ featureFlag }`.\n- `422 VALIDATION_ERROR` — malformed key or rollout outside 0-100.\n- `409 FLAG_KEY_TAKEN`.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"key\": \"checkout.one_page_v2\",\n  \"description\": \"Single-page checkout\",\n  \"enabled\": true,\n  \"rollout\": 25,\n  \"targetWorkspaceIds\": []\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Update Feature Flag",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/feature-flags/:flagId",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "feature-flags",
+                ":flagId"
+              ]
+            },
+            "description": "**PURPOSE:** Edit a flag — flip it on, change the rollout, or retarget it.\n\n**SEND:**\nSame body as create. `:flagId` is the flag UUID.\n\n**EXPECT:**\n`200` `{ featureFlag }`.\n- `404 NOT_FOUND`. `409 FLAG_KEY_TAKEN`.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"key\": \"checkout.one_page_v2\",\n  \"description\": \"Single-page checkout\",\n  \"enabled\": true,\n  \"rollout\": 100,\n  \"targetWorkspaceIds\": []\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Delete Feature Flag",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/admin/feature-flags/:flagId",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "feature-flags",
+                ":flagId"
+              ]
+            },
+            "description": "**PURPOSE:** Remove a flag once it is fully rolled out or abandoned.\n\n**SEND:**\n`:flagId` is the flag UUID.\n\n**EXPECT:**\n`200` `{ success: true }`.\n- `404 NOT_FOUND`."
+          },
+          "response": []
+        },
+        {
+          "name": "List Announcements",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/admin/announcements",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "announcements"
+              ]
+            },
+            "description": "**PURPOSE:** Platform announcements, newest start first.\n\n**SEND:**\nRequired: Bearer token of a platform admin.\n\n**EXPECT:**\n`200` `{ announcements: [ { id, title, body, severity, audience, planId, workspaceId, workspaceName, startsAt, endsAt, dismissible, createdBy, createdAt } ] }`.\n- `createdBy` is the author's name (or email), resolved at read time."
+          },
+          "response": []
+        },
+        {
+          "name": "Create Announcement",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/announcements",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "announcements"
+              ]
+            },
+            "description": "**PURPOSE:** Publish a banner to merchants.\n\n**SEND:**\nRequired: `title`, `body`, `audience` (`all` | `plan` | `workspace`).\n`audience: \"plan\"` requires `planId`; `audience: \"workspace\"` requires `workspaceId`; `all` permits neither.\nOptional: `severity` (`info` | `warning`), `startsAt` (defaults to now), `endsAt` (null = no end), `dismissible`.\n\n**EXPECT:**\n`201` `{ announcement }`.\n- `422 VALIDATION_ERROR` / `422 AUDIENCE_TARGET_REQUIRED` — audience and target disagree.\n- `422 INVALID_WINDOW` — `endsAt` is not after `startsAt`.\n- `404 NOT_FOUND` — unknown plan or workspace.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"Scheduled maintenance\",\n  \"body\": \"We'll be down 01:00-02:00 UTC.\",\n  \"severity\": \"warning\",\n  \"audience\": \"all\",\n  \"planId\": null,\n  \"workspaceId\": null,\n  \"endsAt\": null,\n  \"dismissible\": true\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Update Announcement",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/announcements/:announcementId",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "announcements",
+                ":announcementId"
+              ]
+            },
+            "description": "**PURPOSE:** Edit a live or scheduled announcement.\n\n**SEND:**\nSame body as create. `:announcementId` is the announcement UUID.\n\n**EXPECT:**\n`200` `{ announcement }`.\n- Widening the audience to `all` clears `planId`/`workspaceId`.\n- The original author is kept; an edit does not reassign `createdBy`.\n- `404 NOT_FOUND`.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"All clear\",\n  \"body\": \"We'll be down 01:00-02:00 UTC.\",\n  \"severity\": \"info\",\n  \"audience\": \"all\",\n  \"planId\": null,\n  \"workspaceId\": null,\n  \"endsAt\": null,\n  \"dismissible\": true\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Delete Announcement",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/admin/announcements/:announcementId",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "announcements",
+                ":announcementId"
+              ]
+            },
+            "description": "**PURPOSE:** Remove an announcement.\n\n**SEND:**\n`:announcementId` is the announcement UUID.\n\n**EXPECT:**\n`200` `{ success: true }`.\n- `404 NOT_FOUND`."
           },
           "response": []
         }

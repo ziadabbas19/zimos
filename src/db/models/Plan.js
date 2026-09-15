@@ -13,6 +13,9 @@ module.exports = (sequelize, DataTypes) => {
       trialDays: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 14, field: 'trial_days' },
       // Soft quotas — enforced as warnings/upsell prompts, never as an order-intake blocker.
       softOrderQuota: { type: DataTypes.INTEGER, allowNull: true, field: 'soft_order_quota' },
+      // Commission in basis points (1 bp = 0.01%).
+      transactionFeeBp: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0, field: 'transaction_fee_bp' },
+      codFeeBp: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0, field: 'cod_fee_bp' },
       features: { type: DataTypes.JSONB, allowNull: false, defaultValue: {} },
       isActive: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: true, field: 'is_active' },
     },
