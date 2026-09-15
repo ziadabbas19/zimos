@@ -83,6 +83,13 @@ const env = {
     // storefront server, which fetches on behalf of every shopper.
     storefrontIpMax: parseInt(process.env.STOREFRONT_IP_RATE_LIMIT_MAX || '500', 10),
     storefrontServerMax: parseInt(process.env.STOREFRONT_SERVER_RATE_LIMIT_MAX || '5000', 10),
+    // Public order-tracking lookup only (GET /store/:id/orders/track). Keyed on
+    // the shopper's phone, not their IP: `trackingMax` is per phone + order
+    // number, `trackingPhoneMax` is the ceiling per phone across all the order
+    // numbers tried with it. See core/middleware/rateLimiters.js.
+    trackingWindowMs: parseInt(process.env.TRACKING_RATE_LIMIT_WINDOW_MS || '600000', 10),
+    trackingMax: parseInt(process.env.TRACKING_RATE_LIMIT_MAX || '3', 10),
+    trackingPhoneMax: parseInt(process.env.TRACKING_PHONE_RATE_LIMIT_MAX || '30', 10),
   },
 
   // How the backend recognises our own Next.js storefront server. The secret is

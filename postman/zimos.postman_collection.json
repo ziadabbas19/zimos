@@ -5962,6 +5962,42 @@
           "response": []
         },
         {
+          "name": "Track Order",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/store/{{workspaceId}}/orders/track?phone=201001234567&number=ORD-123456",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "store",
+                "{{workspaceId}}",
+                "orders",
+                "track"
+              ],
+              "query": [
+                {
+                  "key": "phone",
+                  "value": "201001234567",
+                  "description": "Required. Digits only, 10–15. Local (01001234567) and country-code (201001234567) forms both work."
+                },
+                {
+                  "key": "number",
+                  "value": "ORD-123456",
+                  "description": "Required. The order number, no # prefix. 3–40 of [A-Za-z0-9-]; matched case-insensitively."
+                }
+              ]
+            },
+            "description": "**PURPOSE:** The shopper's own order-status lookup — the \"where is my order\" page. No login: the phone the order was placed on plus the order number are the credential.\n\n**SEND:**\nRequired query: `phone` (digits only, 10–15 — `01001234567` and `201001234567` are the same shopper), `number` (the order number, 3–40 of `[A-Za-z0-9-]`, no `#`, case-insensitive). No auth header, no body.\n\n**EXPECT:**\n`200` `{ result: { orderNumber, stage: 0|1|2|3, updatedAt: <ISO string|null>, items: [ { productNameSnapshot, quantity, lineTotalAmount } ], subtotalAmount, discountAmount, shippingAmount, totalAmount, currency } }`. All amounts are strings in minor units (piastres for EGP).\n\nStages: `0` placed · `1` confirmed · `2` shipped (a shipment is `in_transit`/`out_for_delivery`) · `3` delivered. `updatedAt` is when that stage was reached — the shipment's `deliveredAt`/`shippedAt`, falling back to the order's own timestamp.\n\n- `200` `{ result: null }` — no order matches this phone **and** number in this store. Deliberately identical for a wrong phone, a wrong number, and another store's order, so the endpoint can't be used to confirm that either one exists.\n- `422 VALIDATION_ERROR` — `phone` or `number` missing or malformed.\n- `429 RATE_LIMITED` — 3 lookups per 10 min for one phone + number, and 30 per 10 min per phone across all numbers tried (anti-enumeration). Keyed on the phone, not the IP, so shoppers behind one connection never lock each other out.\n- `404 NOT_FOUND` — workspace missing or not `active`.",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": []
+        },
+        {
           "name": "Funnel Runtime — Start Session",
           "request": {
             "method": "POST",

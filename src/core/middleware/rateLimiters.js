@@ -6,6 +6,7 @@ const rateLimit = require('express-rate-limit');
 const { ipKeyGenerator } = require('express-rate-limit');
 const env = require('../../config/env');
 const { RateLimitError } = require('../errors/AppError');
+const { normalizePhone } = require('../utils/phone');
 
 function handler(req, res, next) {
   next(new RateLimitError());
@@ -192,4 +193,85 @@ const storefrontLimiter = createStorefrontLimiter({
   skip,
 });
 
-module.exports = { generalLimiter, authLimiter, storefrontLimiter, createStorefrontLimiter };
+/*
+ * Public order tracking (GET /store/:workspaceId/orders/track): the shopper
+ * identifies themselves with phone + order number, so the limiter is keyed on
+ * that rather than on the connection. Keying on IP would be wrong in both
+ * directions here — one shopper retrying from mobile data gets a fresh bucket,
+ * while everyone behind a shared IP would share one.
+ *
+ * Two buckets, because either alone leaves a gap:
+ *   - combo:  phone + order number, `comboMax` per window. Stops one lookup
+ *     being hammered (the guess that's one digit off, a page that retries).
+ *   - phone:  the phone alone, `phoneMax` per window. The combo bucket resets
+ *     on every new order number, so on its own it puts no limit at all on
+ *     walking the order-number space against one phone — which is the
+ *     enumeration this endpoint most needs to resist.
+ * The combo limiter runs first, so requests it already rejected don't eat into
+ * the phone budget the shopper's real lookups depend on.
+ *
+ * This runs before `validate`, so that a request that will be rejected anyway
+ * never reaches the database. That means both values arrive unvalidated and
+ * either may be missing or malformed: such a request is skipped rather than
+ * counted or rejected — `validate` answers it with a 400 either way, and the
+ * storefront limiter's per-IP ceiling above still bounds it.
+ */
+const TRACKING_PHONE_PATTERN = /^[0-9]{10,15}$/;
+const TRACKING_NUMBER_PATTERN = /^[A-Za-z0-9-]{3,40}$/;
+
+/** The shopper's { phone, number } bucket keys, or null if not keyable yet. */
+function resolveTrackingKeys(req) {
+  const { phone, number } = req.query || {};
+  if (typeof phone !== 'string' || typeof number !== 'string') return null;
+
+  const trimmedNumber = number.trim();
+  if (!TRACKING_PHONE_PATTERN.test(phone.trim()) || !TRACKING_NUMBER_PATTERN.test(trimmedNumber)) return null;
+
+  // Normalized the same way the lookup itself normalizes them, so a shopper
+  // can't be handed a fresh budget just by retyping 01… as 201… or in a
+  // different case.
+  const normalizedPhone = normalizePhone(phone.trim());
+  return normalizedPhone ? { phone: normalizedPhone, number: trimmedNumber.toUpperCase() } : null;
+}
+
+function createTrackingLimiter({ windowMs, comboMax, phoneMax, skip: skipAll = () => false }) {
+  const resolve = (req, res, next) => {
+    req.orderTracking = resolveTrackingKeys(req);
+    next();
+  };
+
+  const bucket = (limit, keyGenerator, standardHeaders) =>
+    rateLimit({
+      windowMs,
+      limit,
+      standardHeaders,
+      legacyHeaders: false,
+      skip: (req) => skipAll(req) || !req.orderTracking,
+      keyGenerator,
+      handler,
+    });
+
+  return [
+    resolve,
+    bucket(comboMax, (req) => `track:${req.orderTracking.phone}:${req.orderTracking.number}`, true),
+    // No headers: they would overwrite the combo bucket's RateLimit-* values,
+    // which are the ones this shopper's own retries are measured against.
+    bucket(phoneMax, (req) => `track:${req.orderTracking.phone}`, false),
+  ];
+}
+
+const trackingLimiter = createTrackingLimiter({
+  windowMs: env.rateLimit.trackingWindowMs,
+  comboMax: env.rateLimit.trackingMax,
+  phoneMax: env.rateLimit.trackingPhoneMax,
+  skip,
+});
+
+module.exports = {
+  generalLimiter,
+  authLimiter,
+  storefrontLimiter,
+  createStorefrontLimiter,
+  trackingLimiter,
+  createTrackingLimiter,
+};

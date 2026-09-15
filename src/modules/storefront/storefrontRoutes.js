@@ -3,6 +3,7 @@ const { Router } = require('express');
 const validate = require('../../core/middleware/validate');
 const { resolvePublicWorkspace } = require('../../core/middleware/publicWorkspace');
 const { idempotent } = require('../../core/middleware/idempotency');
+const { trackingLimiter } = require('../../core/middleware/rateLimiters');
 const controller = require('./storefrontController');
 const cartController = require('../cart/cartController');
 const checkoutController = require('../checkout/checkoutController');
@@ -20,6 +21,11 @@ router.get('/products/:idOrSlug', validate(schemas.getProduct), controller.getPr
 router.post('/products/:productId/reviews', validate(reviewSchemas.submit), reviewController.submit);
 router.get('/collections', validate(schemas.workspaceParam), controller.listCollections);
 router.get('/collections/:collectionId', validate(schemas.getCollection), controller.getCollection);
+
+// Shopper order lookup. The limiter runs ahead of `validate` so a request that
+// can't pass validation never reaches the database; it keys on the phone and
+// order number, not the IP (see rateLimiters.js).
+router.get('/orders/track', trackingLimiter, validate(schemas.track), controller.trackOrder);
 
 router.post(
   '/checkout',
