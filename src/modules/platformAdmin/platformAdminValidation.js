@@ -1,6 +1,7 @@
 'use strict';
 
 const Joi = require('joi');
+const { TEMPLATE_KINDS } = require('../templates/templateValidation');
 
 const uuid = Joi.string().uuid();
 
@@ -59,6 +60,53 @@ const announcementBody = Joi.object({
   dismissible: Joi.boolean().default(true),
 });
 
+// A swatch in the gallery grid, so a hex colour and nothing else — the column
+// holds 20 characters but anything the grid can't paint is no use to it. ""
+// is how the editor clears the field; the service turns it into NULL, which
+// is what makes the card fall back to the active version's globalStyles.
+const HEX_COLOR = /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
+
+// Every editable column, with no `required` and no defaults — the PATCH body
+// is these keys as-is, and the POST body below adds what a create needs.
+const templateFields = {
+  name: Joi.string().trim().min(1).max(200),
+  category: Joi.string().trim().max(100).allow(null, ''),
+  thumbnailUrl: Joi.string().trim().uri().max(500).allow(null, ''),
+  isPublished: Joi.boolean(),
+  kind: Joi.string().valid(...TEMPLATE_KINDS),
+  // Minor units, like every other money field in the API.
+  priceAmount: Joi.number().integer().min(0),
+  // Separate from priceAmount on purpose: a paid template can be given away
+  // for a while without losing its list price.
+  isFree: Joi.boolean(),
+  primaryColor: Joi.string().trim().pattern(HEX_COLOR).allow(null, '').messages({
+    'string.pattern.base': 'Use a hex colour such as #2563EB',
+  }),
+  tags: Joi.array().items(Joi.string().trim().min(1).max(60)).max(20),
+  rtl: Joi.boolean(),
+};
+
+// Defaults spelled out to match the column defaults, so a minimal create
+// returns a fully-populated row instead of one the console has to guess at.
+const createTemplateBody = Joi.object({
+  ...templateFields,
+  name: templateFields.name.required(),
+  category: templateFields.category.default(null),
+  thumbnailUrl: templateFields.thumbnailUrl.default(null),
+  isPublished: templateFields.isPublished.default(false),
+  kind: templateFields.kind.default('store'),
+  priceAmount: templateFields.priceAmount.default(0),
+  isFree: templateFields.isFree.default(true),
+  primaryColor: templateFields.primaryColor.default(null),
+  tags: templateFields.tags.default([]),
+  rtl: templateFields.rtl.default(true),
+});
+
+// Partial, unlike the plan/flag PATCHes above: the grid flips one switch at a
+// time (publish, price), and a full-body schema would let a form that never
+// loaded `tags` reset it to [] via the default.
+const updateTemplateBody = Joi.object(templateFields).min(1);
+
 module.exports = {
   createPlan: { body: planBody },
   updatePlan: { params: Joi.object({ planId: uuid.required() }), body: planBody },
@@ -67,6 +115,25 @@ module.exports = {
   listSubscriptions: {
     query: Joi.object({
       status: Joi.string().valid('trialing', 'active', 'past_due', 'suspended', 'cancelled').optional(),
+    }),
+  },
+
+  // Every filter is optional: the unfiltered call is the common one (the log
+  // landing page). Joi coerces page/pageSize to numbers and from/to to Dates,
+  // and `validate` writes the defaults back onto req.query.
+  listAuditLog: {
+    query: Joi.object({
+      workspaceId: uuid.optional(),
+      actorUserId: uuid.optional(),
+      action: Joi.string().trim().max(100).optional(),
+      entityType: Joi.string().trim().max(100).optional(),
+      entityId: Joi.string().trim().max(100).optional(),
+      from: Joi.date().iso().optional(),
+      to: Joi.date().iso().min(Joi.ref('from')).optional(),
+      // limit/offset, not page/pageSize — these are the names the admin UI
+      // already sends. Capped so a client cannot ask for the whole table.
+      limit: Joi.number().integer().min(1).max(200).default(50),
+      offset: Joi.number().integer().min(0).default(0),
     }),
   },
 
@@ -80,4 +147,14 @@ module.exports = {
     body: announcementBody,
   },
   deleteAnnouncement: { params: Joi.object({ announcementId: uuid.required() }) },
+
+  // Same optional `kind` tab as the public gallery; unlike it, this list shows
+  // drafts and templates with no version at all.
+  listTemplates: { query: Joi.object({ kind: Joi.string().valid(...TEMPLATE_KINDS).optional() }) },
+  createTemplate: { body: createTemplateBody },
+  updateTemplate: {
+    params: Joi.object({ templateId: uuid.required() }),
+    body: updateTemplateBody,
+  },
+  deleteTemplate: { params: Joi.object({ templateId: uuid.required() }) },
 };

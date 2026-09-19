@@ -1,6 +1,6 @@
 'use strict';
 
-const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
+const { S3Client, PutObjectCommand, HeadBucketCommand } = require('@aws-sdk/client-s3');
 const env = require('../../../config/env');
 
 // Cloudflare R2 is S3-compatible. The bucket is served publicly from
@@ -50,4 +50,17 @@ function _resetClient() {
   client = null;
 }
 
-module.exports = { put, _resetClient };
+/**
+ * Health probe for /admin/system/services. HeadBucket is the cheapest call
+ * that proves the credentials, the endpoint and the bucket all work; it writes
+ * nothing, so running it on every admin page load costs a request and no
+ * storage. getClient() throws when R2 is half-configured, which the caller
+ * reports as a failed probe rather than a crash.
+ */
+async function probe() {
+  const s3 = getClient();
+  await s3.send(new HeadBucketCommand({ Bucket: env.storage.r2.bucketName }));
+  return { detail: `r2 bucket "${env.storage.r2.bucketName}"` };
+}
+
+module.exports = { put, probe, _resetClient };

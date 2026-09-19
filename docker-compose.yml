@@ -37,7 +37,7 @@ services:
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
     ports:
       - "4000:4000"
-    command: sh -c "npx sequelize-cli db:migrate && node src/server.js"
+    command: sh scripts/start.sh
 
 volumes:
   zimos_pgdata:

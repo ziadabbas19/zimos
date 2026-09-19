@@ -21,6 +21,14 @@ router.post('/', validate(schemas.createFunnel), MANAGE, requireActiveSubscripti
 router.get('/', MANAGE, controller.listFunnels);
 router.get('/:funnelId', validate(schemas.funnelIdParam), MANAGE, controller.getFunnel);
 router.patch('/:funnelId', validate(schemas.updateFunnel), MANAGE, controller.updateFunnel);
+// Creates a funnel, so it sits behind the same subscription gate as POST /.
+router.post(
+  '/:funnelId/duplicate',
+  validate(schemas.duplicateFunnel),
+  MANAGE,
+  requireActiveSubscription,
+  controller.duplicateFunnel
+);
 router.delete('/:funnelId', validate(schemas.funnelIdParam), MANAGE, controller.deleteFunnel);
 
 // --- publish / revisions / rollback / pause ---

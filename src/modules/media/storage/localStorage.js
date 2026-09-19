@@ -19,4 +19,18 @@ async function put({ workspaceId, filename, buffer }) {
   };
 }
 
-module.exports = { put, UPLOAD_ROOT };
+/**
+ * Health probe for /admin/system/services. Local disk is "configured" by
+ * definition, so the only thing worth checking is that the upload root is
+ * actually writable — an ephemeral container filesystem that has gone
+ * read-only is exactly the failure this tile should catch.
+ */
+async function probe() {
+  const marker = path.join(UPLOAD_ROOT, '.probe');
+  await fs.promises.mkdir(UPLOAD_ROOT, { recursive: true });
+  await fs.promises.writeFile(marker, String(Date.now()));
+  await fs.promises.unlink(marker).catch(() => {});
+  return { detail: `local disk (${UPLOAD_ROOT})` };
+}
+
+module.exports = { put, probe, UPLOAD_ROOT };

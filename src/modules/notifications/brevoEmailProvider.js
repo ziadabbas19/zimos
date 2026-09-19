@@ -53,4 +53,27 @@ async function sendEmail({ to, subject, html, text }) {
   return { messageId: value.messageId || null, attempts };
 }
 
-module.exports = { sendEmail, buildPayload, BREVO_ENDPOINT };
+/**
+ * Health probe for /admin/system/services. GET /v3/account validates the API
+ * key and reaches Brevo without sending anything — never probe a mail provider
+ * by sending mail. No retry: a probe reports what is true right now, and
+ * retrying would hide exactly the flakiness the tile exists to show.
+ */
+async function probe({ timeoutMs = 5000 } = {}) {
+  const { apiKey } = env.notifications.brevo;
+  if (!apiKey) throw new Error('BREVO_API_KEY is not set');
+
+  const res = await fetch('https://api.brevo.com/v3/account', {
+    headers: { 'api-key': apiKey, accept: 'application/json' },
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    throw new Error(`Brevo returned ${res.status} ${body}`.trim());
+  }
+
+  const account = await res.json().catch(() => ({}));
+  return { detail: account.email ? `brevo account ${account.email}` : 'brevo' };
+}
+
+module.exports = { sendEmail, probe, buildPayload, BREVO_ENDPOINT };

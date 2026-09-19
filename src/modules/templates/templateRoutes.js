@@ -9,7 +9,7 @@ const schemas = require('./templateValidation');
 // screen a merchant sees after registering, so no auth / no tenant.
 const router = Router();
 
-router.get('/', controller.list);
+router.get('/', validate(schemas.list), controller.list);
 router.get('/:id', validate(schemas.getOne), controller.get);
 
 module.exports = router;

@@ -27,9 +27,19 @@ module.exports = (sequelize, DataTypes) => {
         { fields: ['workspace_id', 'created_at'] },
         { fields: ['entity_type', 'entity_id'] },
         { fields: ['actor_user_id'] },
+        // Serves the platform-wide log page's ORDER BY (migration 082).
+        { fields: ['created_at', 'id'] },
       ],
     }
   );
+
+  // Read-side only: /admin/audit-log resolves the actor and workspace names.
+  // Both FKs are ON DELETE SET NULL, so a deleted user or workspace leaves the
+  // entry in place with a null column — the log outlives what it describes.
+  AuditLog.associate = (models) => {
+    AuditLog.belongsTo(models.User, { foreignKey: 'actorUserId', as: 'actor' });
+    AuditLog.belongsTo(models.Workspace, { foreignKey: 'workspaceId', as: 'workspace' });
+  };
 
   return AuditLog;
 };

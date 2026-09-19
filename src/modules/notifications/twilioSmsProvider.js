@@ -32,9 +32,22 @@ async function sendSms({ to, body }) {
   return { sid: value.sid, attempts };
 }
 
+/**
+ * Health probe for /admin/system/services. Fetching the account resource
+ * proves the SID and auth token work and that Twilio is reachable, without
+ * sending an SMS (which would cost money and pester a real handset). No
+ * retry, for the same reason as the email probe: the tile should show the
+ * flakiness, not paper over it.
+ */
+async function probe() {
+  const { accountSid } = env.notifications.twilio;
+  const account = await getClient().api.accounts(accountSid).fetch();
+  return { detail: `twilio account ${account.friendlyName || accountSid} (${account.status})` };
+}
+
 // Lets tests drop the memoized client between runs.
 function _resetClient() {
   client = null;
 }
 
-module.exports = { sendSms, _resetClient };
+module.exports = { sendSms, probe, _resetClient };

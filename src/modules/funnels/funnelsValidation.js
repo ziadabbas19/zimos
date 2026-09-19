@@ -67,6 +67,12 @@ const funnelIdParam = {
   params: Joi.object({ workspaceId: uuid.required(), funnelId: uuid.required() }),
 };
 
+// `name` is optional — the service falls back to "<source name> (copy)".
+const duplicateFunnel = {
+  params: Joi.object({ workspaceId: uuid.required(), funnelId: uuid.required() }),
+  body: Joi.object({ name: Joi.string().min(1).max(200).optional() }).default({}),
+};
+
 const createStep = {
   params: Joi.object({ workspaceId: uuid.required(), funnelId: uuid.required() }),
   body: Joi.object({
@@ -173,6 +179,7 @@ module.exports = {
   createFunnel,
   updateFunnel,
   funnelIdParam,
+  duplicateFunnel,
   createStep,
   updateStep,
   stepIdParam,

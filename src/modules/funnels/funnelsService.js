@@ -28,6 +28,12 @@ const Op = db.Sequelize.Op;
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+// One-time deep copy — the copy shares no reference with the source, so a
+// later edit to one funnel can never reach the other.
+function deepClone(v) {
+  return v == null ? v : JSON.parse(JSON.stringify(v));
+}
+
 async function ensureUniqueSubdomain(base) {
   let root = slugify(base).replace(/[^a-z0-9-]/g, '').replace(/^-+|-+$/g, '');
   if (root.length < 3) root = `${root || 'funnel'}-funnel`;
@@ -146,6 +152,99 @@ async function updateFunnel(workspaceId, funnelId, data, req) {
     req,
   });
   return funnel;
+}
+
+const COPY_SUFFIX = ' (copy)';
+
+/**
+ * Duplicate a funnel into a brand-new draft in the same workspace.
+ *
+ * Steps and edges are copied verbatim, `key` included: keys are unique per
+ * funnel rather than globally, so keeping them means every copied edge still
+ * points at the step it pointed at in the source and the graph needs no
+ * remapping. Revisions are deliberately NOT copied — the copy has never been
+ * published, so it starts at `draft` with no `publishedRevisionId`, no
+ * history, and its own free subdomain. The runtime therefore can't reach it
+ * until someone publishes it, which is the point of duplicating.
+ */
+async function duplicateFunnel(workspaceId, funnelId, data, req) {
+  const source = await loadFunnel(workspaceId, funnelId);
+  const name = data.name || `${source.name.slice(0, 200 - COPY_SUFFIX.length)}${COPY_SUFFIX}`;
+  // Resolved before the transaction opens, exactly as createFunnel does — the
+  // subdomain is globally unique, so it can't be checked workspace-scoped.
+  const subdomain = await ensureUniqueSubdomain(name);
+
+  return db.sequelize.transaction(async (t) => {
+    const stepRows = await db.FunnelStep.findAll({
+      where: { workspaceId, funnelId },
+      order: [['createdAt', 'ASC']],
+      transaction: t,
+    });
+    const edgeRows = await db.FunnelEdge.findAll({
+      where: { workspaceId, funnelId },
+      order: [['priority', 'DESC'], ['createdAt', 'ASC']],
+      transaction: t,
+    });
+
+    const funnel = await scoped(db.Funnel, workspaceId).create(
+      { name, subdomain, status: 'draft', publishedRevisionId: null },
+      { transaction: t }
+    );
+
+    const steps = [];
+    for (const s of stepRows) {
+      steps.push(
+        await db.FunnelStep.create(
+          {
+            workspaceId,
+            funnelId: funnel.id,
+            key: s.key,
+            stepType: s.stepType,
+            name: s.name,
+            builderData: deepClone(s.builderData),
+            // Offers are workspace-scoped, so the copy's step sells the same
+            // one the source did.
+            offerId: s.offerId,
+            // abTestExperimentId is intentionally not carried over: an
+            // experiment belongs to the step it was set up on.
+            seo: deepClone(s.seo) || {},
+          },
+          { transaction: t }
+        )
+      );
+    }
+
+    const edges = [];
+    for (const e of edgeRows) {
+      edges.push(
+        await db.FunnelEdge.create(
+          {
+            workspaceId,
+            funnelId: funnel.id,
+            fromStepKey: e.fromStepKey,
+            toStepKey: e.toStepKey,
+            condition: deepClone(e.condition),
+            priority: e.priority,
+          },
+          { transaction: t }
+        )
+      );
+    }
+
+    await recordAudit({
+      workspaceId,
+      actorUserId: req.user.id,
+      action: 'funnel.duplicate',
+      entityType: 'Funnel',
+      entityId: funnel.id,
+      after: funnel.toJSON(),
+      metadata: { sourceFunnelId: source.id, stepCount: steps.length, edgeCount: edges.length },
+      req,
+      transaction: t,
+    });
+
+    return { funnel, steps, edges };
+  });
 }
 
 async function deleteFunnel(workspaceId, funnelId, req) {
@@ -758,6 +857,7 @@ module.exports = {
   listFunnels,
   getFunnel,
   updateFunnel,
+  duplicateFunnel,
   deleteFunnel,
   createStep,
   listSteps,

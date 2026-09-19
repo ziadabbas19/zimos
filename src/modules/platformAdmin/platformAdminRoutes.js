@@ -22,6 +22,22 @@ router.delete('/plans/:planId', validate(schemas.deletePlan), controller.deleteP
 // --- Subscriptions -------------------------------------------------------
 router.get('/subscriptions', validate(schemas.listSubscriptions), controller.listSubscriptions);
 
+// --- Overview metrics ----------------------------------------------------
+// No query parameters: the windows (30d / 30d / 12mo) are fixed by the
+// contract, so there is nothing for a caller to vary and nothing to validate.
+router.get('/metrics/overview', controller.getOverview);
+
+// --- Audit log -----------------------------------------------------------
+// Read-only by design: audit_logs is append-only (see modules/audit).
+router.get('/audit-log', validate(schemas.listAuditLog), controller.listAuditLog);
+
+// --- System services -----------------------------------------------------
+// The POST performs no mutation; it is a POST because it deliberately bypasses
+// the GET's cache and fires real third-party requests, which is not something
+// a browser or proxy should be free to repeat on its own.
+router.get('/system/services', controller.listServices);
+router.post('/system/services/check', controller.checkServices);
+
 // --- Feature flags -------------------------------------------------------
 router.get('/feature-flags', controller.listFlags);
 router.post('/feature-flags', validate(schemas.createFlag), controller.createFlag);
@@ -33,5 +49,14 @@ router.get('/announcements', controller.listAnnouncements);
 router.post('/announcements', validate(schemas.createAnnouncement), controller.createAnnouncement);
 router.patch('/announcements/:announcementId', validate(schemas.updateAnnouncement), controller.updateAnnouncement);
 router.delete('/announcements/:announcementId', validate(schemas.deleteAnnouncement), controller.deleteAnnouncement);
+
+// --- Templates -----------------------------------------------------------
+// The gallery's write side. /api/v1/templates is public and read-only by
+// design (it is the first screen after registration), so everything that
+// changes a template lives here, behind the platform-admin guard.
+router.get('/templates', validate(schemas.listTemplates), controller.listTemplates);
+router.post('/templates', validate(schemas.createTemplate), controller.createTemplate);
+router.patch('/templates/:templateId', validate(schemas.updateTemplate), controller.updateTemplate);
+router.delete('/templates/:templateId', validate(schemas.deleteTemplate), controller.deleteTemplate);
 
 module.exports = router;

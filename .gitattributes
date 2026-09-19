@@ -1,0 +1,7 @@
+# This repo is developed on Windows with core.autocrlf=true, but these files
+# are executed by /bin/sh inside a Linux container. Checked out with CRLF they
+# break in ways that are hard to read: the shell reports the interpreter as
+# "not found" because it sees "#!/bin/sh\r", and the Dockerfile's backslash
+# line continuations stop continuing. Pin them to LF everywhere.
+*.sh text eol=lf
+Dockerfile text eol=lf

@@ -22,6 +22,13 @@ const updateFunnel = asyncHandler(async (req, res) => {
   res.json({ funnel });
 });
 
+// Returns the copy's whole graph, not just the funnel row — the editor opens
+// straight onto the duplicate, and the rows are already in hand.
+const duplicateFunnel = asyncHandler(async (req, res) => {
+  const result = await service.duplicateFunnel(req.tenant.workspaceId, req.params.funnelId, req.body, req);
+  res.status(201).json(result);
+});
+
 const deleteFunnel = asyncHandler(async (req, res) => {
   res.json(await service.deleteFunnel(req.tenant.workspaceId, req.params.funnelId, req));
 });
@@ -151,6 +158,7 @@ module.exports = {
   listFunnels,
   getFunnel,
   updateFunnel,
+  duplicateFunnel,
   deleteFunnel,
   createStep,
   listSteps,

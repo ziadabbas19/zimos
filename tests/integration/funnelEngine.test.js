@@ -60,6 +60,7 @@ async function setup() {
     store,
     createFunnel: (body = { name: 'Launch Funnel' }) => request(app).post(base).set(H).send(body),
     getFunnel: (id) => request(app).get(`${base}/${id}`).set(H),
+    duplicate: (id, body = {}) => request(app).post(`${base}/${id}/duplicate`).set(H).send(body),
     createStep: (id, body) => request(app).post(`${base}/${id}/steps`).set(H).send(body),
     patchStep: (id, stepId, body) => request(app).patch(`${base}/${id}/steps/${stepId}`).set(H).send(body),
     getStep: (id, stepId) => request(app).get(`${base}/${id}/steps/${stepId}`).set(H),
@@ -514,5 +515,101 @@ describe('Funnel engine — public runtime', () => {
 
     const linked = await db.Order.count({ where: { workspaceId: ctx.workspace.id, linkedFromOrderId: original.id } });
     expect(linked).toBe(1);
+  });
+});
+
+describe('Funnel engine — duplicate', () => {
+  it('copies every step and edge into a new draft with its own subdomain', async () => {
+    const ctx = await setup();
+    const source = (await ctx.createFunnel({ name: 'Launch Funnel' })).body.funnel;
+    await ctx.createStep(source.id, { key: 'landing', stepType: 'landing', name: 'Landing', builderData: tree('hello') });
+    await ctx.createStep(source.id, { key: 'thanks', stepType: 'thank_you', name: 'Thanks', builderData: tree('done') });
+    await ctx.createEdge(source.id, { fromStepKey: 'landing', toStepKey: 'thanks', condition: { type: 'always' }, priority: 5 });
+
+    const res = await ctx.duplicate(source.id);
+    expect(res.status).toBe(201);
+    expect(res.body.funnel.id).not.toBe(source.id);
+    expect(res.body.funnel.name).toBe('Launch Funnel (copy)');
+    expect(res.body.funnel.status).toBe('draft');
+    expect(res.body.funnel.subdomain).not.toBe(source.subdomain);
+    expect(res.body.funnel.subdomain).toMatch(/^launch-funnel/);
+
+    // keys are per-funnel, so the copy keeps them and its edges still line up
+    expect(res.body.steps.map((s) => s.key).sort()).toEqual(['landing', 'thanks']);
+    expect(res.body.edges).toHaveLength(1);
+    expect(res.body.edges[0]).toMatchObject({
+      fromStepKey: 'landing',
+      toStepKey: 'thanks',
+      condition: { type: 'always' },
+      priority: 5,
+    });
+    expect(res.body.edges[0].funnelId).toBe(res.body.funnel.id);
+
+    // the copy is publishable as-is
+    expect((await ctx.publish(res.body.funnel.id)).status).toBe(201);
+  });
+
+  it('deep-copies builderData — editing the copy leaves the source untouched', async () => {
+    const ctx = await setup();
+    const source = (await ctx.createFunnel({ name: 'Original' })).body.funnel;
+    const srcStep = (
+      await ctx.createStep(source.id, { key: 'landing', stepType: 'landing', name: 'L', builderData: tree('SOURCE') })
+    ).body.step;
+
+    const copy = (await ctx.duplicate(source.id)).body;
+    const copyStep = copy.steps.find((s) => s.key === 'landing');
+    await ctx.patchStep(copy.funnel.id, copyStep.id, { name: 'Edited', builderData: tree('COPY') });
+
+    const srcAfter = await ctx.getStep(source.id, srcStep.id);
+    expect(srcAfter.body.step.name).toBe('L');
+    expect(srcAfter.body.step.builderData.sections[0].rows[0].columns[0].elements[0].props.text).toBe('SOURCE');
+  });
+
+  it('starts with no publish history even when the source is live', async () => {
+    const ctx = await setup();
+    const source = await publishedLinearFunnel(ctx);
+
+    const copy = (await ctx.duplicate(source.id)).body.funnel;
+    expect(copy.status).toBe('draft');
+    expect(copy.publishedRevisionId).toBeNull();
+    expect((await ctx.revisions(copy.id)).body.revisions).toHaveLength(0);
+
+    // ...and the runtime cannot reach it until someone publishes it
+    const start = await ctx.startSession(copy.id, { visitorId: 'v-copy' });
+    expect(start.status).toBe(404);
+
+    // the source keeps its own revision and stays published
+    const srcGet = await ctx.getFunnel(source.id);
+    expect(srcGet.body.funnel.status).toBe('published');
+    expect(srcGet.body.publishedRevision).not.toBeNull();
+  });
+
+  it('takes a name override, and truncates the auto name to the column limit', async () => {
+    const ctx = await setup();
+    const source = (await ctx.createFunnel({ name: 'A'.repeat(200) })).body.funnel;
+
+    const named = await ctx.duplicate(source.id, { name: 'Q4 Variant' });
+    expect(named.status).toBe(201);
+    expect(named.body.funnel.name).toBe('Q4 Variant');
+
+    const auto = await ctx.duplicate(source.id);
+    expect(auto.status).toBe(201);
+    expect(auto.body.funnel.name).toHaveLength(200);
+    expect(auto.body.funnel.name.endsWith(' (copy)')).toBe(true);
+  });
+
+  it("refuses another workspace's funnel (404) and an empty name (422)", async () => {
+    const ctx = await setup();
+    const source = (await ctx.createFunnel({ name: 'Private' })).body.funnel;
+
+    const outsider = await registerAndActivate();
+    const cross = await request(app)
+      .post(`${ctx.base}/${source.id}/duplicate`)
+      .set({ Authorization: `Bearer ${outsider.accessToken}` })
+      .send({});
+    expect(cross.status).toBe(404);
+    expect(await db.Funnel.count({ where: { workspaceId: ctx.workspace.id } })).toBe(1);
+
+    expect((await ctx.duplicate(source.id, { name: '' })).status).toBe(422);
   });
 });

@@ -6,8 +6,10 @@
   "type": "commonjs",
   "scripts": {
     "start": "node src/server.js",
+    "start:migrate": "node scripts/release-migrate.js && node src/server.js",
     "dev": "nodemon src/server.js",
     "migrate": "npx sequelize-cli db:migrate",
+    "migrate:deploy": "node scripts/release-migrate.js",
     "migrate:undo": "npx sequelize-cli db:migrate:undo",
     "seed": "npx sequelize-cli db:seed:all",
     "test": "cross-env NODE_ENV=test jest --runInBand",
