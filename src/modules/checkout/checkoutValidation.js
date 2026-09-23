@@ -41,6 +41,12 @@ module.exports = {
       funnelId: uuid.optional(),
       websiteId: uuid.optional(),
       notes: Joi.string().max(2000).allow('').optional(),
+      // The autosaved session (POST /checkout-sessions) this checkout came
+      // from, converted once the order exists. Sessions with the same phone
+      // are converted either way; this covers a changed phone. Deliberately
+      // loose: it is a hint, and a malformed one must never cost the shopper
+      // their order — the conversion step ignores anything it cannot use.
+      checkoutSessionId: Joi.string().max(100).allow('', null).optional(),
       // "Buy Now" — a single item straight to checkout, no cart. Ignored when
       // an X-Cart-Token header is present (the cart wins).
       item: Joi.object({

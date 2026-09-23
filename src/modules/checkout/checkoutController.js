@@ -2,6 +2,7 @@
 const asyncHandler = require('express-async-handler');
 const cartService = require('../cart/cartService');
 const orderService = require('../orders/orderService');
+const checkoutSessionService = require('../checkoutSessions/checkoutSessionService');
 const { AppError } = require('../../core/errors/AppError');
 const { assertRequiredCheckoutFields } = require('./checkoutSettings');
 
@@ -13,7 +14,7 @@ const { assertRequiredCheckoutFields } = require('./checkoutSettings');
  */
 const checkout = asyncHandler(async (req, res) => {
   const cartToken = req.headers['x-cart-token'];
-  const { item, ...orderBody } = req.body;
+  const { item, checkoutSessionId, ...orderBody } = req.body;
 
   // Per-store required fields (settings.checkout_settings). Checked before any
   // cart work so a rejected checkout costs nothing.
@@ -45,6 +46,11 @@ const checkout = asyncHandler(async (req, res) => {
   );
 
   if (cart) await cartService.markConverted(cart.id, order.id);
+
+  // createOrder has committed by now (no outer transaction here), and
+  // convertAfterOrder never throws: a conversion failure is logged, and the
+  // shopper still gets the order they placed.
+  await checkoutSessionService.convertAfterOrder(req.tenant.workspaceId, order, { checkoutSessionId });
 
   res.status(201).json({ order: { ...order.toJSON(), items: orderItems } });
 });

@@ -11,6 +11,8 @@ const reviewController = require('../reviews/reviewController');
 const reviewSchemas = require('../reviews/reviewValidation');
 const schemas = require('./storefrontValidation');
 const checkoutSchemas = require('../checkout/checkoutValidation');
+const checkoutSessionController = require('../checkoutSessions/checkoutSessionController');
+const checkoutSessionSchemas = require('../checkoutSessions/checkoutSessionValidation');
 
 const router = Router({ mergeParams: true });
 router.use(resolvePublicWorkspace);
@@ -26,6 +28,10 @@ router.get('/collections/:collectionId', validate(schemas.getCollection), contro
 // can't pass validation never reaches the database; it keys on the phone and
 // order number, not the IP (see rateLimiters.js).
 router.get('/orders/track', trackingLimiter, validate(schemas.track), controller.trackOrder);
+
+// Checkout-form autosave for abandoned-checkout recovery. An upsert keyed on
+// the visitor, so a replay is harmless and it takes no Idempotency-Key.
+router.post('/checkout-sessions', validate(checkoutSessionSchemas.capture), checkoutSessionController.capture);
 
 router.post(
   '/checkout',

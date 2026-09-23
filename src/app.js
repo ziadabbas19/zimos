@@ -41,6 +41,7 @@ const domainsRoutes = require('./modules/domains/domainsRoutes');
 const mediaRoutes = require('./modules/media/mediaRoutes');
 const reviewRoutes = require('./modules/reviews/reviewRoutes');
 const fraudRoutes = require('./modules/fraud/fraudRoutes');
+const checkoutSessionRoutes = require('./modules/checkoutSessions/checkoutSessionRoutes');
 const templateRoutes = require('./modules/templates/templateRoutes');
 
 const app = express();
@@ -134,6 +135,7 @@ v1.use('/workspaces/:workspaceId/domains', domainsRoutes);
 v1.use('/workspaces/:workspaceId/media', mediaRoutes);
 v1.use('/workspaces/:workspaceId/reviews', reviewRoutes);
 v1.use('/workspaces/:workspaceId/fraud', fraudRoutes);
+v1.use('/workspaces/:workspaceId/checkout-sessions', checkoutSessionRoutes);
 v1.use('/billing', billingRoutes);
 v1.use('/admin', adminRoutes);
 // Plans, subscriptions, feature flags and announcements. Shares the /admin
