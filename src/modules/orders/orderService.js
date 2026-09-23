@@ -1,9 +1,11 @@
 'use strict';
 
 const crypto = require('crypto');
+const { QueryTypes } = require('sequelize');
 const db = require('../../db/models');
 const { AppError, NotFoundError, ValidationError } = require('../../core/errors/AppError');
 const { add } = require('../../core/utils/money');
+const { normalizePhone } = require('../../core/utils/phone');
 const inventoryService = require('../inventory/inventoryService');
 const customerService = require('../customers/customerService');
 const discountService = require('../discounts/discountService');
@@ -12,6 +14,7 @@ const { calculateTax } = require('../tax/taxService');
 const { createInvoiceForOrder } = require('../invoices/invoiceService');
 const { recordAudit } = require('../audit/auditService');
 const { setConfirmationState, setFulfillmentState } = require('./orderStateService');
+const { STAGES, STAGE_SQL, ORDERS_WITH_STAGE_FROM } = require('./orderStage');
 
 // A shipment past this point means the parcel has left the merchant's hands.
 const SHIPMENT_IN_MOTION = ['picked_up', 'in_transit', 'out_for_delivery', 'delivered', 'returned'];
@@ -265,6 +268,20 @@ async function createOrder(workspaceId, payload, req, { transaction: outerTransa
   return outerTransaction ? run(outerTransaction) : db.sequelize.transaction(run);
 }
 
+/**
+ * The order's derived stage. One row, the same expression the list and the
+ * counts use — see orderStage.js for why it is derived and not stored.
+ */
+async function stageForOrder(orderId) {
+  const rows = await db.sequelize.query(
+    `SELECT ${STAGE_SQL} AS stage
+       FROM ${ORDERS_WITH_STAGE_FROM}
+      WHERE o.id = $orderId`,
+    { bind: { orderId }, type: QueryTypes.SELECT }
+  );
+  return rows.length > 0 ? rows[0].stage : null;
+}
+
 async function getOrder(workspaceId, orderId) {
   const order = await db.Order.findOne({
     where: { id: orderId, workspaceId },
@@ -275,20 +292,220 @@ async function getOrder(workspaceId, orderId) {
     ],
   });
   if (!order) throw new NotFoundError('Order');
-  return order;
+  return { ...order.toJSON(), stage: await stageForOrder(order.id) };
 }
 
-async function listOrders(workspaceId, { limit = 50, cursor, confirmationState, financialState, fulfillmentState } = {}) {
-  const where = { workspaceId };
-  if (cursor) where.id = { [db.Sequelize.Op.gt]: cursor };
-  if (confirmationState) where.confirmationState = confirmationState;
-  if (financialState) where.financialState = financialState;
-  if (fulfillmentState) where.fulfillmentState = fulfillmentState;
+// `%` and `_` are wildcards in LIKE, and a backslash escapes them: a merchant
+// searching for "50%_off" must not get a pattern that matches everything.
+// Postgres' default LIKE escape character is the backslash, so escaping with
+// one needs no ESCAPE clause.
+const escapeLike = (value) => value.replace(/[\\%_]/g, (char) => `\\${char}`);
 
-  const orders = await db.Order.findAll({ where, order: [['id', 'ASC']], limit: limit + 1, include: [{ model: db.OrderItem, as: 'items' }] });
-  const hasMore = orders.length > limit;
-  const page = orders.slice(0, limit);
-  return { orders: page, nextCursor: hasMore ? page[page.length - 1].id : null };
+/**
+ * The search box and the date range, as SQL conditions.
+ *
+ * `q` matches the four things a merchant has in front of them when they go
+ * looking for an order: the order number (with or without the '#' the UI
+ * prints), the customer's name, their email, or their phone. Every arm is
+ * a bind parameter; nothing the client sends is ever concatenated into SQL.
+ *
+ * The three text arms compare through zimos_normalize_search (migration 088),
+ * which lowercases and folds the Arabic letters people type interchangeably —
+ * the alef forms, taa marbuta for haa, alef maqsura for yaa — and drops
+ * tashkeel and tatweel. Without it "احمد" never finds "أحمد", which is the
+ * normal case here, not the exotic one. The stored side and the typed term go
+ * through the same function *in SQL*: normalizing the term in JS instead would
+ * be a second implementation of the rule, and the day the two disagreed the
+ * search would quietly return nothing rather than fail. It is also exactly the
+ * expression the three GIN trigram indexes are built on, which is what lets
+ * the planner use them.
+ *
+ * The phone arm compares the last ten digits of both sides, which is what
+ * makes 01012345678, +201012345678 and 201012345678 all find the same order:
+ * strip the punctuation and the country code and Egyptian mobile numbers
+ * agree from there on. It only runs when the input actually has ten digits to
+ * compare — normalizePhone turns anything shorter into a country code with a
+ * stub behind it, which would match arbitrary orders.
+ *
+ * Dates filter on created_at, and `to` is inclusive of the whole UTC day it
+ * names: a merchant picking "1 Jan to 31 Jan" means the end of the 31st, not
+ * its first instant. UTC, not the workspace's timezone — `Workspace.timezone`
+ * exists but nothing in the codebase reads it, and every other date bucket
+ * here (see platformAdmin/overviewMetricsService) is UTC. Making this one
+ * endpoint local time would be the odd one out, not the fix.
+ */
+function applySearchAndDates(conditions, bind, { q, from, to }) {
+  if (q) {
+    const term = q.trim();
+    const arms = [];
+
+    bind.qNumber = `%${escapeLike(term.replace(/^#/, ''))}%`;
+    arms.push('zimos_normalize_search(o.order_number) LIKE zimos_normalize_search($qNumber)');
+
+    bind.qText = `%${escapeLike(term)}%`;
+    arms.push("zimos_normalize_search(o.contact_snapshot->>'fullName') LIKE zimos_normalize_search($qText)");
+    arms.push("zimos_normalize_search(o.contact_snapshot->>'email') LIKE zimos_normalize_search($qText)");
+
+    const digits = term.replace(/\D/g, '');
+    if (digits.length >= 10) {
+      bind.qPhone = normalizePhone(term).slice(-10);
+      arms.push(
+        "right(regexp_replace(coalesce(o.contact_snapshot->>'phone', ''), '[^0-9]', '', 'g'), 10) = $qPhone"
+      );
+    }
+
+    conditions.push(`(${arms.join(' OR ')})`);
+  }
+
+  if (from) {
+    conditions.push('o.created_at >= $from::timestamptz');
+    bind.from = new Date(from).toISOString();
+  }
+  if (to) {
+    const day = new Date(to);
+    conditions.push('o.created_at < $toExclusive::timestamptz');
+    bind.toExclusive = new Date(
+      Date.UTC(day.getUTCFullYear(), day.getUTCMonth(), day.getUTCDate() + 1)
+    ).toISOString();
+  }
+}
+
+/**
+ * Resolves an opaque list cursor — the last order id of the previous page —
+ * to the (created_at, id) pair the keyset pages on.
+ *
+ * The id has to be looked up inside the workspace rather than trusted: an id
+ * from another merchant's workspace would otherwise silently anchor the page
+ * at that order's timestamp. Unknown or foreign ids are a bad query
+ * parameter, so they fail as a validation error on `cursor` rather than a
+ * 404 about an order the caller never asked for.
+ */
+async function resolveCursor(workspaceId, cursor) {
+  const anchor = await db.Order.findOne({
+    where: { id: cursor, workspaceId },
+    attributes: ['id', 'createdAt'],
+  });
+  if (!anchor) {
+    throw new ValidationError(
+      [{ field: 'cursor', message: 'Cursor does not point at an order in this workspace' }],
+      'Invalid query'
+    );
+  }
+  return anchor;
+}
+
+/**
+ * Loads full orders for a page of ids, in exactly the order the ids came in,
+ * each carrying the stage the page query already worked out for it.
+ */
+async function hydrateOrders(page) {
+  if (page.length === 0) return [];
+  const rows = await db.Order.findAll({
+    where: { id: page.map((row) => row.id) },
+    include: [{ model: db.OrderItem, as: 'items' }],
+  });
+  const byId = new Map(rows.map((row) => [row.id, row]));
+  return page
+    .filter((row) => byId.has(row.id))
+    .map((row) => ({ ...byId.get(row.id).toJSON(), stage: row.stage }));
+}
+
+/**
+ * The merchant orders list: one workspace's orders, newest first.
+ *
+ * Paging is keyset, not offset: `cursor` carries the last order id of the
+ * previous page and the query asks for rows strictly before that order's
+ * (created_at, id) pair. Orders arrive constantly, and an OFFSET page would
+ * skip or repeat rows every time one lands while the merchant is paging.
+ *
+ * The page is picked in SQL and hydrated separately. A single Sequelize
+ * findAll cannot do it: the row-wise keyset comparison, the derived stage and
+ * the search predicates are all SQL expressions, and mixing them with a
+ * hasMany include makes Sequelize wrap the query in a subquery whose shape
+ * decides where those expressions land. Selecting ids first keeps the
+ * filtering explicit and the hydration a plain findAll.
+ */
+async function listOrders(
+  workspaceId,
+  { limit = 50, cursor, confirmationState, financialState, fulfillmentState, stage, q, from, to } = {}
+) {
+  const conditions = ['o.workspace_id = $workspaceId'];
+  const bind = { workspaceId, limit: limit + 1 };
+
+  if (confirmationState) {
+    conditions.push('o.confirmation_state = $confirmationState');
+    bind.confirmationState = confirmationState;
+  }
+  if (financialState) {
+    conditions.push('o.financial_state = $financialState');
+    bind.financialState = financialState;
+  }
+  if (fulfillmentState) {
+    conditions.push('o.fulfillment_state = $fulfillmentState');
+    bind.fulfillmentState = fulfillmentState;
+  }
+  if (stage) {
+    // The same expression the tab counts group by, so a tab's count and the
+    // rows behind the tab can never be two different answers.
+    conditions.push(`${STAGE_SQL} = $stage`);
+    bind.stage = stage;
+  }
+  applySearchAndDates(conditions, bind, { q, from, to });
+
+  if (cursor) {
+    const anchor = await resolveCursor(workspaceId, cursor);
+    // Row-wise comparison rather than (created_at < x OR (created_at = x AND
+    // id < y)): it says the same thing and maps straight onto the
+    // (workspace_id, created_at DESC, id DESC) index.
+    conditions.push('(o.created_at, o.id) < ($cursorCreatedAt::timestamptz, $cursorId::uuid)');
+    bind.cursorCreatedAt = anchor.createdAt.toISOString();
+    bind.cursorId = anchor.id;
+  }
+
+  const rows = await db.sequelize.query(
+    `SELECT o.id, ${STAGE_SQL} AS stage
+       FROM ${ORDERS_WITH_STAGE_FROM}
+      WHERE ${conditions.join(' AND ')}
+      ORDER BY o.created_at DESC, o.id DESC
+      LIMIT $limit`,
+    { bind, type: QueryTypes.SELECT }
+  );
+
+  const hasMore = rows.length > limit;
+  const page = rows.slice(0, limit);
+  const orders = await hydrateOrders(page);
+  return { orders, nextCursor: hasMore ? page[page.length - 1].id : null };
+}
+
+/**
+ * The tab counts above the orders list: how many orders sit in each stage
+ * right now, under the same `q` / `from` / `to` the merchant has typed.
+ *
+ * One GROUP BY over the one stage expression — not nine COUNT queries, and
+ * not a second copy of the mapping. Every key is present in the answer even
+ * at zero, so the client renders a stable row of tabs instead of tabs that
+ * appear and vanish as orders move.
+ */
+async function orderPipeline(workspaceId, { q, from, to } = {}) {
+  const conditions = ['o.workspace_id = $workspaceId'];
+  const bind = { workspaceId };
+  applySearchAndDates(conditions, bind, { q, from, to });
+
+  const rows = await db.sequelize.query(
+    `SELECT ${STAGE_SQL} AS stage, COUNT(*)::int AS count
+       FROM ${ORDERS_WITH_STAGE_FROM}
+      WHERE ${conditions.join(' AND ')}
+      GROUP BY 1`,
+    { bind, type: QueryTypes.SELECT }
+  );
+
+  const stages = Object.fromEntries(STAGES.map((key) => [key, 0]));
+  let total = 0;
+  for (const row of rows) {
+    stages[row.stage] = row.count;
+    total += row.count;
+  }
+  return { stages, total };
 }
 
 /**
@@ -499,6 +716,7 @@ module.exports = {
   createOrder,
   getOrder,
   listOrders,
+  orderPipeline,
   generateOrderNumber,
   generateTrackingCode,
   priceLine,

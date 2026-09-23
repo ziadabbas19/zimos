@@ -22,6 +22,9 @@ router.post(
   idempotent('order.create')(controller.create)
 );
 router.get('/', validate(schemas.list), requirePermission(PERMISSIONS.ORDERS_VIEW), controller.list);
+// Before '/:orderId', or Express matches "pipeline" as an order id and the
+// request dies as a uuid validation error instead of reaching the counts.
+router.get('/pipeline', validate(schemas.pipeline), requirePermission(PERMISSIONS.ORDERS_VIEW), controller.pipeline);
 router.get('/:orderId', validate(schemas.get), requirePermission(PERMISSIONS.ORDERS_VIEW), controller.get);
 
 router.post(

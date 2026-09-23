@@ -17,6 +17,10 @@ const list = asyncHandler(async (req, res) => {
   res.json(result);
 });
 
+const pipeline = asyncHandler(async (req, res) => {
+  res.json(await service.orderPipeline(req.tenant.workspaceId, req.query));
+});
+
 const cancel = asyncHandler(async (req, res) => {
   const order = await service.cancelOrder(req.tenant.workspaceId, req.params.orderId, req.body, req);
   res.json({ order });
@@ -47,4 +51,4 @@ const updateShipment = asyncHandler(async (req, res) => {
   res.json({ shipment });
 });
 
-module.exports = { create, get, list, cancel, update, listShipments, createShipment, updateShipment };
+module.exports = { create, get, list, pipeline, cancel, update, listShipments, createShipment, updateShipment };

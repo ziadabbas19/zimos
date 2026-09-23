@@ -1,7 +1,17 @@
 'use strict';
 const Joi = require('joi');
 const joiEmail = require('../../core/utils/joiEmail');
+const { STAGES } = require('./orderStage');
 const uuid = Joi.string().uuid();
+
+// The search box and date range, shared by the list and the tab counts so the
+// two can never disagree about what they are counting. `q` is trimmed before
+// the length check — two spaces are not a two-character search.
+const search = {
+  q: Joi.string().trim().min(2).max(100).optional(),
+  from: Joi.date().iso().optional(),
+  to: Joi.date().iso().optional(),
+};
 
 const contact = Joi.object({
   fullName: Joi.string().max(200).required(),
@@ -81,6 +91,13 @@ module.exports = {
       confirmationState: Joi.string().valid('pending', 'confirmed', 'rejected', 'unreachable', 'postponed').optional(),
       financialState: Joi.string().valid('pending', 'partially_paid', 'paid', 'failed', 'refunded', 'partially_refunded').optional(),
       fulfillmentState: Joi.string().valid('unfulfilled', 'partially_fulfilled', 'fulfilled', 'returned').optional(),
+      stage: Joi.string().valid(...STAGES).optional(),
+      ...search,
     }),
+  },
+  pipeline: {
+    params: Joi.object({ workspaceId: uuid.required() }),
+    // No `stage`: the counts are the answer for every stage at once.
+    query: Joi.object(search),
   },
 };

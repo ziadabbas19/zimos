@@ -149,10 +149,13 @@
           "422": { "description": "Insufficient stock / invalid discount / validation error" }
         }
       },
-      "get": { "summary": "List orders (filterable by confirmation/financial/fulfillment state)", "parameters": [{ "$ref": "#/components/parameters/workspaceId" }], "responses": { "200": { "description": "OK" } } }
+      "get": { "summary": "List orders, newest first — keyset cursor; filter by stage, q (number/name/email/phone), from/to, or confirmation/financial/fulfillment state", "parameters": [{ "$ref": "#/components/parameters/workspaceId" }], "responses": { "200": { "description": "OK — each order carries its derived pipeline `stage`" }, "422": { "description": "Unknown cursor, unknown stage, or q outside 2–100 characters" } } }
+    },
+    "/workspaces/{workspaceId}/orders/pipeline": {
+      "get": { "summary": "Order counts per pipeline stage (the orders-screen tabs), under the same q/from/to as the list", "parameters": [{ "$ref": "#/components/parameters/workspaceId" }], "responses": { "200": { "description": "OK — { stages: { <stage>: count, ... }, total }, every stage key present" } } }
     },
     "/workspaces/{workspaceId}/orders/{orderId}": {
-      "get": { "summary": "Get an order with items/payments/shipments", "parameters": [{ "$ref": "#/components/parameters/workspaceId" }], "responses": { "200": { "description": "OK" }, "404": { "description": "Not found (including cross-tenant access)" } } }
+      "get": { "summary": "Get an order with items/payments/shipments and its derived pipeline stage", "parameters": [{ "$ref": "#/components/parameters/workspaceId" }], "responses": { "200": { "description": "OK" }, "404": { "description": "Not found (including cross-tenant access)" } } }
     },
 
     "/workspaces/{workspaceId}/confirmation-tasks": {
