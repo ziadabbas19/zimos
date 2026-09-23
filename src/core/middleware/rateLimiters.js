@@ -28,7 +28,7 @@ const generalLimiter = rateLimit({
   // The public storefront API is limited per shopper by storefrontLimiter,
   // which marks the requests it handled. Counting them again here, by IP,
   // would put every shopper behind our storefront server back in one bucket.
-  skip: (req) => skip() || req.rateLimitScope === 'storefront',
+  skip: (req) => skip() || req.rateLimitScope === 'storefront' || req.rateLimitScope === 'carrier_webhook',
   handler,
 });
 
@@ -267,8 +267,39 @@ const trackingLimiter = createTrackingLimiter({
   skip,
 });
 
+/*
+ * Carrier status webhooks (POST /webhooks/carriers/:code/:token). Every
+ * merchant's Bosta pushes arrive from Bosta's servers, so a per-IP limit would
+ * put all merchants in one bucket; each merchant's webhook token gets its own.
+ * Mounted on the /webhooks/carriers prefix, where req.params isn't populated
+ * yet, so the token is read from the path. Unknown tokens are still limited
+ * (and then 404).
+ */
+function carrierWebhookKey(req) {
+  const [, code = '', token = ''] = (req.path || '').split('/');
+  return `carrier-webhook:${code.slice(0, 50)}:${sha256(token).toString('hex').slice(0, 32)}`;
+}
+
+const carrierWebhookLimiter = [
+  (req, res, next) => {
+    req.rateLimitScope = 'carrier_webhook';
+    next();
+  },
+  rateLimit({
+    windowMs: env.rateLimit.windowMs,
+    limit: env.carriers.webhookRateLimitMax,
+    standardHeaders: true,
+    legacyHeaders: false,
+    skip,
+    keyGenerator: carrierWebhookKey,
+    handler,
+  }),
+];
+
 module.exports = {
   generalLimiter,
+  carrierWebhookLimiter,
+  carrierWebhookKey,
   authLimiter,
   storefrontLimiter,
   createStorefrontLimiter,

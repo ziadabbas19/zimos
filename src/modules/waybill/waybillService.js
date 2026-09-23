@@ -5,6 +5,7 @@ const bwipjs = require('bwip-js');
 const db = require('../../db/models');
 const { NotFoundError } = require('../../core/errors/AppError');
 const logger = require('../../core/utils/logger');
+const { isCarrierBooked } = require('../shipping/carrierShipmentService');
 
 const money = (minor, currency) => `${(Number(minor) / 100).toFixed(2)} ${currency || ''}`.trim();
 
@@ -44,8 +45,11 @@ async function computeWaybillModel(workspaceId, orderId) {
 
   const workspace = await db.Workspace.findByPk(workspaceId);
   // Newest shipment's tracking code, or the order number when there's no shipment.
+  // A shipment booked with a connected courier carries the courier's own
+  // tracking number instead: that is what the courier scans.
   const shipment = (order.shipments || []).slice().sort((a, b) => b.createdAt - a.createdAt)[0];
-  const trackingValue = (shipment && shipment.trackingCode) || order.orderNumber;
+  const trackingValue = isCarrierBooked(shipment)
+    ? shipment.waybillNumber : (shipment && shipment.trackingCode) || order.orderNumber;
   const isCod = order.paymentMethod === 'cod';
 
   return {

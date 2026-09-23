@@ -11,6 +11,8 @@ const schemas = require('./orderValidation');
 const returnController = require('../returns/returnController');
 const returnSchemas = require('../returns/returnValidation');
 const waybillController = require('../waybill/waybillController');
+const carrierController = require('../shipping/carrierController');
+const carrierSchemas = require('../shipping/carrierValidation');
 
 const router = Router({ mergeParams: true });
 router.use(authenticate, resolveTenant);
@@ -57,6 +59,21 @@ router.patch(
   validate(schemas.updateShipment),
   requirePermission(PERMISSIONS.ORDERS_MANAGE),
   controller.updateShipment
+);
+
+// Shipments booked with a connected courier: pull the status now, and the
+// courier's own printable label (AWB).
+router.post(
+  '/:orderId/shipments/:shipmentId/sync',
+  validate(carrierSchemas.shipmentAction),
+  requirePermission(PERMISSIONS.ORDERS_MANAGE),
+  carrierController.sync
+);
+router.get(
+  '/:orderId/shipments/:shipmentId/label',
+  validate(carrierSchemas.shipmentAction),
+  requirePermission(PERMISSIONS.ORDERS_MANAGE),
+  carrierController.label
 );
 
 router.get(

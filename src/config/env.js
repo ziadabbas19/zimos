@@ -172,6 +172,16 @@ const env = {
   webhooks: {
     signingAlgo: process.env.WEBHOOK_SIGNING_ALGO || 'sha256',
   },
+
+  // Merchant courier accounts (modules/shipping/carriers). The key encrypts
+  // the credentials each merchant connects (AES-256-GCM, see
+  // core/utils/credentialsCipher.js): 32 bytes, base64. Unset or malformed
+  // disables carrier features with a 503 — it never stops the app booting.
+  carriers: {
+    credentialsKey: (process.env.CARRIER_CREDENTIALS_KEY || '').trim(),
+    // POST /webhooks/carriers/:code/:token, per token per window.
+    webhookRateLimitMax: parseInt(process.env.CARRIER_WEBHOOK_RATE_LIMIT_MAX || '300', 10),
+  },
 };
 
 module.exports = env;

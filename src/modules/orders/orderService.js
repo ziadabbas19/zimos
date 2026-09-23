@@ -15,11 +15,10 @@ const { calculateShippingAmount } = require('../shipping/shippingPricing');
 const { calculateTax } = require('../tax/taxService');
 const { createInvoiceForOrder } = require('../invoices/invoiceService');
 const { recordAudit } = require('../audit/auditService');
-const { setConfirmationState, setFulfillmentState } = require('./orderStateService');
+const { setConfirmationState } = require('./orderStateService');
 const { STAGES, STAGE_SQL, ORDERS_WITH_STAGE_FROM } = require('./orderStage');
-
-// A shipment past this point means the parcel has left the merchant's hands.
-const SHIPMENT_IN_MOTION = ['picked_up', 'in_transit', 'out_for_delivery', 'delivered', 'returned'];
+const { SHIPMENT_IN_MOTION, generateTrackingCode, insertShipment, transitionShipment } = require('./shipmentLifecycle');
+const carrierShipmentService = require('../shipping/carrierShipmentService');
 
 async function assertNotShipped(order, transaction) {
   if (order.fulfillmentState === 'fulfilled' || order.fulfillmentState === 'partially_fulfilled' || order.fulfillmentState === 'returned') {
@@ -37,11 +36,6 @@ async function assertNotShipped(order, transaction) {
 function generateOrderNumber() {
   const rand = crypto.randomBytes(4).toString('hex').toUpperCase();
   return `ORD-${Date.now().toString(36).toUpperCase()}-${rand}`;
-}
-
-// Human-facing shipment reference: `zg` + 9 random digits.
-function generateTrackingCode() {
-  return `zg${String(crypto.randomInt(0, 1_000_000_000)).padStart(9, '0')}`;
 }
 
 // Prices one line from server-side data only. variantId/offerId are looked up
@@ -602,6 +596,12 @@ async function cancelOrder(workspaceId, orderId, { reason }, req) {
       );
     }
 
+    // A shipment booked with a connected courier is cancelled there first. If
+    // the courier refuses, this throws and the whole cancellation rolls back:
+    // the order must not say "cancelled" while a courier still plans to
+    // collect the parcel.
+    await carrierShipmentService.cancelCarrierShipmentsForOrder(workspaceId, order.id, transaction);
+
     // Cancel any shipment that was created but never collected.
     await db.Shipment.update(
       { status: 'cancelled' },
@@ -677,37 +677,29 @@ async function listShipments(workspaceId, orderId) {
 }
 
 async function createShipment(workspaceId, orderId, data, req) {
+  // A carrier this workspace has connected (Bosta, ...) is booked through the
+  // merchant's account; 'manual' and any other code keep the original
+  // behaviour below — the merchant types the waybill in.
+  if (await carrierShipmentService.shouldBookWithCarrier(workspaceId, data.carrierCode)) {
+    return carrierShipmentService.createCarrierShipment(workspaceId, orderId, data, req);
+  }
+
   return db.sequelize.transaction(async (transaction) => {
     const order = await db.Order.findOne({ where: { id: orderId, workspaceId }, transaction });
     if (!order) throw new NotFoundError('Order');
     if (order.cancelledAt) throw new AppError('ORDER_CANCELLED', 'This order is cancelled', 409);
 
-    // Generate a `zg`+9-digit code and insert; on the rare unique-index
-    // collision under concurrent creation, roll back to a savepoint and retry
-    // with a fresh code (same retry-on-collision idea as generateOrderNumber).
-    let shipment;
-    for (let attempt = 0; attempt < 6; attempt++) {
-      try {
-        shipment = await db.sequelize.transaction({ transaction }, (sp) =>
-          db.Shipment.create(
-            {
-              workspaceId,
-              orderId: order.id,
-              trackingCode: generateTrackingCode(),
-              carrierCode: data.carrierCode,
-              waybillNumber: data.waybillNumber || null,
-              trackingUrl: data.trackingUrl || null,
-              status: 'created',
-            },
-            { transaction: sp }
-          )
-        );
-        break;
-      } catch (err) {
-        if (err.name === 'SequelizeUniqueConstraintError' && attempt < 5) continue;
-        throw err;
-      }
-    }
+    const shipment = await insertShipment(
+      {
+        workspaceId,
+        orderId: order.id,
+        carrierCode: data.carrierCode,
+        waybillNumber: data.waybillNumber || null,
+        trackingUrl: data.trackingUrl || null,
+        status: 'created',
+      },
+      transaction
+    );
 
     await recordAudit({
       workspaceId,
@@ -724,50 +716,18 @@ async function createShipment(workspaceId, orderId, data, req) {
   });
 }
 
-const SHIPMENT_FULFILLMENT = {
-  picked_up: 'partially_fulfilled',
-  in_transit: 'partially_fulfilled',
-  out_for_delivery: 'partially_fulfilled',
-  delivered: 'fulfilled',
-  returned: 'returned',
-};
-
 async function updateShipment(workspaceId, orderId, shipmentId, data, req) {
   return db.sequelize.transaction(async (transaction) => {
     const shipment = await db.Shipment.findOne({ where: { id: shipmentId, workspaceId, orderId }, transaction });
     if (!shipment) throw new NotFoundError('Shipment');
-    const before = shipment.toJSON();
-
-    const updates = {};
-    if (data.status !== undefined) updates.status = data.status;
-    if (data.waybillNumber !== undefined) updates.waybillNumber = data.waybillNumber;
-    if (data.trackingUrl !== undefined) updates.trackingUrl = data.trackingUrl;
-    if (data.status && SHIPMENT_IN_MOTION.includes(data.status) && !shipment.shippedAt) {
-      updates.shippedAt = new Date();
-    }
-    if (data.status === 'delivered' && !shipment.deliveredAt) updates.deliveredAt = new Date();
-    await shipment.update(updates, { transaction });
-
-    // Keep the order's fulfillment state coherent via the state service — the
-    // one place allowed to write that column.
-    const nextFulfillment = data.status ? SHIPMENT_FULFILLMENT[data.status] : null;
-    if (nextFulfillment) {
-      await setFulfillmentState(workspaceId, orderId, nextFulfillment, req, transaction);
-    }
-
-    await recordAudit({
+    // The stamps, fulfillment state and audit row live in shipmentLifecycle,
+    // shared with the carrier status updates.
+    return transitionShipment(
       workspaceId,
-      actorUserId: req.user.id,
-      action: 'shipment.update',
-      entityType: 'Shipment',
-      entityId: shipment.id,
-      before,
-      after: shipment.toJSON(),
-      req,
-      transaction,
-    });
-
-    return shipment;
+      shipment,
+      { status: data.status, waybillNumber: data.waybillNumber, trackingUrl: data.trackingUrl },
+      { transaction, req, actorUserId: req.user.id }
+    );
   });
 }
 

@@ -8,7 +8,7 @@ const cookieParser = require('cookie-parser');
 const swaggerUi = require('swagger-ui-express');
 const env = require('./config/env');
 const requestId = require('./core/middleware/requestId');
-const { generalLimiter, storefrontLimiter } = require('./core/middleware/rateLimiters');
+const { generalLimiter, storefrontLimiter, carrierWebhookLimiter } = require('./core/middleware/rateLimiters');
 const { errorHandler, notFoundHandler } = require('./core/middleware/errorHandler');
 const { hostResolver } = require('./core/middleware/hostResolver');
 const logger = require('./core/utils/logger');
@@ -43,6 +43,8 @@ const reviewRoutes = require('./modules/reviews/reviewRoutes');
 const fraudRoutes = require('./modules/fraud/fraudRoutes');
 const checkoutSessionRoutes = require('./modules/checkoutSessions/checkoutSessionRoutes');
 const templateRoutes = require('./modules/templates/templateRoutes');
+const carrierRoutes = require('./modules/shipping/carrierRoutes');
+const carrierWebhookRoutes = require('./modules/shipping/carrierWebhookRoutes');
 
 const app = express();
 
@@ -86,6 +88,9 @@ if (!env.isTest) {
 // The public storefront API is limited per shopper rather than per IP (see
 // rateLimiters.js); generalLimiter skips whatever this limiter handled.
 app.use(`/api/${env.apiVersion}/store`, storefrontLimiter);
+// Courier webhooks all come from the courier's servers: limited per merchant
+// webhook token, not per IP (see rateLimiters.js).
+app.use(`/api/${env.apiVersion}/webhooks/carriers`, carrierWebhookLimiter);
 app.use(generalLimiter);
 
 // --- Health / readiness -----------------------------------------------
@@ -136,7 +141,10 @@ v1.use('/workspaces/:workspaceId/media', mediaRoutes);
 v1.use('/workspaces/:workspaceId/reviews', reviewRoutes);
 v1.use('/workspaces/:workspaceId/fraud', fraudRoutes);
 v1.use('/workspaces/:workspaceId/checkout-sessions', checkoutSessionRoutes);
+v1.use('/workspaces/:workspaceId/carriers', carrierRoutes);
 v1.use('/billing', billingRoutes);
+// Courier status webhooks — public; the token in the path is the identity.
+v1.use('/webhooks/carriers', carrierWebhookRoutes);
 v1.use('/admin', adminRoutes);
 // Plans, subscriptions, feature flags and announcements. Shares the /admin
 // mount with adminRoutes above, which owns /workspaces and /dashboard.

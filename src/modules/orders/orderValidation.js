@@ -71,6 +71,14 @@ module.exports = {
       carrierCode: Joi.string().min(1).max(100).required(),
       waybillNumber: Joi.string().max(100).allow(null, '').optional(),
       trackingUrl: Joi.string().uri().max(500).allow(null, '').optional(),
+      // Connected couriers only (see modules/shipping/carriers). The carrier's
+      // own ids for the drop-off address, sent when the order's free-text
+      // address couldn't be matched (422 CARRIER_ADDRESS_UNMATCHED).
+      carrierAddress: Joi.object({
+        cityId: Joi.string().max(100).required(),
+        districtId: Joi.string().max(100).required(),
+      }).optional(),
+      notes: Joi.string().max(500).allow(null, '').optional(),
     }),
   },
   updateShipment: {
