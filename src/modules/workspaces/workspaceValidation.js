@@ -5,6 +5,7 @@ const joiEmail = require('../../core/utils/joiEmail');
 const { ALL_PERMISSIONS } = require('../../core/security/permissions');
 const { workspaceSlug, SLUG_LOOKUP_MAX } = require('../../core/utils/workspaceSlug');
 const { CHECKOUT_FIELD_MODES, CHECKOUT_NOTES_MODES } = require('../checkout/checkoutSettings');
+const { FRAUD_ACTIONS } = require('../fraud/fraudRules');
 
 const uuid = Joi.string().uuid();
 
@@ -45,6 +46,19 @@ module.exports = {
           email: Joi.string().valid(...CHECKOUT_FIELD_MODES).allow(null).optional(),
           postal_code: Joi.string().valid(...CHECKOUT_FIELD_MODES).allow(null).optional(),
           notes: Joi.string().valid(...CHECKOUT_NOTES_MODES).allow(null).optional(),
+        })
+          .allow(null)
+          .optional(),
+        // Storefront fraud rules — see modules/fraud/fraudRules.js. Same
+        // merge semantics as checkout_settings: sub-keys merge, `null` on a
+        // sub-key restores its default (a numeric rule's default is "off"),
+        // `null` on the whole object turns every rule off.
+        fraud_rules: Joi.object({
+          action: Joi.string().valid(...FRAUD_ACTIONS).allow(null).optional(),
+          block_blacklisted: Joi.boolean().allow(null).optional(),
+          duplicate_window_minutes: Joi.number().integer().min(1).max(10080).allow(null).optional(),
+          max_orders_per_phone_per_day: Joi.number().integer().min(1).max(100).allow(null).optional(),
+          high_rejection_threshold: Joi.number().integer().min(1).max(100).allow(null).optional(),
         })
           .allow(null)
           .optional(),

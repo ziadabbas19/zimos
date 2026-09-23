@@ -19,6 +19,9 @@ module.exports = (sequelize, DataTypes) => {
       marketingConsent: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false, field: 'marketing_consent' },
       isBlacklisted: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false, field: 'is_blacklisted' },
       blacklistReason: { type: DataTypes.STRING(300), allowNull: true, field: 'blacklist_reason' },
+      // When the current blacklisting started; null while not blacklisted.
+      // Set and cleared only by customerService.applyBlacklist.
+      blacklistedAt: { type: DataTypes.DATE, allowNull: true, field: 'blacklisted_at' },
       segments: { type: DataTypes.ARRAY(DataTypes.STRING), allowNull: false, defaultValue: [] },
       reliabilityScore: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 100, field: 'reliability_score' },
       // Denormalized rolling counters, maintained by the orders module when

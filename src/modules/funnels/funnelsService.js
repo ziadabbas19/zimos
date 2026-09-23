@@ -818,7 +818,11 @@ async function createFollowOnOrder(workspaceId, funnelId, step, session, req, tr
       funnelId,
     },
     { user: null, headers: req && req.headers ? req.headers : {}, ip: req ? req.ip : null },
-    { transaction }
+    // The buyer's own accepted add-on to the order they just placed: it
+    // shares that order's customer and often its variant, so duplicate_order
+    // would flag (or refuse) every upsell. The original order already went
+    // through the storefront rules.
+    { transaction, skipFraudRules: true }
   );
   return { order, originalId: original.id };
 }

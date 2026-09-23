@@ -53,22 +53,38 @@ async function listCustomers(workspaceId, { limit = 50, cursor, blacklistedOnly 
   return { customers: page, nextCursor: hasMore ? page[page.length - 1].id : null };
 }
 
-async function setBlacklist(workspaceId, customerId, { isBlacklisted, reason }, req) {
-  const customer = await scoped(db.Customer, workspaceId).findByPkOrThrow(customerId);
-  const before = { isBlacklisted: customer.isBlacklisted };
-  await customer.update({ isBlacklisted, blacklistReason: isBlacklisted ? reason : null });
+/**
+ * The one write path for a customer's blacklist state, shared by
+ * PATCH /customers/:id/blacklist and POST /fraud/blocklist.
+ *
+ * blacklisted_at marks when the current blacklisting began: set on the
+ * transition into the blacklist, kept when an already-blacklisted customer
+ * only gets a new reason (the block did not start again), cleared on unblock.
+ */
+async function applyBlacklist(customer, { isBlacklisted, reason }, req, transaction) {
+  const before = { isBlacklisted: customer.isBlacklisted, reason: customer.blacklistReason };
+  const updates = { isBlacklisted, blacklistReason: isBlacklisted ? reason : null };
+  if (!isBlacklisted) updates.blacklistedAt = null;
+  else if (!customer.isBlacklisted || !customer.blacklistedAt) updates.blacklistedAt = new Date();
+  await customer.update(updates, transaction ? { transaction } : undefined);
 
   await recordAudit({
-    workspaceId,
+    workspaceId: customer.workspaceId,
     actorUserId: req.user.id,
     action: 'customer.blacklist_change',
     entityType: 'Customer',
     entityId: customer.id,
     before,
-    after: { isBlacklisted },
+    after: { isBlacklisted, reason: customer.blacklistReason },
     req,
+    transaction,
   });
   return customer;
+}
+
+async function setBlacklist(workspaceId, customerId, { isBlacklisted, reason }, req) {
+  const customer = await scoped(db.Customer, workspaceId).findByPkOrThrow(customerId);
+  return applyBlacklist(customer, { isBlacklisted, reason }, req);
 }
 
 // Full phone/address/history reveal — gated by customers.reveal_sensitive
@@ -156,6 +172,7 @@ module.exports = {
   findOrCreateByPhone,
   getCustomer,
   listCustomers,
+  applyBlacklist,
   setBlacklist,
   revealSensitive,
   updateCustomer,

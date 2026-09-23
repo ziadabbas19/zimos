@@ -6,6 +6,8 @@ const db = require('../../db/models');
 const { AppError, NotFoundError, ValidationError } = require('../../core/errors/AppError');
 const { add } = require('../../core/utils/money');
 const { normalizePhone } = require('../../core/utils/phone');
+const logger = require('../../core/utils/logger');
+const fraudRules = require('../fraud/fraudRules');
 const inventoryService = require('../inventory/inventoryService');
 const customerService = require('../customers/customerService');
 const discountService = require('../discounts/discountService');
@@ -103,18 +105,70 @@ async function priceLine(workspaceId, { variantId, offerId, quantity }, transact
   };
 }
 
-async function createOrder(workspaceId, payload, req, { transaction: outerTransaction } = {}) {
+/**
+ * A refused storefront order leaves a trace the merchant can see. Written
+ * after the order's transaction has rolled back, on its own connection: an
+ * audit row inserted inside that transaction would roll back with it. The
+ * customer id is always a committed row here — every refusal needs a
+ * blacklist flag, past orders or past rejections, none of which a customer
+ * created by this very checkout can have.
+ */
+async function recordRefusal(workspaceId, refusal, req) {
+  logger.warn('Storefront order refused by fraud rules', {
+    workspaceId,
+    customerId: refusal.customerId,
+    flags: refusal.flags,
+  });
+  try {
+    await recordAudit({
+      workspaceId,
+      actorUserId: null,
+      action: 'order.blocked',
+      entityType: 'Customer',
+      entityId: refusal.customerId,
+      after: { flags: refusal.flags },
+      req,
+    });
+  } catch (err) {
+    // The buyer still gets the refusal; a failed audit write must not turn
+    // it into a 500.
+    logger.error('Could not audit a refused order', { workspaceId, message: err.message });
+  }
+}
+
+/**
+ * `skipFraudRules` exempts an order from the storefront fraud rules. It is for
+ * funnel follow-on orders (funnelsService.createFollowOnOrder): an accepted
+ * upsell is the same buyer adding to the order they just placed, so it would
+ * always trip duplicate_order. Staff orders (req.user set) are never
+ * evaluated and need no option.
+ */
+async function createOrder(workspaceId, payload, req, { transaction: outerTransaction, skipFraudRules = false } = {}) {
   const { items, contact, shippingAddress, paymentMethod, discountCode, funnelId, websiteId, notes } = payload;
 
   if (!items || items.length === 0) {
     throw new ValidationError([{ field: 'items', message: 'At least one item is required' }]);
   }
 
+  const evaluateFraudRules = !req.user && !skipFraudRules;
+
   const run = async (transaction) => {
     const customer = await customerService.findOrCreateByPhone(workspaceId, contact, transaction);
 
     const riskFlags = [];
     if (customer.isBlacklisted) riskFlags.push('blacklisted_customer');
+
+    // Before any inventory is touched, so a refusal has nothing to undo but
+    // the customer lookup.
+    if (evaluateFraudRules) {
+      const ruleFlags = await fraudRules.evaluateStorefrontOrder({
+        workspaceId,
+        customer,
+        variantIds: [...new Set(items.map((item) => item.variantId).filter(Boolean))],
+        transaction,
+      });
+      for (const flag of ruleFlags) if (!riskFlags.includes(flag)) riskFlags.push(flag);
+    }
 
     // Price every line and consume/reserve inventory for it. Consuming
     // inventory inside the same transaction as pricing/order-row creation
@@ -265,7 +319,12 @@ async function createOrder(workspaceId, payload, req, { transaction: outerTransa
   // commit with the session move or not at all. A nested
   // sequelize.transaction() would take a second connection and could block on
   // rows the caller has already locked.
-  return outerTransaction ? run(outerTransaction) : db.sequelize.transaction(run);
+  try {
+    return await (outerTransaction ? run(outerTransaction) : db.sequelize.transaction(run));
+  } catch (err) {
+    if (err instanceof fraudRules.OrderRejectedError) await recordRefusal(workspaceId, err.refusal, req);
+    throw err;
+  }
 }
 
 /**
@@ -380,14 +439,14 @@ function applySearchAndDates(conditions, bind, { q, from, to }) {
  * parameter, so they fail as a validation error on `cursor` rather than a
  * 404 about an order the caller never asked for.
  */
-async function resolveCursor(workspaceId, cursor) {
+async function resolveCursor(workspaceId, cursor, field = 'cursor') {
   const anchor = await db.Order.findOne({
     where: { id: cursor, workspaceId },
     attributes: ['id', 'createdAt'],
   });
   if (!anchor) {
     throw new ValidationError(
-      [{ field: 'cursor', message: 'Cursor does not point at an order in this workspace' }],
+      [{ field, message: 'Cursor does not point at an order in this workspace' }],
       'Invalid query'
     );
   }
@@ -717,6 +776,7 @@ module.exports = {
   getOrder,
   listOrders,
   orderPipeline,
+  resolveCursor,
   generateOrderNumber,
   generateTrackingCode,
   priceLine,

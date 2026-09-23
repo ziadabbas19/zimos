@@ -126,7 +126,7 @@ const MERCHANT_SETTINGS_KEYS = [
 
 // Nested settings objects, merged a level deeper so a form that toggles one
 // switch cannot blank out the sibling keys it never loaded.
-const MERCHANT_SETTINGS_OBJECT_KEYS = ['checkout_settings'];
+const MERCHANT_SETTINGS_OBJECT_KEYS = ['checkout_settings', 'fraud_rules'];
 
 // Merge only the known keys of `patch` onto `current`; a null value clears
 // that key (back to "not configured").
@@ -162,6 +162,16 @@ function applyMerchantSettings(current, patch) {
 async function updateWorkspace({ workspaceId, patch }, req) {
   const workspace = await db.Workspace.findByPk(workspaceId);
   if (!workspace) throw new NotFoundError('Workspace');
+
+  // Fraud rules decide which storefront orders get held or refused, so they
+  // take workspace.manage on top of the route's website.edit (which an Editor
+  // has). Any mention of the key counts, null included, and the whole request
+  // is refused before anything in it is written.
+  const touchesFraudRules =
+    patch.settings && typeof patch.settings === 'object' && Object.prototype.hasOwnProperty.call(patch.settings, 'fraud_rules');
+  if (touchesFraudRules && !req.tenant.hasPermission(PERMISSIONS.WORKSPACE_MANAGE)) {
+    throw new AuthorizationError('Changing fraud rules requires the workspace.manage permission');
+  }
 
   const before = {
     name: workspace.name,
