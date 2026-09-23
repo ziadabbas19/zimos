@@ -81,6 +81,20 @@ async function buildIndex(cities) {
   }));
 }
 
+/**
+ * The storefront sends the governorate bilingually, "القاهرة (Cairo)". Such a
+ * value is tried as its two parts; anything else is tried as it is.
+ */
+function nameVariants(raw) {
+  const text = raw == null ? '' : String(raw);
+  const parts = text.match(/^\s*([^()]+?)\s*\(\s*([^()]+?)\s*\)\s*$/);
+  return parts ? [parts[1], parts[2]] : [text];
+}
+
+/** Cities any of the normalised names match exactly, each city once. */
+const citiesNamed = (cities, names) =>
+  cities.filter((e) => names.some((name) => name && e.names.includes(name)));
+
 const cityView = (city) => ({ id: city.id, name: city.name, nameAr: city.nameAr });
 
 function candidateRow(city, district, suggested = false) {
@@ -144,15 +158,19 @@ async function matchAddress(carrierCode, index, shippingAddress, explicit) {
   }
 
   const orderAddress = { province: address.province || null, city: address.city || null };
-  const [province, area] = await normalizeAll([address.province || '', address.city || '']);
+  const provinceVariants = nameVariants(address.province);
+  const areaVariants = nameVariants(address.city);
+  const [area, ...rest] = await normalizeAll([address.city || '', ...provinceVariants, ...areaVariants]);
+  const provinceNames = rest.slice(0, provinceVariants.length);
+  const areaNames = rest.slice(provinceVariants.length);
   const cities = index.filter(deliverable);
 
-  let cityMatches = province ? cities.filter((e) => e.names.includes(province)) : [];
+  let cityMatches = citiesNamed(cities, provinceNames);
   let areaText = area;
   if (cityMatches.length === 0 && area) {
     // No province, or one we can't read: the "city" field may itself be the
     // governorate ("Cairo"). Then there is no area text left to match on.
-    cityMatches = cities.filter((e) => e.names.includes(area));
+    cityMatches = citiesNamed(cities, areaNames);
     if (cityMatches.length > 0) areaText = '';
   }
   if (cityMatches.length !== 1) {

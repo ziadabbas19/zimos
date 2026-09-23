@@ -579,6 +579,9 @@ describe('booking a Bosta shipment', () => {
     [{ province: 'El Giza', city: 'Al-Dokki' }, 'D-DOKKI'],
     [{ province: 'محافظة القاهرة', city: '15 مايو' }, 'D-15'],
     [{ province: null, city: 'Cairo' }, null],
+    [{ province: 'القاهرة (Cairo)', city: 'مدينة نصر' }, 'D-NASR'],
+    [{ province: 'الجيزة (Giza)', city: 'Dokki' }, 'D-DOKKI'],
+    [{ province: null, city: 'القاهرة (Cairo)' }, null],
   ])('matches common spellings: %j', async (address, districtId) => {
     const ctx = await readyToBook({ address: { country: 'EG', addressLine: '99 Some Long Street', ...address } });
     const res = await createShipment(ctx.token, ctx.workspace.id, ctx.order.id);
@@ -590,6 +593,16 @@ describe('booking a Bosta shipment', () => {
       expect(res.status).toBe(422);
       expect(res.body.error.details).toMatchObject({ level: 'district', matchedCity: { id: 'CAI' } });
     }
+  });
+
+  it('asks for the city when the two halves of "X (Y)" name different cities', async () => {
+    const ctx = await readyToBook({ address: { country: 'EG', province: 'القاهرة (Giza)', city: 'Dokki', addressLine: '1 Mixed Up Road Here' } });
+    const res = await createShipment(ctx.token, ctx.workspace.id, ctx.order.id);
+    expect(res.status).toBe(422);
+    expect(res.body.error.code).toBe('CARRIER_ADDRESS_UNMATCHED');
+    expect(res.body.error.details.level).toBe('city');
+    expect(res.body.error.details.candidates.map((c) => [c.cityId, c.suggested])).toEqual([['CAI', true], ['GIZ', true]]);
+    expect(callsTo('POST', '/deliveries')).toHaveLength(0);
   });
 
   it('marks the account invalid when Bosta rejects the stored key', async () => {
