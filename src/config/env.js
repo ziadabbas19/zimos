@@ -105,9 +105,13 @@ const env = {
       .filter(Boolean),
   },
 
+  // Under NODE_ENV=test email and SMS are pinned to `console` (as storage is
+  // pinned to `local` below) so a dev .env with EMAIL_PROVIDER=brevo or
+  // SMS_PROVIDER=twilio can't make the suite send real mail/SMS. A test that
+  // wants a real adapter sets env.notifications.*Provider at runtime.
   notifications: {
-    emailProvider: process.env.EMAIL_PROVIDER || 'console',
-    smsProvider: process.env.SMS_PROVIDER || 'console',
+    emailProvider: process.env.NODE_ENV === 'test' ? 'console' : process.env.EMAIL_PROVIDER || 'console',
+    smsProvider: process.env.NODE_ENV === 'test' ? 'console' : process.env.SMS_PROVIDER || 'console',
     whatsappProvider: process.env.WHATSAPP_PROVIDER || 'console',
     smtp: {
       host: process.env.SMTP_HOST || '',

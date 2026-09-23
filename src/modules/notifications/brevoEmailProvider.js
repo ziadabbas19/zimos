@@ -10,6 +10,9 @@ const BREVO_ENDPOINT = 'https://api.brevo.com/v3/smtp/email';
 // 3 attempts: immediate, then ~1s, then ~3s. Zero delays under test.
 const RETRY_DELAYS = env.isTest ? [0, 0, 0] : [0, 1000, 3000];
 
+// Per attempt. Without it a hung Brevo connection hangs the send indefinitely.
+const SEND_TIMEOUT_MS = 10_000;
+
 function buildPayload({ to, subject, html, text, fromAddress, fromName }) {
   return {
     sender: { email: fromAddress, name: fromName },
@@ -21,15 +24,24 @@ function buildPayload({ to, subject, html, text, fromAddress, fromName }) {
 }
 
 async function sendOnce(payload, apiKey) {
-  const res = await fetch(BREVO_ENDPOINT, {
-    method: 'POST',
-    headers: {
-      'api-key': apiKey,
-      'content-type': 'application/json',
-      accept: 'application/json',
-    },
-    body: JSON.stringify(payload),
-  });
+  let res;
+  try {
+    res = await fetch(BREVO_ENDPOINT, {
+      method: 'POST',
+      headers: {
+        'api-key': apiKey,
+        'content-type': 'application/json',
+        accept: 'application/json',
+      },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(SEND_TIMEOUT_MS),
+    });
+  } catch (err) {
+    // Same shape as an HTTP failure, minus `status`: the retry layer treats a
+    // status-less error (timeout, connection reset) as transient.
+    const reason = err.name === 'TimeoutError' ? `timed out after ${SEND_TIMEOUT_MS}ms` : err.message;
+    throw new Error(`Brevo send failed: ${reason}`);
+  }
 
   if (!res.ok) {
     const body = await res.text().catch(() => '');

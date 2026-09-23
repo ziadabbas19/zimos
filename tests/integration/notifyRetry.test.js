@@ -85,6 +85,35 @@ describe('email (Brevo) retry', () => {
     expect(log).toMatchObject({ status: 'failed', attempts: 3 });
   });
 
+  it('passes a hard timeout signal; a timed-out attempt fails in the provider-error shape and is retried', async () => {
+    const timeout = Object.assign(new Error('The operation was aborted due to timeout'), { name: 'TimeoutError' });
+    fetchSpy.mockReset().mockRejectedValue(timeout);
+
+    const r = await notify.email({ recipient: 'timeout@zimos.test', template: 'password_reset', data: { token: 'tok' } });
+
+    expect(fetchSpy.mock.calls[0][1].signal).toBeInstanceOf(AbortSignal);
+    expect(fetchSpy).toHaveBeenCalledTimes(3); // status-less => transient
+    expect(r).toMatchObject({ status: 'failed', attempts: 3 });
+    const log = await lastLog('timeout@zimos.test', 'email');
+    expect(log.error).toMatch(/^Brevo send failed: timed out after 10000ms/);
+  });
+
+  it('under NODE_ENV=test the providers are pinned to console whatever .env says', () => {
+    jest.isolateModules(() => {
+      const saved = { e: process.env.EMAIL_PROVIDER, s: process.env.SMS_PROVIDER };
+      process.env.EMAIL_PROVIDER = 'brevo';
+      process.env.SMS_PROVIDER = 'twilio';
+      try {
+        const freshEnv = require('../../src/config/env');
+        expect(freshEnv.notifications.emailProvider).toBe('console');
+        expect(freshEnv.notifications.smsProvider).toBe('console');
+      } finally {
+        if (saved.e === undefined) delete process.env.EMAIL_PROVIDER; else process.env.EMAIL_PROVIDER = saved.e;
+        if (saved.s === undefined) delete process.env.SMS_PROVIDER; else process.env.SMS_PROVIDER = saved.s;
+      }
+    });
+  });
+
   it('the console provider path is unaffected (1 attempt, no fetch)', async () => {
     env.notifications.emailProvider = 'console';
     fetchSpy.mockReset();
