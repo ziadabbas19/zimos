@@ -166,6 +166,11 @@ const advance = {
     sessionId: uuid.required(),
   }),
   body: Joi.object({
+    // Which step the visitor produced this outcome on. Optional for backward
+    // compatibility; when sent it must still be the session's current step or
+    // the advance is refused with 409 STEP_MISMATCH, so a stale tab or a
+    // double-submitted button cannot route the visitor from the wrong place.
+    fromStepKey: stepKey.optional(),
     outcome: Joi.object({
       type: Joi.string()
         .valid('completed_checkout', 'accepted_offer', 'declined_offer', 'clicked_through')

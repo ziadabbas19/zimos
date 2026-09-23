@@ -25,4 +25,12 @@ const uploadMedia = asyncHandler(async (req, res) => {
   res.status(201).json(result);
 });
 
-module.exports = { acceptFile, uploadMedia };
+const listMedia = asyncHandler(async (req, res) => {
+  res.json(await service.listMedia(req.tenant.workspaceId, req.query));
+});
+
+const deleteMedia = asyncHandler(async (req, res) => {
+  res.json(await service.deleteMedia(req.tenant.workspaceId, req.params.mediaId, req));
+});
+
+module.exports = { acceptFile, uploadMedia, listMedia, deleteMedia };

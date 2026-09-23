@@ -7,9 +7,10 @@ const Op = db.Sequelize.Op;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 /**
- * Subscription state. No payment gateway is connected yet (see
- * gatewaySignature.js) — wiring one in means implementing
- * `verifyGatewaySignature` and adjusting `EVENT_STATUS_MAP`.
+ * Subscription state. No payment gateway is connected yet — webhook bodies are
+ * already authenticated (gatewaySignature.js, HMAC-SHA256 over the raw body),
+ * so wiring a provider in means adapting that check to its header/encoding and
+ * remapping `EVENT_STATUS_MAP` to its event names.
  */
 
 // Generic gateway event name -> our Subscription.status. Remapped to a real

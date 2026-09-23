@@ -3,6 +3,7 @@ const asyncHandler = require('express-async-handler');
 const cartService = require('../cart/cartService');
 const orderService = require('../orders/orderService');
 const { AppError } = require('../../core/errors/AppError');
+const { assertRequiredCheckoutFields } = require('./checkoutSettings');
 
 /**
  * Guest checkout (no login). Runs the same orderService.createOrder as the
@@ -13,6 +14,10 @@ const { AppError } = require('../../core/errors/AppError');
 const checkout = asyncHandler(async (req, res) => {
   const cartToken = req.headers['x-cart-token'];
   const { item, ...orderBody } = req.body;
+
+  // Per-store required fields (settings.checkout_settings). Checked before any
+  // cart work so a rejected checkout costs nothing.
+  assertRequiredCheckoutFields(req.publicWorkspace, req.body);
 
   let items;
   let cart = null;

@@ -10,6 +10,7 @@ const backends = { local: localStorage, r2: r2Storage };
 // env.js). Read here rather than captured once so a runtime override in tests
 // still applies. Every backend exposes the same
 //   put({ workspaceId, filename, buffer, contentType }) -> { url, path }
+//   remove(path)  — deletes one object by the key put() returned
 function getStorage() {
   const name = env.storage.provider;
   const backend = backends[name];

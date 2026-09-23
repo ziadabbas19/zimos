@@ -36,6 +36,15 @@ const ALLOWED_ELEMENT_TYPES = new Set([
   'product_list',
   'collection_list',
   'cart',
+  // Motion/"awwwards" sections. Like every other type these are structured
+  // props the frontend renders — never markup — so adding them cannot open a
+  // raw-HTML hole. Their prop contract is checked by ELEMENT_PROP_RULES below.
+  'shader_hero',
+  'product_3d',
+  'orbit_gallery',
+  'scroll_story',
+  'marquee',
+  'comparison',
 ]);
 
 const MAX_NODES = 10000;
@@ -44,6 +53,124 @@ const MAX_COLUMN_SPAN = 12;
 function isPlainObject(v) {
   return v !== null && typeof v === 'object' && !Array.isArray(v);
 }
+
+// --- URL safety -------------------------------------------------------
+// Anything that ends up in an href/src attribute goes through this. Page
+// trees are authored by staff, but a compromised or careless editor session
+// must not be able to plant `javascript:`/`data:` in a link that then runs on
+// every shopper's browser. Relative paths and in-page anchors stay allowed
+// because that is what internal links look like.
+const SAFE_URL_SCHEMES = new Set(['http:', 'https:', 'mailto:', 'tel:']);
+
+function isSafeUrl(value) {
+  if (typeof value !== 'string') return false;
+  // Browsers ignore control characters inside a scheme, so a "javascript:"
+  // split by a newline or a NUL is still live markup to them — strip those
+  // out before deciding what the scheme is.
+  const v = value.replace(/[\u0000-\u001F\u007F]+/g, '').trim();
+  if (v === '') return true; // "not set yet" — the builder saves partial drafts
+  if (v.startsWith('#')) return true; // in-page anchor
+  if (v.startsWith('//')) return false; // protocol-relative: inherits whatever we are on
+  if (v.startsWith('/')) return true; // same-site absolute path
+  if (!/^[A-Za-z][A-Za-z0-9+.-]*:/.test(v)) return true; // relative path ("about", "products/42")
+  try {
+    return SAFE_URL_SCHEMES.has(new URL(v).protocol);
+  } catch (err) {
+    return false;
+  }
+}
+
+// --- per-type prop contracts -------------------------------------------
+// Only the newer motion sections declare one; the original types keep the
+// "props is an object" contract they were written with, and are left alone.
+// Every prop is optional — the builder autosaves half-filled sections — so
+// these rules police shape and size, not presence.
+const check = {
+  string: (max) => (v) => (typeof v === 'string' && v.length <= max ? null : `must be a string of at most ${max} characters`),
+  url: (v) => (isSafeUrl(v) ? null : 'must be a http(s), mailto:, tel: or same-site URL'),
+  uuid: (v) =>
+    typeof v === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v)
+      ? null
+      : 'must be a UUID',
+  intRange: (min, max) => (v) =>
+    Number.isInteger(v) && v >= min && v <= max ? null : `must be a whole number between ${min} and ${max}`,
+  oneOf: (...allowed) => (v) => (allowed.includes(v) ? null : `must be one of: ${allowed.join(', ')}`),
+  // A size that the frontend may express either as a keyword or as a pixel count.
+  size: (v) =>
+    (typeof v === 'string' && v.length <= 20) || (Number.isFinite(v) && v > 0)
+      ? null
+      : 'must be a size keyword or a positive number',
+  boolOrString: (max) => (v) =>
+    typeof v === 'boolean' || (typeof v === 'string' && v.length <= max)
+      ? null
+      : `must be a boolean or a string of at most ${max} characters`,
+  listOf: (maxItems, itemRule) => (v, field, errors) => {
+    if (!Array.isArray(v)) return `must be an array`;
+    if (v.length > maxItems) return `must hold at most ${maxItems} items`;
+    v.forEach((entry, i) => applyRule(itemRule, entry, `${field}[${i}]`, errors));
+    return null;
+  },
+  // A nested object with its own per-key rules (a scroll_story step, a
+  // comparison row). Unknown keys are left alone, like props themselves.
+  shape: (rules) => (v, field, errors) => {
+    if (!isPlainObject(v)) return 'must be an object';
+    validateProps(v, rules, field, errors);
+    return null;
+  },
+};
+
+function applyRule(rule, value, field, errors) {
+  if (value === undefined || value === null) return; // unset is always fine
+  const message = rule(value, field, errors);
+  if (message) errors.push({ field, message: `"${field.split('.').pop()}" ${message}` });
+}
+
+function validateProps(props, rules, field, errors) {
+  for (const [key, rule] of Object.entries(rules)) {
+    applyRule(rule, props[key], `${field}.${key}`, errors);
+  }
+}
+
+const ELEMENT_PROP_RULES = {
+  shader_hero: {
+    title: check.string(300),
+    subtitle: check.string(600),
+    ctaLabel: check.string(100),
+    ctaHref: check.url,
+    height: check.size,
+  },
+  product_3d: {
+    title: check.string(300),
+    productId: check.uuid,
+    modelUrl: check.url,
+  },
+  orbit_gallery: {
+    title: check.string(300),
+    limit: check.intRange(1, 50),
+    collectionId: check.uuid,
+  },
+  scroll_story: {
+    title: check.string(300),
+    steps: check.listOf(
+      12,
+      check.shape({ title: check.string(300), body: check.string(2000), image: check.url })
+    ),
+  },
+  marquee: {
+    items: check.listOf(30, check.string(200)),
+    speed: check.oneOf('slow', 'normal', 'fast'),
+    tone: check.oneOf('line', 'primary'),
+  },
+  comparison: {
+    title: check.string(300),
+    usLabel: check.string(100),
+    themLabel: check.string(100),
+    rows: check.listOf(
+      20,
+      check.shape({ label: check.string(300), us: check.boolOrString(200), them: check.boolOrString(200) })
+    ),
+  },
+};
 
 function pushIdCheck(node, field, errors) {
   if (typeof node.id !== 'string' || node.id.trim() === '') {
@@ -72,6 +199,8 @@ function validateElement(el, field, errors, counter) {
   }
   if (el.props !== undefined && !isPlainObject(el.props)) {
     errors.push({ field: `${field}.props`, message: '"props" must be an object when present' });
+  } else if (isPlainObject(el.props) && ELEMENT_PROP_RULES[el.type]) {
+    validateProps(el.props, ELEMENT_PROP_RULES[el.type], `${field}.props`, errors);
   }
   if (el.settings !== undefined && !isPlainObject(el.settings)) {
     errors.push({ field: `${field}.settings`, message: '"settings" must be an object when present' });
@@ -213,4 +342,4 @@ function validatePageTree(data, { requireContent = false, label = 'page' } = {})
 
 const EMPTY_TREE = Object.freeze({ version: 1, sections: [] });
 
-module.exports = { validatePageTree, ALLOWED_ELEMENT_TYPES, EMPTY_TREE, MAX_NODES };
+module.exports = { validatePageTree, ALLOWED_ELEMENT_TYPES, ELEMENT_PROP_RULES, isSafeUrl, EMPTY_TREE, MAX_NODES };

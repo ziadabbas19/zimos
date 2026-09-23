@@ -100,14 +100,14 @@ async function priceLine(workspaceId, { variantId, offerId, quantity }, transact
   };
 }
 
-async function createOrder(workspaceId, payload, req) {
+async function createOrder(workspaceId, payload, req, { transaction: outerTransaction } = {}) {
   const { items, contact, shippingAddress, paymentMethod, discountCode, funnelId, websiteId, notes } = payload;
 
   if (!items || items.length === 0) {
     throw new ValidationError([{ field: 'items', message: 'At least one item is required' }]);
   }
 
-  return db.sequelize.transaction(async (transaction) => {
+  const run = async (transaction) => {
     const customer = await customerService.findOrCreateByPhone(workspaceId, contact, transaction);
 
     const riskFlags = [];
@@ -254,7 +254,15 @@ async function createOrder(workspaceId, payload, req) {
     });
 
     return { order, items: orderItems };
-  });
+  };
+
+  // Joining the caller's transaction rather than opening our own keeps the
+  // order atomic with whatever that caller is doing — see
+  // funnels/funnelsService.advanceSession, where an accepted upsell must
+  // commit with the session move or not at all. A nested
+  // sequelize.transaction() would take a second connection and could block on
+  // rows the caller has already locked.
+  return outerTransaction ? run(outerTransaction) : db.sequelize.transaction(run);
 }
 
 async function getOrder(workspaceId, orderId) {

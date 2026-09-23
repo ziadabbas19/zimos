@@ -4,9 +4,17 @@ const db = require('../../db/models');
 const { scoped } = require('../../core/utils/scopedRepository');
 const { NotFoundError, ConflictError, ValidationError, AppError } = require('../../core/errors/AppError');
 const { recordAudit } = require('../audit/auditService');
+const logger = require('../../core/utils/logger');
 const slugify = require('../../core/utils/slugify');
 const orderService = require('../orders/orderService');
-const { validateStepData, validateGraph, resolveEntry, OFFER_STEP_TYPES, EMPTY_TREE } = require('./funnelGraph');
+const {
+  validateStepData,
+  validateGraph,
+  resolveEntry,
+  isTerminalStep,
+  OFFER_STEP_TYPES,
+  EMPTY_TREE,
+} = require('./funnelGraph');
 const { conditionProblem, pickNextEdge } = require('./funnelRouting');
 
 const Op = db.Sequelize.Op;
@@ -674,6 +682,26 @@ function publicSession(session) {
   };
 }
 
+const stepExists = (snapshot, stepKey) => (snapshot.steps || []).some((s) => s.key === stepKey);
+
+/**
+ * Republishing a funnel can delete the step a live session is sitting on. The
+ * visitor is then mid-journey on a page that no longer exists, so put them
+ * back at the funnel's entry instead of answering "Step not found". Their
+ * path is cleared with it: every key in it may be gone too.
+ */
+async function resetSessionToEntry(session, snapshot, transaction) {
+  const entryKey = snapshot.entryKey;
+  if (!entryKey || !stepExists(snapshot, entryKey)) throw new NotFoundError('Step');
+  logger.warn(
+    `funnel session ${session.id}: step "${session.currentStepKey}" is no longer in the published revision — restarting at "${entryKey}"`
+  );
+  session.currentStepKey = entryKey;
+  session.path = [];
+  await session.save(transaction ? { transaction } : undefined);
+  return session;
+}
+
 async function loadPublishedSnapshot(workspaceId, funnelId, transaction) {
   const funnel = await db.Funnel.findOne({
     where: { id: funnelId, workspaceId },
@@ -718,6 +746,13 @@ async function startSession(workspaceId, funnelRef, body) {
     });
   }
 
+  // Only 'active' sessions are resumed above, so a completed visitor always
+  // starts a fresh journey. A resumed one may still be sitting on a step a
+  // republish removed.
+  if (!stepExists(snapshot, session.currentStepKey)) {
+    await resetSessionToEntry(session, snapshot);
+  }
+
   const payload = await resolveStepPayload(workspaceId, snapshot, session.currentStepKey);
   return {
     funnel: { id: funnel.id, name: funnel.name, subdomain: funnel.subdomain },
@@ -730,8 +765,18 @@ async function getSessionStep(workspaceId, funnelId, sessionId) {
   const session = await db.FunnelSession.findOne({ where: { id: sessionId, funnelId, workspaceId } });
   if (!session) throw new NotFoundError('FunnelSession');
   const { snapshot } = await loadPublishedSnapshot(workspaceId, funnelId);
+
   if (session.status === 'completed') {
-    return { done: true, session: publicSession(session) };
+    // Still serve the step it finished on — that page is the thank-you the
+    // visitor is looking at, and refreshing it must not blank it. Nothing to
+    // render (or to resume) if a republish removed that step.
+    if (!stepExists(snapshot, session.currentStepKey)) return { done: true, session: publicSession(session) };
+    const finishedPayload = await resolveStepPayload(workspaceId, snapshot, session.currentStepKey);
+    return { done: true, session: publicSession(session), ...finishedPayload };
+  }
+
+  if (!stepExists(snapshot, session.currentStepKey)) {
+    await resetSessionToEntry(session, snapshot);
   }
   const payload = await resolveStepPayload(workspaceId, snapshot, session.currentStepKey);
   return { session: publicSession(session), ...payload };
@@ -741,22 +786,25 @@ async function getSessionStep(workspaceId, funnelId, sessionId) {
  * Creates the follow-on order for an accepted upsell/downsell through the
  * shared order engine (server-side pricing, transactional inventory,
  * idempotency) and reuses the original order's customer/address/payment.
- * Runs in its own transaction (orderService.createOrder always does); the
- * caller links it via `linked_from_order_id` afterwards.
+ * Runs inside the caller's transaction, so the order and the session move that
+ * routes the visitor past the offer commit together or not at all — a failure
+ * after the order was created must never leave a charged visitor on a session
+ * that never advanced. The caller links it via `linked_from_order_id`.
  */
-async function createFollowOnOrder(workspaceId, funnelId, step, session, req) {
+async function createFollowOnOrder(workspaceId, funnelId, step, session, req, transaction) {
   if (!session.orderId) {
     throw new ValidationError(
       [{ field: 'session', message: 'This upsell has no prior order to attach to — the visitor must complete checkout first' }],
       'Cannot accept this offer'
     );
   }
-  const original = await db.Order.findOne({ where: { id: session.orderId, workspaceId } });
+  const original = await db.Order.findOne({ where: { id: session.orderId, workspaceId }, transaction });
   if (!original) throw new NotFoundError('Order');
 
   const offer = await db.Offer.findOne({
     where: { id: step.offerId, workspaceId, status: 'active' },
     include: [{ model: db.OfferVariant, as: 'lines' }],
+    transaction,
   });
   if (!offer || (offer.lines || []).length === 0) throw new NotFoundError('Offer');
 
@@ -769,13 +817,14 @@ async function createFollowOnOrder(workspaceId, funnelId, step, session, req) {
       paymentMethod: original.paymentMethod,
       funnelId,
     },
-    { user: null, headers: req && req.headers ? req.headers : {}, ip: req ? req.ip : null }
+    { user: null, headers: req && req.headers ? req.headers : {}, ip: req ? req.ip : null },
+    { transaction }
   );
   return { order, originalId: original.id };
 }
 
 async function advanceSession(workspaceId, funnelId, sessionId, body, req) {
-  const { outcome } = body;
+  const { outcome, fromStepKey } = body;
 
   return db.sequelize.transaction(async (t) => {
     const session = await db.FunnelSession.findOne({
@@ -784,6 +833,19 @@ async function advanceSession(workspaceId, funnelId, sessionId, body, req) {
       transaction: t,
     });
     if (!session) throw new NotFoundError('FunnelSession');
+
+    // A stale tab, a double-submitted button or a replayed request: the client
+    // names the step it produced this outcome on, and the session has since
+    // moved past it. Applying it would route the visitor from somewhere they
+    // no longer are, so refuse and change nothing.
+    if (fromStepKey && fromStepKey !== session.currentStepKey) {
+      throw new AppError(
+        'STEP_MISMATCH',
+        `This outcome came from step "${fromStepKey}", but the session has already moved to "${session.currentStepKey}"`,
+        409
+      );
+    }
+
     if (session.status === 'completed') {
       return { done: true, session: publicSession(session) };
     }
@@ -800,12 +862,20 @@ async function advanceSession(workspaceId, funnelId, sessionId, body, req) {
     const steps = snapshot.steps || [];
     const edges = snapshot.edges || [];
     const currentStep = steps.find((s) => s.key === session.currentStepKey);
-    if (!currentStep) throw new NotFoundError('Step');
+    if (!currentStep) {
+      // A republish removed the step this outcome belongs to. There is nothing
+      // left to route from, so restart the visitor at the entry instead of
+      // dead-ending them; the outcome is dropped with the step it came from.
+      await resetSessionToEntry(session, snapshot, t);
+      const restarted = await resolveStepPayload(workspaceId, snapshot, session.currentStepKey);
+      return { session: publicSession(session), ...restarted };
+    }
 
-    // Accepted upsell/downsell -> a linked follow-on order (own transaction).
+    // Accepted upsell/downsell -> a linked follow-on order, in this same
+    // transaction so it cannot outlive a failed advance.
     let followOn = null;
     if (outcome.type === 'accepted_offer' && OFFER_STEP_TYPES.has(currentStep.stepType)) {
-      followOn = await createFollowOnOrder(workspaceId, funnelId, currentStep, session, req);
+      followOn = await createFollowOnOrder(workspaceId, funnelId, currentStep, session, req, t);
     }
 
     // completed_checkout carries the order just placed on this step.
@@ -824,9 +894,18 @@ async function advanceSession(workspaceId, funnelId, sessionId, body, req) {
     let result;
     if (nextEdge) {
       session.currentStepKey = nextEdge.toStepKey;
+      // Landing on a step no edge leaves ends the journey. Complete it here
+      // rather than waiting for one more advance that has nowhere to go — but
+      // still return the step, because that page is the thank-you the visitor
+      // has to see.
+      const finished = isTerminalStep(session.currentStepKey, edges);
+      if (finished) {
+        session.status = 'completed';
+        session.completedAt = new Date();
+      }
       await session.save({ transaction: t });
       const payload = await resolveStepPayload(workspaceId, snapshot, session.currentStepKey);
-      result = { session: publicSession(session), ...payload };
+      result = { ...(finished ? { done: true } : {}), session: publicSession(session), ...payload };
     } else {
       // No matching outbound edge — the funnel ends here.
       session.status = 'completed';

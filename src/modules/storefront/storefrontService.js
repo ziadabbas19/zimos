@@ -4,6 +4,7 @@ const db = require('../../db/models');
 const { NotFoundError } = require('../../core/errors/AppError');
 const { normalizePhone } = require('../../core/utils/phone');
 const reviewService = require('../reviews/reviewService');
+const { resolveCheckoutSettings } = require('../checkout/checkoutSettings');
 
 /**
  * Public (no-auth) storefront queries: only status='active' rows, and only
@@ -94,7 +95,7 @@ async function getProductBySlugOrId(workspaceId, idOrSlug) {
 async function getStorefront(workspaceId) {
   const w = await db.Workspace.findOne({
     where: { id: workspaceId },
-    attributes: ['id', 'name', 'slug', 'logoUrl', 'tagline', 'themeSettings', 'defaultCurrency'],
+    attributes: ['id', 'name', 'slug', 'logoUrl', 'tagline', 'themeSettings', 'defaultCurrency', 'settings'],
   });
   if (!w) throw new NotFoundError('Workspace');
   return {
@@ -105,6 +106,10 @@ async function getStorefront(workspaceId) {
     tagline: w.tagline,
     themeSettings: w.themeSettings || {},
     currency: w.defaultCurrency,
+    // Which optional fields the checkout form should show or demand. Always
+    // fully populated — an unconfigured store gets the defaults, which are
+    // what the checkout already enforced before this existed.
+    checkout: resolveCheckoutSettings(w),
   };
 }
 

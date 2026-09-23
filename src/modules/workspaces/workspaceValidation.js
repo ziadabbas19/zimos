@@ -4,6 +4,7 @@ const Joi = require('joi');
 const joiEmail = require('../../core/utils/joiEmail');
 const { ALL_PERMISSIONS } = require('../../core/security/permissions');
 const { workspaceSlug, SLUG_LOOKUP_MAX } = require('../../core/utils/workspaceSlug');
+const { CHECKOUT_FIELD_MODES, CHECKOUT_NOTES_MODES } = require('../checkout/checkoutSettings');
 
 const uuid = Joi.string().uuid();
 
@@ -35,6 +36,18 @@ module.exports = {
         free_shipping_threshold_amount: Joi.number().integer().min(0).allow(null).optional(),
         default_shipping_rate_amount: Joi.number().integer().min(0).allow(null).optional(),
         tax_enabled: Joi.boolean().optional(),
+        // Which optional checkout fields this store asks for. Key names track
+        // the checkout request fields they govern — see
+        // modules/checkout/checkoutSettings.js. Sub-keys merge, so a form that
+        // toggles one switch cannot blank the others; `null` on a sub-key (or
+        // on the whole object) restores the default.
+        checkout_settings: Joi.object({
+          email: Joi.string().valid(...CHECKOUT_FIELD_MODES).allow(null).optional(),
+          postal_code: Joi.string().valid(...CHECKOUT_FIELD_MODES).allow(null).optional(),
+          notes: Joi.string().valid(...CHECKOUT_NOTES_MODES).allow(null).optional(),
+        })
+          .allow(null)
+          .optional(),
       }).optional(),
     }).min(1),
   },

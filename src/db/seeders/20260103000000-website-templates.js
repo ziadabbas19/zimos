@@ -75,7 +75,6 @@ const TEMPLATES = [
     versionId: V.minimal,
     name: 'بسيط ومينيمال',
     category: 'general',
-    thumbnailUrl: 'https://media.zimos.co/templates/minimal.png',
     globalStyles: styles('#2563EB'),
     pages: [
       homePage([
@@ -90,7 +89,6 @@ const TEMPLATES = [
     versionId: V.fashion,
     name: 'أزياء وموضة',
     category: 'fashion',
-    thumbnailUrl: 'https://media.zimos.co/templates/fashion.png',
     globalStyles: styles('#1D4ED8'),
     pages: [
       homePage([
@@ -106,7 +104,6 @@ const TEMPLATES = [
     versionId: V.electronics,
     name: 'إلكترونيات وأجهزة',
     category: 'electronics',
-    thumbnailUrl: 'https://media.zimos.co/templates/electronics.png',
     globalStyles: styles('#1E40AF'),
     pages: [
       homePage([
@@ -125,7 +122,6 @@ const TEMPLATES = [
     versionId: V.food,
     name: 'أكل ومشروبات',
     category: 'food_beverage',
-    thumbnailUrl: 'https://media.zimos.co/templates/food.png',
     globalStyles: styles('#0EA5E9'),
     pages: [
       homePage([
@@ -141,7 +137,6 @@ const TEMPLATES = [
     versionId: V.funnel,
     name: 'منتج واحد — فانل بيع سريع',
     category: 'single_product',
-    thumbnailUrl: 'https://media.zimos.co/templates/funnel.png',
     globalStyles: styles('#3B82F6'),
     pages: [
       homePage([
@@ -165,7 +160,11 @@ module.exports = {
         id: t.id,
         name: t.name,
         category: t.category,
-        thumbnail_url: t.thumbnailUrl,
+        // No thumbnail is shipped: media.zimos.co never served these files,
+        // so a URL here only means a broken image in the gallery. NULL lets
+        // the card fall back to its colour/name treatment until a real
+        // screenshot is uploaded.
+        thumbnail_url: t.thumbnailUrl || null,
         is_published: true,
         created_at: now,
         updated_at: now,

@@ -6,9 +6,11 @@ const service = require('./billingService');
 const { verifyGatewaySignature } = require('./gatewaySignature');
 
 // POST /api/v1/billing/webhook  — no auth; identity comes from the signature.
+// Verified against req.rawBody (the exact bytes the gateway signed), never the
+// parsed body. A request that fails is unauthenticated, hence 401.
 const webhook = asyncHandler(async (req, res) => {
-  if (!verifyGatewaySignature(req.body, req.headers)) {
-    throw new AppError('INVALID_SIGNATURE', 'Webhook signature verification failed', 400);
+  if (!verifyGatewaySignature(req.rawBody, req.headers)) {
+    throw new AppError('INVALID_SIGNATURE', 'Webhook signature verification failed', 401);
   }
   const result = await service.applyWebhookEvent(req.body);
   // Always 200 for a well-formed request so the gateway doesn't retry storms;

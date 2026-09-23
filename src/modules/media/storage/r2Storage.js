@@ -1,6 +1,6 @@
 'use strict';
 
-const { S3Client, PutObjectCommand, HeadBucketCommand } = require('@aws-sdk/client-s3');
+const { S3Client, PutObjectCommand, DeleteObjectCommand, HeadBucketCommand } = require('@aws-sdk/client-s3');
 const env = require('../../../config/env');
 
 // Cloudflare R2 is S3-compatible. The bucket is served publicly from
@@ -45,6 +45,17 @@ async function put({ workspaceId, filename, buffer, contentType }) {
   };
 }
 
+/**
+ * Deletes one object by the `path` put() returned ("/<workspaceId>/<file>").
+ * S3 DeleteObject is idempotent — removing a key that is already gone
+ * succeeds — so this only throws on a real connectivity/permission failure.
+ */
+async function remove(storagePath) {
+  const s3 = getClient();
+  const key = String(storagePath).replace(/^\/+/, '');
+  await s3.send(new DeleteObjectCommand({ Bucket: env.storage.r2.bucketName, Key: key }));
+}
+
 // Lets tests reset the memoized client between provider switches.
 function _resetClient() {
   client = null;
@@ -63,4 +74,4 @@ async function probe() {
   return { detail: `r2 bucket "${env.storage.r2.bucketName}"` };
 }
 
-module.exports = { put, probe, _resetClient };
+module.exports = { put, remove, probe, _resetClient };

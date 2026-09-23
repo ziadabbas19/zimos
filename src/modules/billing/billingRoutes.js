@@ -8,7 +8,7 @@ const controller = require('./billingController');
 // Mounted at /api/v1/billing
 const router = Router();
 
-// Gateway webhook — no auth; the (currently stubbed) signature check is the gate.
+// Gateway webhook — no auth; the HMAC signature check is the gate.
 router.post('/webhook', controller.webhook);
 
 // Manual trial-expiry sweep (a scheduler can call this later).

@@ -124,6 +124,10 @@ const MERCHANT_SETTINGS_KEYS = [
   'tax_enabled',
 ];
 
+// Nested settings objects, merged a level deeper so a form that toggles one
+// switch cannot blank out the sibling keys it never loaded.
+const MERCHANT_SETTINGS_OBJECT_KEYS = ['checkout_settings'];
+
 // Merge only the known keys of `patch` onto `current`; a null value clears
 // that key (back to "not configured").
 function applyMerchantSettings(current, patch) {
@@ -132,6 +136,21 @@ function applyMerchantSettings(current, patch) {
     if (!(key in patch)) continue;
     if (patch[key] === null) delete next[key];
     else next[key] = patch[key];
+  }
+  for (const key of MERCHANT_SETTINGS_OBJECT_KEYS) {
+    if (!(key in patch)) continue;
+    if (patch[key] === null) {
+      delete next[key];
+      continue;
+    }
+    const merged = { ...(next[key] || {}) };
+    for (const [subKey, value] of Object.entries(patch[key])) {
+      if (value === null) delete merged[subKey];
+      else merged[subKey] = value;
+    }
+    // An object emptied key by key is the same as "not configured".
+    if (Object.keys(merged).length === 0) delete next[key];
+    else next[key] = merged;
   }
   return next;
 }

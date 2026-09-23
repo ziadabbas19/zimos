@@ -65,7 +65,8 @@ describe('media upload — R2 backend', () => {
     expect(res.body.size).toBe(PNG.length);
     expect(res.body.path).toMatch(new RegExp(`^/${workspace.id}/[0-9a-f-]+\\.png$`));
     expect(res.body.url).toBe(`${R2_PUBLIC}${res.body.path}`);
-    expect(Object.keys(res.body).sort()).toEqual(['mimeType', 'path', 'size', 'url']);
+    // Same shape on either backend, plus the media-library row's id.
+    expect(Object.keys(res.body).sort()).toEqual(['id', 'mimeType', 'path', 'size', 'url']);
 
     // the object really went through the R2 client
     expect(mockS3Send).toHaveBeenCalledTimes(1);

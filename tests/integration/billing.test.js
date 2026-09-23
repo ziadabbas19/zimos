@@ -2,12 +2,40 @@
 
 const { app, request, registerAndActivate, createWorkspace } = require('../helpers/factories');
 const db = require('../../src/db/models');
+const env = require('../../src/config/env');
 const billingService = require('../../src/modules/billing/billingService');
+const { signPayload, SIGNATURE_HEADER } = require('../../src/modules/billing/gatewaySignature');
+
+// The gateway webhook is authenticated by an HMAC over the raw body, so every
+// call here signs its payload with a test secret. env is mutated in place (the
+// same way mediaR2Storage.test.js switches storage provider) because the
+// verifier reads the value per request.
+const TEST_SECRET = 'test_billing_webhook_secret_0123456789';
+const ORIGINAL_SECRET = env.billing.webhookSecret;
+
+/**
+ * POSTs a webhook, correctly signed by default. Pass `signature` to send a
+ * specific header value (or null for none), or `secret` to sign with the
+ * wrong key. The body goes out pre-serialised so the bytes signed are exactly
+ * the bytes sent.
+ */
+function postWebhook(payload, { signature, secret } = {}) {
+  const raw = JSON.stringify(payload);
+  const req = request(app).post('/api/v1/billing/webhook').type('json');
+  const header = signature === undefined ? signPayload(raw, secret || TEST_SECRET) : signature;
+  if (header !== null) req.set(SIGNATURE_HEADER, header);
+  return req.send(raw);
+}
 
 // The global beforeEach (tests/helpers/setup.js) truncates every table first;
 // re-seed the default plans after that so workspace creation picks a real plan.
 beforeEach(async () => {
+  env.billing.webhookSecret = TEST_SECRET;
   await billingService.seedDefaultPlans();
+});
+
+afterAll(() => {
+  env.billing.webhookSecret = ORIGINAL_SECRET;
 });
 
 async function setup() {
@@ -41,28 +69,24 @@ describe('subscription scaffolding (no gateway)', () => {
     expect(days).toBeLessThan(14.5);
   });
 
-  it('the webhook flips subscription status on mapped events (with the stubbed signature check)', async () => {
+  it('the webhook flips subscription status on mapped events when the signature checks out', async () => {
     const { wid } = await setup();
 
-    const activated = await request(app)
-      .post('/api/v1/billing/webhook')
-      .send({ type: 'subscription.activated', data: { workspaceId: wid } });
+    const activated = await postWebhook({ type: 'subscription.activated', data: { workspaceId: wid } });
     expect(activated.status).toBe(200);
     expect(activated.body.handled).toBe(true);
     expect((await subOf(wid)).status).toBe('active');
 
-    await request(app).post('/api/v1/billing/webhook').send({ type: 'payment.failed', data: { workspaceId: wid } });
+    await postWebhook({ type: 'payment.failed', data: { workspaceId: wid } });
     expect((await subOf(wid)).status).toBe('past_due');
 
-    await request(app).post('/api/v1/billing/webhook').send({ type: 'subscription.canceled', data: { workspaceId: wid } });
+    await postWebhook({ type: 'subscription.canceled', data: { workspaceId: wid } });
     expect((await subOf(wid)).status).toBe('cancelled');
   });
 
   it('the webhook is a safe no-op for an unmapped event type', async () => {
     const { wid } = await setup();
-    const res = await request(app)
-      .post('/api/v1/billing/webhook')
-      .send({ type: 'invoice.paid', data: { workspaceId: wid } });
+    const res = await postWebhook({ type: 'invoice.paid', data: { workspaceId: wid } });
     expect(res.status).toBe(200);
     expect(res.body.handled).toBe(false);
   });
@@ -79,7 +103,7 @@ describe('subscription scaffolding (no gateway)', () => {
     expect(provisioned.status).toBe(200);
 
     // Lapse it.
-    await request(app).post('/api/v1/billing/webhook').send({ type: 'subscription.canceled', data: { workspaceId: wid } });
+    await postWebhook({ type: 'subscription.canceled', data: { workspaceId: wid } });
 
     // Mutating actions are blocked with a clear error.
     const blockedSite = await request(app)
@@ -141,5 +165,71 @@ describe('subscription scaffolding (no gateway)', () => {
     expect(res.headers['content-type']).toMatch(/html/);
     expect(res.text).toMatch(/Platform admin/);
     expect(res.text).toContain('Billing Co');
+  });
+});
+
+describe('billing webhook signature', () => {
+  it('processes a correctly signed webhook', async () => {
+    const { wid } = await setup();
+    const res = await postWebhook({ type: 'subscription.activated', data: { workspaceId: wid } });
+    expect(res.status).toBe(200);
+    expect(res.body.handled).toBe(true);
+    expect((await subOf(wid)).status).toBe('active');
+  });
+
+  it('rejects a webhook with no signature header', async () => {
+    const { wid } = await setup();
+    const res = await postWebhook({ type: 'subscription.canceled', data: { workspaceId: wid } }, { signature: null });
+    expect(res.status).toBe(401);
+    expect(res.body.error.code).toBe('INVALID_SIGNATURE');
+    expect((await subOf(wid)).status).toBe('trialing'); // nothing was applied
+  });
+
+  it('rejects a webhook signed with the wrong secret', async () => {
+    const { wid } = await setup();
+    const res = await postWebhook(
+      { type: 'subscription.canceled', data: { workspaceId: wid } },
+      { secret: 'not_the_configured_secret' }
+    );
+    expect(res.status).toBe(401);
+    expect((await subOf(wid)).status).toBe('trialing');
+  });
+
+  it('rejects a signature of the right length but the wrong bytes', async () => {
+    const { wid } = await setup();
+    const payload = { type: 'subscription.canceled', data: { workspaceId: wid } };
+    const valid = signPayload(JSON.stringify(payload), TEST_SECRET);
+    const tampered = (valid[0] === 'a' ? 'b' : 'a') + valid.slice(1);
+    const res = await postWebhook(payload, { signature: tampered });
+    expect(res.status).toBe(401);
+    expect((await subOf(wid)).status).toBe('trialing');
+  });
+
+  it('rejects a body that was tampered with after it was signed', async () => {
+    const { wid } = await setup();
+    const signed = signPayload(JSON.stringify({ type: 'payment.failed', data: { workspaceId: wid } }), TEST_SECRET);
+    const res = await request(app)
+      .post('/api/v1/billing/webhook')
+      .type('json')
+      .set(SIGNATURE_HEADER, signed)
+      .send(JSON.stringify({ type: 'subscription.canceled', data: { workspaceId: wid } }));
+    expect(res.status).toBe(401);
+    expect((await subOf(wid)).status).toBe('trialing');
+  });
+
+  it('rejects every webhook when BILLING_WEBHOOK_SECRET is unset — an unsigned one is never accepted', async () => {
+    const { wid } = await setup();
+    const payload = { type: 'subscription.activated', data: { workspaceId: wid } };
+    const signedWithOldSecret = signPayload(JSON.stringify(payload), TEST_SECRET);
+
+    env.billing.webhookSecret = '';
+    try {
+      expect((await postWebhook(payload, { signature: null })).status).toBe(401);
+      expect((await postWebhook(payload, { signature: signedWithOldSecret })).status).toBe(401);
+    } finally {
+      env.billing.webhookSecret = TEST_SECRET;
+    }
+
+    expect((await subOf(wid)).status).toBe('trialing');
   });
 });

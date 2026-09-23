@@ -59,7 +59,18 @@ app.use(
     credentials: true,
   })
 );
-app.use(express.json({ limit: '2mb' }));
+// `verify` keeps the exact bytes Express parsed so webhook signatures can be
+// checked against what the gateway actually signed — a re-serialised req.body
+// would differ by key order or whitespace and never match. See
+// modules/billing/gatewaySignature.js.
+app.use(
+  express.json({
+    limit: '2mb',
+    verify: (req, res, buf) => {
+      req.rawBody = buf;
+    },
+  })
+);
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 

@@ -156,6 +156,15 @@ const env = {
     defaultProvider: process.env.PAYMENTS_DEFAULT_PROVIDER || 'mock',
   },
 
+  // Shared secret the billing gateway signs its webhook bodies with
+  // (HMAC-SHA256, hex, sent as X-Zimos-Signature). Deliberately has no
+  // fallback: with nothing configured every webhook is rejected rather than
+  // trusted, so a missing value can never become an open endpoint that lets
+  // anyone flip a subscription to `active`. See modules/billing/gatewaySignature.js.
+  billing: {
+    webhookSecret: (process.env.BILLING_WEBHOOK_SECRET || '').trim(),
+  },
+
   webhooks: {
     signingAlgo: process.env.WEBHOOK_SIGNING_ALGO || 'sha256',
   },

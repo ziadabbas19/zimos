@@ -29,6 +29,15 @@ const STEP_TYPES = new Set([
 // Steps that sell an offer when the visitor accepts them.
 const OFFER_STEP_TYPES = new Set(['upsell', 'downsell']);
 
+/**
+ * A step no edge leaves is where the funnel ends — a thank-you page, or any
+ * other leaf. There is nowhere left to route a visitor, so the runtime
+ * completes the session as soon as one is reached.
+ */
+function isTerminalStep(stepKey, edges) {
+  return !(edges || []).some((e) => e.fromStepKey === stepKey);
+}
+
 function validateStepData(data, opts = {}) {
   return validatePageTree(data, opts);
 }
@@ -150,4 +159,12 @@ function validateGraph(steps, edges, { requireContent = false } = {}) {
   return problems;
 }
 
-module.exports = { validateStepData, validateGraph, resolveEntry, STEP_TYPES, OFFER_STEP_TYPES, EMPTY_TREE };
+module.exports = {
+  validateStepData,
+  validateGraph,
+  resolveEntry,
+  isTerminalStep,
+  STEP_TYPES,
+  OFFER_STEP_TYPES,
+  EMPTY_TREE,
+};
