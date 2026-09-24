@@ -5,6 +5,17 @@ const { AppError, NotFoundError } = require('../../core/errors/AppError');
 const { setConfirmationState } = require('../orders/orderStateService');
 const inventoryService = require('../inventory/inventoryService');
 
+// Every task this module returns carries its order with the order's items:
+// the agent needs what was bought to confirm it on the call, and the
+// dashboard renders the item count from `order.items`.
+const taskInclude = () => [
+  { model: db.Order, as: 'order', include: [{ model: db.OrderItem, as: 'items' }] },
+];
+
+function findTaskWithOrder(workspaceId, taskId, transaction) {
+  return db.ConfirmationTask.findOne({ where: { id: taskId, workspaceId }, include: taskInclude(), transaction });
+}
+
 /**
  * Claims a queued confirmation task for the calling agent via a conditional
  * UPDATE ... WHERE locked_by_user_id IS NULL, inside a transaction. Exactly
@@ -26,7 +37,7 @@ async function claimTask(workspaceId, taskId, agentUserId) {
       throw new AppError('TASK_ALREADY_LOCKED', 'This task is already being worked by another agent', 409);
     }
 
-    return db.ConfirmationTask.findOne({ where: { id: taskId, workspaceId }, transaction });
+    return findTaskWithOrder(workspaceId, taskId, transaction);
   });
 }
 
@@ -79,7 +90,7 @@ async function recordOutcome(workspaceId, taskId, { outcome, notes, rejectionRea
       await Customer.increment('totalRejectedOrders', { by: 1, where: { id: order.customerId }, transaction });
     }
 
-    return task;
+    return findTaskWithOrder(workspaceId, task.id, transaction);
   });
 }
 
@@ -88,7 +99,7 @@ async function listQueue(workspaceId, { status = 'queued', limit = 50 } = {}) {
     where: { workspaceId, status },
     order: [['createdAt', 'ASC']],
     limit,
-    include: [{ model: db.Order, as: 'order' }],
+    include: taskInclude(),
   });
 }
 
