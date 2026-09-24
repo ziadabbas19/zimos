@@ -274,3 +274,68 @@ describe('Page engine — slug-change redirects', () => {
     expect(await db.WebsitePageRedirect.count({ where: { websiteId: ctx.website.id } })).toBe(0);
   });
 });
+
+describe('Page engine — paths the storefront itself uses', () => {
+  const RESERVED = ['f', 'cart', 'checkout', 'products', 'orders', 'offer', 'track', 'preview'];
+
+  it('refuses to create a page on any of them, or under them, whatever the case or leading slash', async () => {
+    const ctx = await setup();
+    for (const segment of RESERVED) {
+      for (const path of [`/${segment}`, segment.toUpperCase(), `/${segment[0].toUpperCase()}${segment.slice(1)}`, `/${segment}/summer-sale`]) {
+        const res = await ctx.createPage({ path, title: 'Shadowed', draftData: tree() });
+        expect([path, res.status, res.body.error && res.body.error.code]).toEqual([path, 422, 'PAGE_PATH_RESERVED']);
+        expect(res.body.error.details).toEqual([{ field: 'path', message: res.body.error.message, reserved: segment }]);
+        expect(res.body.error.message).toContain(`"/${segment}" is used by the storefront`);
+      }
+    }
+    expect(await db.WebsitePage.count({ where: { websiteId: ctx.website.id } })).toBe(0);
+  });
+
+  it('still allows paths that only start with the same letters', async () => {
+    const ctx = await setup();
+    for (const path of ['/faq', '/cart-guide', '/product', '/my-orders', '/offers', '/about/cart', '/tracking']) {
+      const res = await ctx.createPage({ path, title: path, draftData: tree() });
+      expect([path, res.status]).toEqual([path, 201]);
+    }
+  });
+
+  it('refuses to rename a page onto one, and leaves the page and its redirects unchanged', async () => {
+    const ctx = await setup();
+    const page = (await ctx.createPage({ path: '/sale', title: 'Sale', draftData: tree() })).body.page;
+
+    for (const path of ['/checkout', '/Products/sale', 'track']) {
+      const res = await ctx.patchPage(page.id, { path });
+      expect([path, res.status, res.body.error && res.body.error.code]).toEqual([path, 422, 'PAGE_PATH_RESERVED']);
+    }
+    const after = await db.WebsitePage.findByPk(page.id);
+    expect(after.path).toBe('/sale');
+    expect(await db.WebsitePageRedirect.count({ where: { websiteId: ctx.website.id } })).toBe(0);
+
+    // Other edits in a refused request are not applied either.
+    const mixed = await ctx.patchPage(page.id, { path: '/cart', title: 'Renamed' });
+    expect(mixed.status).toBe(422);
+    expect((await db.WebsitePage.findByPk(page.id)).title).toBe('Sale');
+  });
+
+  it('a page already on a reserved path (from before the rule) can still be edited and moved off it', async () => {
+    const ctx = await setup();
+    const legacy = await db.WebsitePage.create({
+      workspaceId: ctx.workspace.id,
+      websiteId: ctx.website.id,
+      path: '/track',
+      title: 'Old tracking page',
+      pageType: 'custom',
+      draftData: tree(),
+      publishedData: null,
+      seo: {},
+    });
+
+    const retitled = await ctx.patchPage(legacy.id, { title: 'Still here', path: '/track' });
+    expect(retitled.status).toBe(200);
+    expect(retitled.body.page.title).toBe('Still here');
+
+    const moved = await ctx.patchPage(legacy.id, { path: '/track-my-order' });
+    expect(moved.status).toBe(200);
+    expect(moved.body.page.path).toBe('/track-my-order');
+  });
+});

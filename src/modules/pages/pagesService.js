@@ -3,7 +3,7 @@
 const db = require('../../db/models');
 const env = require('../../config/env');
 const { scoped } = require('../../core/utils/scopedRepository');
-const { NotFoundError, ConflictError, ValidationError } = require('../../core/errors/AppError');
+const { AppError, NotFoundError, ConflictError, ValidationError } = require('../../core/errors/AppError');
 const { recordAudit } = require('../audit/auditService');
 const slugify = require('../../core/utils/slugify');
 const { validatePageTree, EMPTY_TREE } = require('./pageTree');
@@ -41,6 +41,20 @@ function normalizePath(input) {
   p = p.replace(/\/{2,}/g, '/');
   if (p.length > 1) p = p.replace(/\/+$/, '');
   return p || '/';
+}
+
+// The storefront's own top-level routes (apps/storefront/src/app/store/
+// [workspaceId]/*). Next.js serves those before the catch-all that renders
+// merchant pages, so a page at "/cart" or "/products/sale" would be saved,
+// published — and never shown. The whole first segment is reserved.
+const RESERVED_PAGE_SEGMENTS = Object.freeze(['f', 'cart', 'checkout', 'products', 'orders', 'offer', 'track', 'preview']);
+
+/** 422 PAGE_PATH_RESERVED when a normalised path would be shadowed by a storefront route. */
+function assertPathNotReserved(path) {
+  const first = path.split('/')[1];
+  if (!first || !RESERVED_PAGE_SEGMENTS.includes(first)) return;
+  const message = `"/${first}" is used by the storefront itself, so a page there would never be shown. Choose another path.`;
+  throw new AppError('PAGE_PATH_RESERVED', message, 422, [{ field: 'path', message, reserved: first }]);
 }
 
 async function ensureUniqueSubdomain(base) {
@@ -221,6 +235,7 @@ async function deleteWebsite(workspaceId, websiteId, req) {
 async function createPage(workspaceId, websiteId, data, req) {
   await loadWebsite(workspaceId, websiteId);
   const path = normalizePath(data.path);
+  assertPathNotReserved(path);
   const draftData = data.draftData !== undefined ? data.draftData : EMPTY_TREE;
   validatePageTree(draftData, { label: `page "${path}"` });
 
@@ -291,6 +306,9 @@ async function updatePage(workspaceId, websiteId, pageId, data, req) {
       const newPath = normalizePath(data.path);
       const oldPath = page.path;
       if (newPath !== oldPath) {
+        // Only a move is checked: a page already sitting on a reserved path
+        // (from before the list) can still be edited, and moved off it.
+        assertPathNotReserved(newPath);
         const clash = await db.WebsitePage.findOne({
           where: { websiteId, path: newPath, id: { [Op.ne]: pageId } },
           attributes: ['id'],
@@ -604,6 +622,7 @@ async function getPublishedPageForStore(workspaceId, rawPath) {
 
 module.exports = {
   normalizePath,
+  RESERVED_PAGE_SEGMENTS,
   createWebsite,
   listWebsites,
   getWebsite,

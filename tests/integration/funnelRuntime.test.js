@@ -8,6 +8,8 @@
 
 const { app, request, registerAndActivate, createWorkspace, createProductWithVariant } = require('../helpers/factories');
 const db = require('../../src/db/models');
+const crypto = require('crypto');
+const { Op } = require('sequelize');
 const orderService = require('../../src/modules/orders/orderService');
 
 const bearer = (t) => ({ Authorization: `Bearer ${t}` });
@@ -282,5 +284,157 @@ describe('funnel runtime — upsell atomicity', () => {
     expect(linked).toBe(0);
     expect((await db.ProductVariant.findByPk(variant.id)).reservedStock).toBe(reservedBefore);
     expect((await db.FunnelSession.findByPk(sid)).currentStepKey).toBe('upsell');
+  });
+});
+
+describe('funnel runtime — distinct error codes', () => {
+  const randomUuid = () => crypto.randomUUID();
+
+  it('FUNNEL_NOT_FOUND (404) for an unknown funnel, by id or subdomain, and for one that is not published', async () => {
+    const ctx = await setup();
+    const draft = (await ctx.createFunnel({ name: 'Never Published' })).body.funnel;
+    await ctx.createStep(draft.id, { key: 'landing', stepType: 'landing', name: 'L', builderData: tree('l') });
+
+    for (const ref of [randomUuid(), 'no-such-funnel', draft.id]) {
+      const res = await ctx.startSession(ref, { visitorId: 'nf-1' });
+      expect([ref, res.status, res.body.error.code]).toEqual([ref, 404, 'FUNNEL_NOT_FOUND']);
+      expect(res.body.error.message).toBe('Funnel not found');
+    }
+
+    // A session whose funnel was unpublished since (back to draft).
+    const { funnel } = await publishedThreeStep(ctx);
+    const sid = (await ctx.startSession(funnel.id, { visitorId: 'nf-2' })).body.session.id;
+    await db.Funnel.update({ status: 'draft', publishedRevisionId: null }, { where: { id: funnel.id } });
+    const step = await ctx.sessionStep(funnel.id, sid);
+    expect(step.status).toBe(404);
+    expect(step.body.error.code).toBe('FUNNEL_NOT_FOUND');
+    const adv = await ctx.advance(funnel.id, sid, { outcome: { type: 'clicked_through' } });
+    expect(adv.status).toBe(404);
+    expect(adv.body.error.code).toBe('FUNNEL_NOT_FOUND');
+  });
+
+  it('FUNNEL_SESSION_NOT_FOUND (404) for an unknown session, on get-step and advance', async () => {
+    const ctx = await setup();
+    const { funnel } = await publishedThreeStep(ctx);
+    const other = await publishedThreeStep(ctx);
+    const otherSid = (await ctx.startSession(other.funnel.id, { visitorId: 'sess-1' })).body.session.id;
+
+    for (const sid of [randomUuid(), otherSid]) {
+      const step = await ctx.sessionStep(funnel.id, sid);
+      expect(step.status).toBe(404);
+      expect(step.body.error.code).toBe('FUNNEL_SESSION_NOT_FOUND');
+      const adv = await ctx.advance(funnel.id, sid, { outcome: { type: 'clicked_through' } });
+      expect(adv.status).toBe(404);
+      expect(adv.body.error.code).toBe('FUNNEL_SESSION_NOT_FOUND');
+    }
+  });
+
+  it('FUNNEL_STEP_NOT_FOUND (404) when the published snapshot has no step to put the visitor on', async () => {
+    const ctx = await setup();
+    const { funnel } = await publishedThreeStep(ctx);
+    const sid = (await ctx.startSession(funnel.id, { visitorId: 'step-1' })).body.session.id;
+
+    // A published revision whose steps (entry included) are gone.
+    const live = await db.Funnel.findByPk(funnel.id);
+    const revision = await db.FunnelRevision.findByPk(live.publishedRevisionId);
+    await revision.update({ snapshot: { ...revision.snapshot, steps: [], edges: [] } });
+
+    const step = await ctx.sessionStep(funnel.id, sid);
+    expect(step.status).toBe(404);
+    expect(step.body.error.code).toBe('FUNNEL_STEP_NOT_FOUND');
+    const adv = await ctx.advance(funnel.id, sid, { outcome: { type: 'clicked_through' } });
+    expect(adv.status).toBe(404);
+    expect(adv.body.error.code).toBe('FUNNEL_STEP_NOT_FOUND');
+    const start = await ctx.startSession(funnel.id, { visitorId: 'step-2' });
+    expect(start.status).toBe(404);
+    expect(start.body.error.code).toBe('FUNNEL_STEP_NOT_FOUND');
+  });
+
+  describe('accepting an offer', () => {
+    async function upsellAfterCheckout(ctx) {
+      const { product, variant } = await createProductWithVariant(ctx.auth.accessToken, ctx.workspace.id, { price: 12000, stock: 20 });
+      const offer = await db.Offer.create({
+        workspaceId: ctx.workspace.id,
+        productId: product.id,
+        name: 'Codes Upsell',
+        pricingMode: 'fixed',
+        priceAmount: 6000,
+        currency: 'EGP',
+        status: 'active',
+      });
+      await db.OfferVariant.create({ offerId: offer.id, variantId: variant.id, quantity: 1 });
+      const funnel = (await ctx.createFunnel({ name: 'Codes' })).body.funnel;
+      await ctx.createStep(funnel.id, { key: 'checkout', stepType: 'checkout', name: 'C', builderData: tree('c') });
+      await ctx.createStep(funnel.id, { key: 'upsell', stepType: 'upsell', name: 'U', builderData: tree('u'), offerId: offer.id });
+      await ctx.createStep(funnel.id, { key: 'win', stepType: 'thank_you', name: 'W', builderData: tree('w') });
+      await ctx.createEdge(funnel.id, { fromStepKey: 'checkout', toStepKey: 'upsell', condition: { type: 'always' } });
+      await ctx.createEdge(funnel.id, { fromStepKey: 'upsell', toStepKey: 'win', condition: { type: 'accepted_offer' } });
+      const pub = await ctx.publish(funnel.id);
+      if (pub.status !== 201) throw new Error(`publish failed: ${pub.status} ${JSON.stringify(pub.body)}`);
+      return { funnel, variant, offer };
+    }
+
+    const linkedCount = (workspaceId) => db.Order.count({ where: { workspaceId, linkedFromOrderId: { [Op.ne]: null } } });
+
+    it('FUNNEL_OFFER_NEEDS_ORDER (422, details[].field "session") with no checkout order in the session', async () => {
+      const ctx = await setup();
+      const { funnel } = await upsellAfterCheckout(ctx);
+      const sid = (await ctx.startSession(funnel.id, { visitorId: 'offer-1' })).body.session.id;
+      await ctx.advance(funnel.id, sid, { outcome: { type: 'clicked_through' } }); // -> upsell, no order
+
+      const res = await ctx.advance(funnel.id, sid, { outcome: { type: 'accepted_offer' } });
+      expect(res.status).toBe(422);
+      expect(res.body.error.code).toBe('FUNNEL_OFFER_NEEDS_ORDER');
+      expect(res.body.error.details).toEqual([{ field: 'session', message: expect.stringMatching(/complete checkout first/) }]);
+      expect((await db.FunnelSession.findByPk(sid)).currentStepKey).toBe('upsell');
+    });
+
+    it('FUNNEL_OFFER_UNAVAILABLE (404) when the offer was archived or lost its lines', async () => {
+      const ctx = await setup();
+      const { funnel, variant, offer } = await upsellAfterCheckout(ctx);
+
+      const breakers = [
+        () => offer.update({ status: 'archived' }),
+        async () => {
+          await offer.update({ status: 'active' });
+          await db.OfferVariant.destroy({ where: { offerId: offer.id } });
+        },
+      ];
+      for (const breakOffer of breakers) {
+        const original = await ctx.placeOrder(variant.id);
+        const sid = (await ctx.startSession(funnel.id, { visitorId: `offer-gone-${Math.random()}` })).body.session.id;
+        await ctx.advance(funnel.id, sid, { outcome: { type: 'completed_checkout', orderId: original.id } });
+        await breakOffer();
+
+        const res = await ctx.advance(funnel.id, sid, { outcome: { type: 'accepted_offer' } });
+        expect(res.status).toBe(404);
+        expect(res.body.error.code).toBe('FUNNEL_OFFER_UNAVAILABLE');
+        expect((await db.FunnelSession.findByPk(sid)).currentStepKey).toBe('upsell');
+      }
+      expect(await linkedCount(ctx.workspace.id)).toBe(0);
+    });
+
+    it('FUNNEL_OFFER_UNAVAILABLE (404) when the session order is no longer in this store', async () => {
+      const ctx = await setup();
+      const { funnel, variant } = await upsellAfterCheckout(ctx);
+      const original = await ctx.placeOrder(variant.id);
+      const sid = (await ctx.startSession(funnel.id, { visitorId: 'order-gone' })).body.session.id;
+      await ctx.advance(funnel.id, sid, { outcome: { type: 'completed_checkout', orderId: original.id } });
+
+      // The order lookup is workspace-scoped: an order id this store can't
+      // see is the same as one that was removed.
+      const elsewhere = await setup();
+      const { variant: otherVariant } = await createProductWithVariant(elsewhere.auth.accessToken, elsewhere.workspace.id, {
+        price: 1000,
+        stock: 5,
+      });
+      const foreign = await elsewhere.placeOrder(otherVariant.id);
+      await db.FunnelSession.update({ orderId: foreign.id }, { where: { id: sid } });
+
+      const res = await ctx.advance(funnel.id, sid, { outcome: { type: 'accepted_offer' } });
+      expect(res.status).toBe(404);
+      expect(res.body.error.code).toBe('FUNNEL_OFFER_UNAVAILABLE');
+      expect(await linkedCount(ctx.workspace.id)).toBe(0);
+    });
   });
 });

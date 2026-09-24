@@ -475,7 +475,7 @@ describe('Funnel engine — public runtime', () => {
     await ctx.advance(funnel.id, sid, { type: 'clicked_through' }); // -> upsell
     const res = await ctx.advance(funnel.id, sid, { type: 'accepted_offer' });
     expect(res.status).toBe(422);
-    expect(res.body.error.code).toBe('VALIDATION_ERROR');
+    expect(res.body.error.code).toBe('FUNNEL_OFFER_NEEDS_ORDER');
   });
 
   it('serialises concurrent advance calls so an accepted upsell creates exactly one follow-on order', async () => {

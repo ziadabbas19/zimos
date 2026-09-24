@@ -643,15 +643,23 @@ const resumeFunnel = (workspaceId, funnelId, userId, req) => setStatus(workspace
 
 // --- public runtime -------------------------------------------------
 
+// The runtime's 404/422s carry their own codes, so the storefront can tell a
+// dead link from a vanished step or offer. Statuses and messages are the same
+// as before, when these were the generic NOT_FOUND / VALIDATION_ERROR.
+const funnelNotFound = () => new AppError('FUNNEL_NOT_FOUND', 'Funnel not found', 404);
+const sessionNotFound = () => new AppError('FUNNEL_SESSION_NOT_FOUND', 'FunnelSession not found', 404);
+const stepNotFound = () => new AppError('FUNNEL_STEP_NOT_FOUND', 'Step not found', 404);
+const offerUnavailable = (resource) => new AppError('FUNNEL_OFFER_UNAVAILABLE', `${resource} not found`, 404);
+
 function renderStepData(snapshot, stepKey) {
   const step = (snapshot.steps || []).find((s) => s.key === stepKey);
-  if (!step) throw new NotFoundError('Step');
+  if (!step) throw stepNotFound();
   return { key: step.key, name: step.name, stepType: step.stepType, tree: step.builderData, seo: step.seo || {} };
 }
 
 async function resolveStepPayload(workspaceId, snapshot, stepKey) {
   const step = (snapshot.steps || []).find((s) => s.key === stepKey);
-  if (!step) throw new NotFoundError('Step');
+  if (!step) throw stepNotFound();
   const payload = { step: renderStepData(snapshot, stepKey) };
   if (OFFER_STEP_TYPES.has(step.stepType) && step.offerId) {
     const offer = await db.Offer.findOne({
@@ -692,7 +700,7 @@ const stepExists = (snapshot, stepKey) => (snapshot.steps || []).some((s) => s.k
  */
 async function resetSessionToEntry(session, snapshot, transaction) {
   const entryKey = snapshot.entryKey;
-  if (!entryKey || !stepExists(snapshot, entryKey)) throw new NotFoundError('Step');
+  if (!entryKey || !stepExists(snapshot, entryKey)) throw stepNotFound();
   logger.warn(
     `funnel session ${session.id}: step "${session.currentStepKey}" is no longer in the published revision — restarting at "${entryKey}"`
   );
@@ -707,16 +715,16 @@ async function loadPublishedSnapshot(workspaceId, funnelId, transaction) {
     where: { id: funnelId, workspaceId },
     ...(transaction ? { transaction } : {}),
   });
-  if (!funnel) throw new NotFoundError('Funnel');
+  if (!funnel) throw funnelNotFound();
   if (funnel.status === 'paused') {
     throw new AppError('FUNNEL_PAUSED', 'This funnel is not currently available', 410);
   }
-  if (funnel.status !== 'published' || !funnel.publishedRevisionId) throw new NotFoundError('Funnel');
+  if (funnel.status !== 'published' || !funnel.publishedRevisionId) throw funnelNotFound();
   const revision = await db.FunnelRevision.findOne({
     where: { id: funnel.publishedRevisionId, funnelId: funnel.id },
     ...(transaction ? { transaction } : {}),
   });
-  if (!revision) throw new NotFoundError('Funnel');
+  if (!revision) throw funnelNotFound();
   return { funnel, snapshot: revision.snapshot || {} };
 }
 
@@ -726,7 +734,7 @@ async function startSession(workspaceId, funnelRef, body) {
   else where.subdomain = funnelRef;
 
   const funnelLookup = await db.Funnel.findOne({ where });
-  if (!funnelLookup) throw new NotFoundError('Funnel');
+  if (!funnelLookup) throw funnelNotFound();
 
   const { funnel, snapshot } = await loadPublishedSnapshot(workspaceId, funnelLookup.id);
 
@@ -763,7 +771,7 @@ async function startSession(workspaceId, funnelRef, body) {
 
 async function getSessionStep(workspaceId, funnelId, sessionId) {
   const session = await db.FunnelSession.findOne({ where: { id: sessionId, funnelId, workspaceId } });
-  if (!session) throw new NotFoundError('FunnelSession');
+  if (!session) throw sessionNotFound();
   const { snapshot } = await loadPublishedSnapshot(workspaceId, funnelId);
 
   if (session.status === 'completed') {
@@ -793,20 +801,19 @@ async function getSessionStep(workspaceId, funnelId, sessionId) {
  */
 async function createFollowOnOrder(workspaceId, funnelId, step, session, req, transaction) {
   if (!session.orderId) {
-    throw new ValidationError(
-      [{ field: 'session', message: 'This upsell has no prior order to attach to — the visitor must complete checkout first' }],
-      'Cannot accept this offer'
-    );
+    throw new AppError('FUNNEL_OFFER_NEEDS_ORDER', 'Cannot accept this offer', 422, [
+      { field: 'session', message: 'This upsell has no prior order to attach to — the visitor must complete checkout first' },
+    ]);
   }
   const original = await db.Order.findOne({ where: { id: session.orderId, workspaceId }, transaction });
-  if (!original) throw new NotFoundError('Order');
+  if (!original) throw offerUnavailable('Order');
 
   const offer = await db.Offer.findOne({
     where: { id: step.offerId, workspaceId, status: 'active' },
     include: [{ model: db.OfferVariant, as: 'lines' }],
     transaction,
   });
-  if (!offer || (offer.lines || []).length === 0) throw new NotFoundError('Offer');
+  if (!offer || (offer.lines || []).length === 0) throw offerUnavailable('Offer');
 
   const { order } = await orderService.createOrder(
     workspaceId,
@@ -836,7 +843,7 @@ async function advanceSession(workspaceId, funnelId, sessionId, body, req) {
       lock: t.LOCK.UPDATE,
       transaction: t,
     });
-    if (!session) throw new NotFoundError('FunnelSession');
+    if (!session) throw sessionNotFound();
 
     // A stale tab, a double-submitted button or a replayed request: the client
     // names the step it produced this outcome on, and the session has since
@@ -855,12 +862,12 @@ async function advanceSession(workspaceId, funnelId, sessionId, body, req) {
     }
 
     const funnel = await db.Funnel.findOne({ where: { id: funnelId, workspaceId }, transaction: t });
-    if (!funnel || !funnel.publishedRevisionId) throw new NotFoundError('Funnel');
+    if (!funnel || !funnel.publishedRevisionId) throw funnelNotFound();
     const revision = await db.FunnelRevision.findOne({
       where: { id: funnel.publishedRevisionId, funnelId },
       transaction: t,
     });
-    if (!revision) throw new NotFoundError('Funnel');
+    if (!revision) throw funnelNotFound();
 
     const snapshot = revision.snapshot || {};
     const steps = snapshot.steps || [];
