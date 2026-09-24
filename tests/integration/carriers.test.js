@@ -8,6 +8,7 @@
 const crypto = require('crypto');
 const { app, request, setupWorkspaceWithProduct } = require('../helpers/factories');
 const db = require('../../src/db/models');
+const { generateTrackingCode } = require('../../src/modules/orders/shipmentLifecycle');
 const env = require('../../src/config/env');
 const carrierHttp = require('../../src/modules/shipping/carriers/carrierHttp');
 const accounts = require('../../src/modules/shipping/carrierAccountService');
@@ -136,7 +137,9 @@ async function fakeBosta({ method = 'GET', url, headers = {}, body }) {
   const terminate = path.match(/^\/deliveries\/business\/([^/]+)\/terminate$/);
   if (method === 'DELETE' && terminate) {
     if (fake.refuseTerminate) {
-      return reply(400, { success: false, message: 'Delivery can not be terminated in its current state', errorCode: 1070, data: null });
+      // true -> Bosta's generic refusal; a string -> that message instead.
+      const message = typeof fake.refuseTerminate === 'string' ? fake.refuseTerminate : 'Delivery can not be terminated in its current state';
+      return reply(400, { success: false, message, errorCode: 1070, data: null });
     }
     const delivery = fake.deliveries.get(terminate[1]);
     if (!delivery) return reply(404, { success: false, message: 'Delivery not found', errorCode: 1066, data: null });
@@ -631,27 +634,34 @@ describe('booking a Bosta shipment', () => {
     expect(res.body.error.details).toEqual({ carrierErrorCode: 3001, httpStatus: 400 });
   });
 
-  it('treats "bosta" as a manual carrier name when the store has not connected Bosta', async () => {
-    // The shipment form's carrier field is free text: stores that never
-    // connected Bosta and type "bosta" keep getting a manual shipment.
+  it('never treats an older manual row named "bosta" as carrier-booked', async () => {
+    // Before "bosta" was reserved, stores that never connected Bosta could
+    // type it as a manual courier name. Those rows still exist.
     const setup = await setupWorkspaceWithProduct();
-    const order = await placeOrder(setup.auth.accessToken, setup.workspace.id, setup.variant.id);
-    const res = await createShipment(setup.auth.accessToken, setup.workspace.id, order.id, {
+    const token = setup.auth.accessToken;
+    const order = await placeOrder(token, setup.workspace.id, setup.variant.id);
+    const legacy = await db.Shipment.create({
+      workspaceId: setup.workspace.id,
+      orderId: order.id,
       carrierCode: 'bosta',
       waybillNumber: 'TYPED-123',
+      status: 'created',
+      trackingCode: generateTrackingCode(),
     });
-    expect(res.status).toBe(201);
-    expect(res.body.shipment).toMatchObject({ carrierCode: 'bosta', waybillNumber: 'TYPED-123', carrierResponse: null });
-    expect(fake.calls).toHaveLength(0);
+    await connectBosta(token, setup.workspace.id);
+    fake.calls = [];
 
-    // Such a row is never treated as carrier-booked.
     const sync = await request(app)
-      .post(`/api/v1/workspaces/${setup.workspace.id}/orders/${order.id}/shipments/${res.body.shipment.id}/sync`)
-      .set(bearer(setup.auth.accessToken));
+      .post(`/api/v1/workspaces/${setup.workspace.id}/orders/${order.id}/shipments/${legacy.id}/sync`)
+      .set(bearer(token));
     expect(sync.status).toBe(409);
     expect(sync.body.error.code).toBe('SHIPMENT_NOT_CARRIER_MANAGED');
     const model = await waybillService.computeWaybillModel(setup.workspace.id, order.id);
-    expect(model.trackingValue).toBe(res.body.shipment.trackingCode);
+    expect(model.trackingValue).toBe(legacy.trackingCode);
+
+    const cancelled = await cancelOrder(token, setup.workspace.id, order.id);
+    expect(cancelled.status).toBe(200);
+    expect(fake.calls).toHaveLength(0);
   });
 
   it('answers 409 CARRIER_NOT_CONNECTED when syncing after the carrier was disconnected', async () => {
@@ -1078,16 +1088,14 @@ describe('cancelling an order with a Bosta shipment', () => {
   });
 });
 
-describe('manual shipments are unchanged', () => {
+describe('manual shipments', () => {
   it('books without confirmation, needs no carrier and cancels without calling one', async () => {
     const setup = await setupWorkspaceWithProduct();
     const token = setup.auth.accessToken;
     const order = await placeOrder(token, setup.workspace.id, setup.variant.id);
 
     const first = await createShipment(token, setup.workspace.id, order.id, { carrierCode: 'manual', waybillNumber: 'WB-1' });
-    const second = await createShipment(token, setup.workspace.id, order.id, { carrierCode: 'aramex-manual', waybillNumber: 'WB-2' });
     expect(first.status).toBe(201);
-    expect(second.status).toBe(201);
 
     const patched = await request(app)
       .patch(`/api/v1/workspaces/${setup.workspace.id}/orders/${order.id}/shipments/${first.body.shipment.id}`)
@@ -1105,6 +1113,283 @@ describe('manual shipments are unchanged', () => {
     const cancelled = await cancelOrder(token, setup.workspace.id, order.id);
     expect(cancelled.status).toBe(200);
     expect(fake.calls).toHaveLength(0);
+  });
+});
+
+describe('cancelling an order whose Bosta shipment failed', () => {
+  const terminateCalls = (tn) => callsTo('DELETE', `/deliveries/business/${tn}/terminate`);
+
+  /** A booked shipment that Bosta has moved to `code` (47 Exception by default) -> local 'failed'. */
+  async function failedShipment(code = 47) {
+    const ctx = await bookedShipment();
+    setBostaState(ctx.shipment.waybillNumber, code);
+    await postWebhook(ctx.webhookToken, { trackingNumber: ctx.shipment.waybillNumber });
+    expect((await db.Shipment.findByPk(ctx.shipment.id)).status).toBe('failed');
+    return ctx;
+  }
+
+  it('terminates it at Bosta too, so Bosta does not re-attempt, and marks it cancelled', async () => {
+    const ctx = await failedShipment(47);
+    const res = await cancelOrder(ctx.token, ctx.workspace.id, ctx.order.id);
+
+    expect(res.status).toBe(200);
+    expect(terminateCalls(ctx.shipment.waybillNumber)).toHaveLength(1);
+    expect((await db.Shipment.findByPk(ctx.shipment.id)).status).toBe('cancelled');
+    expect((await db.Order.findByPk(ctx.order.id)).cancelledAt).not.toBeNull();
+  });
+
+  it('counts an "already cancelled" refusal from Bosta as done', async () => {
+    const ctx = await failedShipment(47);
+    fake.refuseTerminate = 'Delivery has already been cancelled';
+
+    const res = await cancelOrder(ctx.token, ctx.workspace.id, ctx.order.id);
+    expect(res.status).toBe(200);
+    expect((await db.Shipment.findByPk(ctx.shipment.id)).status).toBe('cancelled');
+    expect((await db.Order.findByPk(ctx.order.id)).cancelledAt).not.toBeNull();
+  });
+
+  it('counts a refusal as done when Bosta shows the delivery as 49 Canceled', async () => {
+    const ctx = await failedShipment(49);
+    fake.refuseTerminate = true; // Bosta's generic "can not be terminated in its current state"
+
+    const res = await cancelOrder(ctx.token, ctx.workspace.id, ctx.order.id);
+    expect(res.status).toBe(200);
+    expect(terminateCalls(ctx.shipment.waybillNumber)).toHaveLength(1);
+    // It looked the delivery up after the refusal.
+    expect(callsTo('GET', `/deliveries/business/${ctx.shipment.waybillNumber}`).length).toBeGreaterThan(0);
+    expect((await db.Shipment.findByPk(ctx.shipment.id)).status).toBe('cancelled');
+  });
+
+  it('counts a refusal as done for a created shipment Bosta already terminated (48)', async () => {
+    const ctx = await bookedShipment();
+    setBostaState(ctx.shipment.waybillNumber, 48); // terminated in Bosta's dashboard, webhook not in yet
+    fake.refuseTerminate = true;
+
+    const res = await cancelOrder(ctx.token, ctx.workspace.id, ctx.order.id);
+    expect(res.status).toBe(200);
+    expect((await db.Shipment.findByPk(ctx.shipment.id)).status).toBe('cancelled');
+  });
+
+  it('any other refusal: 409 CARRIER_CANCEL_FAILED and nothing changes', async () => {
+    const ctx = await failedShipment(47);
+    const orderBefore = await db.Order.findByPk(ctx.order.id);
+    const variantBefore = await db.ProductVariant.findByPk(ctx.variant.id);
+    const tasksBefore = (await db.ConfirmationTask.findAll({ where: { orderId: ctx.order.id } })).map((t) => t.toJSON());
+    fake.refuseTerminate = true; // still 47 at Bosta: a re-attempt is possible
+
+    const res = await cancelOrder(ctx.token, ctx.workspace.id, ctx.order.id);
+    expect(res.status).toBe(409);
+    expect(res.body.error.code).toBe('CARRIER_CANCEL_FAILED');
+    expect(res.body.error.details).toMatchObject({ shipmentId: ctx.shipment.id, carrierCode: 'bosta' });
+    expect(res.body.error.message).toContain('Delivery can not be terminated in its current state');
+
+    const orderAfter = await db.Order.findByPk(ctx.order.id);
+    expect(orderAfter.cancelledAt).toBeNull();
+    expect(orderAfter.cancellationReason).toBe(orderBefore.cancellationReason);
+    expect(orderAfter.confirmationState).toBe(orderBefore.confirmationState);
+    expect((await db.Shipment.findByPk(ctx.shipment.id)).status).toBe('failed');
+    expect((await db.ProductVariant.findByPk(ctx.variant.id)).toJSON()).toEqual(variantBefore.toJSON());
+    const tasksAfter = (await db.ConfirmationTask.findAll({ where: { orderId: ctx.order.id } })).map((t) => t.toJSON());
+    expect(tasksAfter).toEqual(tasksBefore);
+    expect(await db.AuditLog.count({ where: { entityId: ctx.order.id, action: 'order.cancel' } })).toBe(0);
+  });
+
+  it('a refusal while Bosta says the parcel was delivered is still a refusal', async () => {
+    const ctx = await failedShipment(47);
+    setBostaState(ctx.shipment.waybillNumber, 45); // delivered on the re-attempt, webhook not in yet
+    fake.refuseTerminate = true;
+
+    const res = await cancelOrder(ctx.token, ctx.workspace.id, ctx.order.id);
+    expect(res.status).toBe(409);
+    expect(res.body.error.code).toBe('CARRIER_CANCEL_FAILED');
+    expect((await db.Order.findByPk(ctx.order.id)).cancelledAt).toBeNull();
+  });
+
+  it('a missing Full Access scope on a failed shipment is a refusal too', async () => {
+    const ctx = await failedShipment(47);
+    httpSpy.mockImplementation(async (opts) =>
+      opts.method === 'DELETE'
+        ? reply(403, { success: false, message: 'Access to the requested resource is forbidden', errorCode: 1008, data: null })
+        : fakeBosta(opts)
+    );
+    const res = await cancelOrder(ctx.token, ctx.workspace.id, ctx.order.id);
+    expect(res.status).toBe(409);
+    expect(res.body.error.code).toBe('CARRIER_CANCEL_FAILED');
+    expect(res.body.error.message).toContain('Full Access');
+    expect((await db.Shipment.findByPk(ctx.shipment.id)).status).toBe('failed');
+  });
+});
+
+describe('a manual courier name that spells "bosta"', () => {
+  const shipmentCount = (orderId) => db.Shipment.count({ where: { orderId } });
+
+  it.each([['Bosta'], [' BOSTA '], ['bo sta'], ['Bo-Sta'], ['ＢＯＳＴＡ']])(
+    'refuses %p with 422 pointing to the Bosta option, and never calls Bosta',
+    async (name) => {
+      const ctx = await readyToBook();
+      fake.calls = [];
+
+      const res = await createShipment(ctx.token, ctx.workspace.id, ctx.order.id, { carrierCode: name, waybillNumber: 'WB-9' });
+      expect(res.status).toBe(422);
+      expect(res.body.error.code).toBe('CARRIER_NAME_RESERVED');
+      expect(res.body.error.message).toContain('choose the Bosta option');
+      expect(res.body.error.details[0]).toMatchObject({ field: 'carrierCode', carrierCode: 'bosta', connected: true });
+      expect(fake.calls).toHaveLength(0);
+      expect(await shipmentCount(ctx.order.id)).toBe(0);
+    }
+  );
+
+  it('refuses the Arabic spellings too, whatever the ة/ه, spacing, tatweel or diacritics', async () => {
+    const ctx = await readyToBook();
+    const setup = await setupWorkspaceWithProduct();
+    const unconnectedOrder = await placeOrder(setup.auth.accessToken, setup.workspace.id, setup.variant.id);
+    fake.calls = [];
+
+    const names = [
+      'بوسطة',
+      'بوسطه',
+      'بوسته',
+      ' بو سطة ', // spaces
+      'بوســطة', // tatweel
+      'بُوسْطَة', // diacritics
+      'ﺑﻮﺳﻄﺔ', // presentation forms, as some keyboards/PDF copies produce
+    ];
+    for (const name of names) {
+      const res = await createShipment(ctx.token, ctx.workspace.id, ctx.order.id, { carrierCode: name, waybillNumber: 'WB-9' });
+      expect([name, res.status, res.body.error && res.body.error.code]).toEqual([name, 422, 'CARRIER_NAME_RESERVED']);
+      expect(res.body.error.details[0]).toMatchObject({ field: 'carrierCode', carrierCode: 'bosta', connected: true });
+      expect(res.body.error.message).toContain('choose the Bosta option');
+    }
+    const unconnected = await createShipment(setup.auth.accessToken, setup.workspace.id, unconnectedOrder.id, {
+      carrierCode: 'بوسطة',
+    });
+    expect(unconnected.status).toBe(422);
+    expect(unconnected.body.error.details[0]).toMatchObject({ connected: false });
+
+    expect(fake.calls).toHaveLength(0);
+    expect(await shipmentCount(ctx.order.id)).toBe(0);
+    expect(await shipmentCount(unconnectedOrder.id)).toBe(0);
+
+    // Other Arabic courier names are fine.
+    const other = await createShipment(setup.auth.accessToken, setup.workspace.id, unconnectedOrder.id, { carrierCode: 'أرامكس' });
+    expect(other.status).toBe(201);
+  });
+
+  it('refuses the exact code "bosta" sent with a typed waybill (a manual-form submission)', async () => {
+    const ctx = await readyToBook();
+    fake.calls = [];
+
+    const withWaybill = await createShipment(ctx.token, ctx.workspace.id, ctx.order.id, { carrierCode: 'bosta', waybillNumber: 'TYPED-1' });
+    expect(withWaybill.status).toBe(422);
+    expect(withWaybill.body.error.code).toBe('CARRIER_NAME_RESERVED');
+    const withUrl = await createShipment(ctx.token, ctx.workspace.id, ctx.order.id, {
+      carrierCode: 'bosta',
+      trackingUrl: 'https://example.com/track/1',
+    });
+    expect(withUrl.status).toBe(422);
+    expect(fake.calls).toHaveLength(0);
+    expect(await shipmentCount(ctx.order.id)).toBe(0);
+
+    // The courier option itself still books.
+    const booked = await createShipment(ctx.token, ctx.workspace.id, ctx.order.id);
+    expect(booked.status).toBe(201);
+    expect(callsTo('POST', '/deliveries')).toHaveLength(1);
+  });
+
+  it('refuses it on a store that never connected Bosta, saying to connect it', async () => {
+    const setup = await setupWorkspaceWithProduct();
+    const order = await placeOrder(setup.auth.accessToken, setup.workspace.id, setup.variant.id);
+
+    for (const name of ['bosta', 'Bosta']) {
+      const res = await createShipment(setup.auth.accessToken, setup.workspace.id, order.id, { carrierCode: name, waybillNumber: 'TYPED-123' });
+      expect(res.status).toBe(422);
+      expect(res.body.error.code).toBe('CARRIER_NAME_RESERVED');
+      expect(res.body.error.message).toContain('connect it under shipping settings');
+      expect(res.body.error.details[0]).toMatchObject({ field: 'carrierCode', connected: false });
+    }
+    expect(fake.calls).toHaveLength(0);
+    expect(await shipmentCount(order.id)).toBe(0);
+  });
+
+  it('still accepts other courier names, including ones that merely contain it', async () => {
+    const setup = await setupWorkspaceWithProduct();
+    const token = setup.auth.accessToken;
+    for (const name of ['Aramex', 'Bosta Express Local']) {
+      const order = await placeOrder(token, setup.workspace.id, setup.variant.id);
+      const res = await createShipment(token, setup.workspace.id, order.id, { carrierCode: name, waybillNumber: 'WB-1' });
+      expect(res.status).toBe(201);
+      expect(res.body.shipment).toMatchObject({ carrierCode: name, carrierResponse: null });
+    }
+    expect(fake.calls).toHaveLength(0);
+  });
+});
+
+describe('one active shipment per order, manual shipments included', () => {
+  const patchShipment = (ctx, orderId, shipmentId, body) =>
+    request(app)
+      .patch(`/api/v1/workspaces/${ctx.workspace.id}/orders/${orderId}/shipments/${shipmentId}`)
+      .set(bearer(ctx.token))
+      .send(body);
+
+  async function manualOrder() {
+    const setup = await setupWorkspaceWithProduct({ stock: 20 });
+    const token = setup.auth.accessToken;
+    const order = await placeOrder(token, setup.workspace.id, setup.variant.id);
+    return { ...setup, token, order };
+  }
+
+  it('a second manual shipment is refused until the first is cancelled or returned', async () => {
+    const ctx = await manualOrder();
+    const first = await createShipment(ctx.token, ctx.workspace.id, ctx.order.id, { carrierCode: 'manual', waybillNumber: 'WB-1' });
+    expect(first.status).toBe(201);
+
+    const second = await createShipment(ctx.token, ctx.workspace.id, ctx.order.id, { carrierCode: 'Aramex', waybillNumber: 'WB-2' });
+    expect(second.status).toBe(409);
+    expect(second.body.error.code).toBe('SHIPMENT_ALREADY_EXISTS');
+    expect(second.body.error.details).toEqual({ shipmentId: first.body.shipment.id });
+
+    // 'failed' still blocks, same as for Bosta.
+    expect((await patchShipment(ctx, ctx.order.id, first.body.shipment.id, { status: 'failed' })).status).toBe(200);
+    expect((await createShipment(ctx.token, ctx.workspace.id, ctx.order.id, { carrierCode: 'Aramex' })).status).toBe(409);
+
+    expect((await patchShipment(ctx, ctx.order.id, first.body.shipment.id, { status: 'cancelled' })).status).toBe(200);
+    const third = await createShipment(ctx.token, ctx.workspace.id, ctx.order.id, { carrierCode: 'Aramex', waybillNumber: 'WB-3' });
+    expect(third.status).toBe(201);
+
+    expect((await patchShipment(ctx, ctx.order.id, third.body.shipment.id, { status: 'returned' })).status).toBe(200);
+    const fourth = await createShipment(ctx.token, ctx.workspace.id, ctx.order.id, { carrierCode: 'manual', waybillNumber: 'WB-4' });
+    expect(fourth.status).toBe(201);
+
+    expect(await db.Shipment.count({ where: { orderId: ctx.order.id } })).toBe(3);
+    expect(fake.calls).toHaveLength(0);
+  });
+
+  it('two concurrent manual requests create one shipment', async () => {
+    const ctx = await manualOrder();
+    const results = await Promise.all([
+      createShipment(ctx.token, ctx.workspace.id, ctx.order.id, { carrierCode: 'manual', waybillNumber: 'A' }),
+      createShipment(ctx.token, ctx.workspace.id, ctx.order.id, { carrierCode: 'manual', waybillNumber: 'B' }),
+    ]);
+    expect(results.map((r) => r.status).sort()).toEqual([201, 409]);
+    expect(results.find((r) => r.status === 409).body.error.code).toBe('SHIPMENT_ALREADY_EXISTS');
+    expect(await db.Shipment.count({ where: { orderId: ctx.order.id } })).toBe(1);
+  });
+
+  it('a manual shipment is refused while a Bosta one is active, and vice versa', async () => {
+    const ctx = await bookedShipment();
+    const manual = await createShipment(ctx.token, ctx.workspace.id, ctx.order.id, { carrierCode: 'manual', waybillNumber: 'WB-1' });
+    expect(manual.status).toBe(409);
+    expect(manual.body.error.code).toBe('SHIPMENT_ALREADY_EXISTS');
+    expect(manual.body.error.details).toEqual({ shipmentId: ctx.shipment.id });
+
+    const other = await readyToBook();
+    const first = await createShipment(other.token, other.workspace.id, other.order.id, { carrierCode: 'manual', waybillNumber: 'WB-1' });
+    expect(first.status).toBe(201);
+    fake.calls = [];
+    const bostaAfterManual = await createShipment(other.token, other.workspace.id, other.order.id);
+    expect(bostaAfterManual.status).toBe(409);
+    expect(bostaAfterManual.body.error.code).toBe('SHIPMENT_ALREADY_EXISTS');
+    expect(callsTo('POST', '/deliveries')).toHaveLength(0);
   });
 });
 

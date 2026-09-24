@@ -678,16 +678,24 @@ async function listShipments(workspaceId, orderId) {
 
 async function createShipment(workspaceId, orderId, data, req) {
   // A carrier this workspace has connected (Bosta, ...) is booked through the
-  // merchant's account; 'manual' and any other code keep the original
-  // behaviour below — the merchant types the waybill in.
-  if (await carrierShipmentService.shouldBookWithCarrier(workspaceId, data.carrierCode)) {
+  // merchant's account. Everything else is a manual shipment — a local record
+  // only, the merchant types the waybill in; a manual name that spells a
+  // courier ("Bosta") is refused with 422 there.
+  if (await carrierShipmentService.shouldBookWithCarrier(workspaceId, data)) {
     return carrierShipmentService.createCarrierShipment(workspaceId, orderId, data, req);
   }
 
   return db.sequelize.transaction(async (transaction) => {
-    const order = await db.Order.findOne({ where: { id: orderId, workspaceId }, transaction });
+    // Locked so two concurrent requests can't both pass the one-active-
+    // shipment check below.
+    const order = await db.Order.findOne({
+      where: { id: orderId, workspaceId },
+      transaction,
+      lock: transaction.LOCK.UPDATE,
+    });
     if (!order) throw new NotFoundError('Order');
     if (order.cancelledAt) throw new AppError('ORDER_CANCELLED', 'This order is cancelled', 409);
+    await carrierShipmentService.assertNoActiveShipment(order.id, transaction);
 
     const shipment = await insertShipment(
       {

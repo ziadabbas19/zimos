@@ -66,4 +66,36 @@ function listAdapters() {
   return Object.values(ADAPTERS);
 }
 
-module.exports = { getAdapter, listAdapters, MANUAL };
+/**
+ * A courier name reduced to what distinguishes it: case, spacing and
+ * separators dropped; for Arabic, tatweel and diacritics dropped and ة read
+ * as ه ("بوسـطَة" -> "بوسطه").
+ */
+function foldCourierName(name) {
+  return name
+    .normalize('NFKC')
+    .toLowerCase()
+    .replace(/[ً-ٰٟۖ-ۭـ]/g, '')
+    .replace(/ة/g, 'ه')
+    .replace(/[\s\-_.]+/g, '');
+}
+
+// Folded name -> adapter, from each adapter's code and its nameAliases.
+const RESERVED_NAMES = new Map();
+for (const adapter of Object.values(ADAPTERS)) {
+  for (const name of [adapter.code, ...(adapter.nameAliases || [])]) {
+    RESERVED_NAMES.set(foldCourierName(name), adapter);
+  }
+}
+
+/**
+ * The adapter a free-text courier name spells ("Bosta", " BOSTA ", "bo-sta",
+ * "بوسطة" -> bosta), or null. Such a name is never stored as a manual
+ * shipment: it would read as a courier booking that never happened.
+ */
+function reservedAdapterFor(name) {
+  if (typeof name !== 'string') return null;
+  return RESERVED_NAMES.get(foldCourierName(name)) || null;
+}
+
+module.exports = { getAdapter, listAdapters, reservedAdapterFor, MANUAL };

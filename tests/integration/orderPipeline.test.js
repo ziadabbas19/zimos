@@ -10,6 +10,7 @@
 
 const { app, request, setupWorkspaceWithProduct, registerAndActivate, createWorkspace } = require('../helpers/factories');
 const db = require('../../src/db/models');
+const { generateTrackingCode } = require('../../src/modules/orders/shipmentLifecycle');
 const { STAGES } = require('../../src/modules/orders/orderStage');
 
 const bearer = (token) => ({ Authorization: `Bearer ${token}` });
@@ -287,8 +288,17 @@ describe('derived order stage', () => {
     await setShipmentStatus(auth.accessToken, workspace.id, order.id, first.id, 'failed');
     expect((await getOrder(auth.accessToken, workspace.id, order.id)).body.order.stage).toBe('delivery_failed');
 
-    // A re-send: the newer parcel is where the order is now.
-    const second = await createShipment(auth.accessToken, workspace.id, order.id);
+    // A re-send: the newer parcel is where the order is now. POST /shipments
+    // now refuses a second shipment while one is failed (one active shipment
+    // per order), but orders from before that rule can hold both, so the row
+    // is written directly.
+    const second = await db.Shipment.create({
+      workspaceId: workspace.id,
+      orderId: order.id,
+      carrierCode: 'manual',
+      status: 'created',
+      trackingCode: generateTrackingCode(),
+    });
     await db.Shipment.update(
       { createdAt: new Date(Date.now() + 60000) },
       { where: { id: second.id }, silent: true }

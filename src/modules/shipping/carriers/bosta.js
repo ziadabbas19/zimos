@@ -438,6 +438,9 @@ function parseWebhook(req) {
 module.exports = {
   code: 'bosta',
   name: 'Bosta',
+  // Other ways merchants write the name, refused as manual courier names.
+  // Matched after folding (carriers/index.js), so بوسطة and بوسطه are one entry.
+  nameAliases: ['بوسطة', 'بوسته'],
   // Bosta accepts a webhookUrl on every delivery we create, so nothing has to
   // be pasted into Bosta's dashboard.
   webhookSetup: 'per_shipment',

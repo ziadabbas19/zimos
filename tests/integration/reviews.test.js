@@ -30,7 +30,7 @@ async function markDelivered(token, workspaceId, orderId) {
   const ship = await request(app)
     .post(`/api/v1/workspaces/${workspaceId}/orders/${orderId}/shipments`)
     .set(bearer(token))
-    .send({ carrierCode: 'bosta' });
+    .send({ carrierCode: 'local-courier' });
   await request(app)
     .patch(`/api/v1/workspaces/${workspaceId}/orders/${orderId}/shipments/${ship.body.shipment.id}`)
     .set(bearer(token))
