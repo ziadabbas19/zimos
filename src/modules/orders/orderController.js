@@ -1,6 +1,7 @@
 'use strict';
 const asyncHandler = require('express-async-handler');
 const service = require('./orderService');
+const confirmationService = require('../cod/confirmationService');
 
 const create = asyncHandler(async (req, res) => {
   const { order, items } = await service.createOrder(req.tenant.workspaceId, req.body, req);
@@ -24,6 +25,13 @@ const pipeline = asyncHandler(async (req, res) => {
 const cancel = asyncHandler(async (req, res) => {
   const order = await service.cancelOrder(req.tenant.workspaceId, req.params.orderId, req.body, req);
   res.json({ order });
+});
+
+// Confirm from the order page: the same outcome a queue call records.
+const confirm = asyncHandler(async (req, res) => {
+  const task = await confirmationService.confirmFromOrder(req.tenant.workspaceId, req.params.orderId, req.body, req);
+  const order = await service.getOrder(req.tenant.workspaceId, req.params.orderId);
+  res.json({ order, task });
 });
 
 const update = asyncHandler(async (req, res) => {
@@ -51,4 +59,4 @@ const updateShipment = asyncHandler(async (req, res) => {
   res.json({ shipment });
 });
 
-module.exports = { create, get, list, pipeline, cancel, update, listShipments, createShipment, updateShipment };
+module.exports = { create, get, list, pipeline, cancel, confirm, update, listShipments, createShipment, updateShipment };

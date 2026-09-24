@@ -75,7 +75,39 @@ async function setupWorkspaceWithProduct(opts = {}) {
   return { auth, workspace, product, variant };
 }
 
+/** A fresh user added to `workspaceId` with one of its system roles (by key). */
+async function addMemberWithRole(ownerToken, workspaceId, roleKey, fullName = 'Team Member') {
+  const member = await registerAndActivate({ fullName });
+  const role = await db.Role.findOne({ where: { workspaceId, key: roleKey } });
+  if (!role) throw new Error(`addMemberWithRole: no role ${roleKey}`);
+  const res = await request(app)
+    .post(`/api/v1/workspaces/${workspaceId}/members`)
+    .set('Authorization', `Bearer ${ownerToken}`)
+    .send({ email: member.email, roleId: role.id });
+  if (res.status !== 201) {
+    throw new Error(`addMemberWithRole failed: ${res.status} ${JSON.stringify(res.body)}`);
+  }
+  return member;
+}
+
+/**
+ * Confirms a COD order from the order page, as a merchant would before
+ * shipping it: every shipment path requires a confirmed COD order.
+ */
+async function confirmCodOrder(accessToken, workspaceId, orderId) {
+  const res = await request(app)
+    .post(`/api/v1/workspaces/${workspaceId}/orders/${orderId}/confirmation`)
+    .set('Authorization', `Bearer ${accessToken}`)
+    .send({});
+  if (res.status !== 200) {
+    throw new Error(`confirmCodOrder failed: ${res.status} ${JSON.stringify(res.body)}`);
+  }
+  return res.body;
+}
+
 module.exports = {
+  addMemberWithRole,
+  confirmCodOrder,
   app,
   request,
   uniqueEmail,

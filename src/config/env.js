@@ -169,6 +169,13 @@ const env = {
     webhookSecret: (process.env.BILLING_WEBHOOK_SECRET || '').trim(),
   },
 
+  // COD confirmation queue. A claim locks a task to one agent for this long;
+  // an expired lock returns the task to Pending the next time the queue is
+  // read or a task claimed (see modules/cod/confirmationService.js).
+  confirmation: {
+    lockTtlMinutes: Math.max(1, parseInt(process.env.CONFIRMATION_LOCK_TTL_MINUTES || '15', 10) || 15),
+  },
+
   webhooks: {
     signingAlgo: process.env.WEBHOOK_SIGNING_ALGO || 'sha256',
   },

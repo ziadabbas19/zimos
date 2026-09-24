@@ -35,6 +35,14 @@ router.post(
   requirePermission(PERMISSIONS.ORDERS_MANAGE),
   controller.cancel
 );
+// A COD order confirmed from the order page — same rules and bookkeeping as
+// a queue call (modules/cod/confirmationService.js#confirmFromOrder).
+router.post(
+  '/:orderId/confirmation',
+  validate(schemas.confirm),
+  requirePermission(PERMISSIONS.ORDERS_CONFIRM),
+  controller.confirm
+);
 router.patch(
   '/:orderId',
   validate(schemas.update),

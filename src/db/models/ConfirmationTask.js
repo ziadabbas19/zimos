@@ -5,7 +5,9 @@ module.exports = (sequelize, DataTypes) => {
   // confirmation agents can never work the same order simultaneously — see
   // modules/cod/confirmationService.js#claimTask, which claims via a
   // conditional UPDATE ... WHERE locked_by_user_id IS NULL inside a
-  // transaction (0 rows updated = someone else got there first).
+  // transaction (0 rows updated = someone else got there first). A lock
+  // lasts CONFIRMATION_LOCK_TTL_MINUTES; an expired one is released lazily,
+  // the next time the queue is read or a task claimed.
   const ConfirmationTask = sequelize.define(
     'ConfirmationTask',
     {
@@ -26,12 +28,14 @@ module.exports = (sequelize, DataTypes) => {
         allowNull: true,
       },
       rejectionReason: { type: DataTypes.STRING(300), allowNull: true, field: 'rejection_reason' },
+      completedAt: { type: DataTypes.DATE, allowNull: true, field: 'completed_at' },
     },
-    { tableName: 'confirmation_tasks', indexes: [{ fields: ['workspace_id', 'status'] }, { fields: ['order_id'] }] }
+    { tableName: 'confirmation_tasks', indexes: [{ fields: ['workspace_id', 'status'] }, { fields: ['workspace_id', 'status', 'locked_at'] }, { fields: ['order_id'] }] }
   );
   ConfirmationTask.associate = (models) => {
     ConfirmationTask.belongsTo(models.Order, { foreignKey: 'orderId', as: 'order' });
     ConfirmationTask.hasMany(models.ConfirmationAttempt, { foreignKey: 'taskId', as: 'attempts' });
+    ConfirmationTask.belongsTo(models.User, { foreignKey: 'lockedByUserId', as: 'lockedBy' });
   };
   return ConfirmationTask;
 };

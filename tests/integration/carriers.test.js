@@ -1088,11 +1088,54 @@ describe('cancelling an order with a Bosta shipment', () => {
   });
 });
 
+describe('correcting a confirmed order to rejected', () => {
+  it('cancels its uncollected Bosta shipment at Bosta first', async () => {
+    const ctx = await bookedShipment();
+    const task = await db.ConfirmationTask.findOne({ where: { orderId: ctx.order.id } });
+    const res = await request(app)
+      .post(`/api/v1/workspaces/${ctx.workspace.id}/confirmation-tasks/${task.id}/correction`)
+      .set(bearer(ctx.token))
+      .send({ outcome: 'rejected', reason: 'Customer called back to cancel' });
+
+    expect(res.status).toBe(200);
+    expect(callsTo('DELETE', `/deliveries/business/${ctx.shipment.waybillNumber}/terminate`)).toHaveLength(1);
+    expect((await db.Shipment.findByPk(ctx.shipment.id)).status).toBe('cancelled');
+    expect((await db.Order.findByPk(ctx.order.id)).confirmationState).toBe('rejected');
+  });
+
+  it('changes nothing when Bosta refuses', async () => {
+    const ctx = await bookedShipment();
+    fake.refuseTerminate = true;
+    const task = await db.ConfirmationTask.findOne({ where: { orderId: ctx.order.id } });
+    const res = await request(app)
+      .post(`/api/v1/workspaces/${ctx.workspace.id}/confirmation-tasks/${task.id}/correction`)
+      .set(bearer(ctx.token))
+      .send({ outcome: 'rejected', reason: 'Customer called back to cancel' });
+
+    expect(res.status).toBe(409);
+    expect(res.body.error.code).toBe('CARRIER_CANCEL_FAILED');
+    expect((await db.Shipment.findByPk(ctx.shipment.id)).status).toBe('created');
+    expect((await db.Order.findByPk(ctx.order.id)).confirmationState).toBe('confirmed');
+    expect((await db.ConfirmationTask.findByPk(task.id)).outcome).toBe('confirmed');
+  });
+});
+
 describe('manual shipments', () => {
-  it('books without confirmation, needs no carrier and cancels without calling one', async () => {
+  it('refuses an unconfirmed COD order like a courier booking, without calling a carrier', async () => {
     const setup = await setupWorkspaceWithProduct();
     const token = setup.auth.accessToken;
     const order = await placeOrder(token, setup.workspace.id, setup.variant.id);
+    const res = await createShipment(token, setup.workspace.id, order.id, { carrierCode: 'manual', waybillNumber: 'WB-0' });
+    expect(res.status).toBe(409);
+    expect(res.body.error.code).toBe('ORDER_NOT_CONFIRMED');
+    expect(fake.calls).toHaveLength(0);
+  });
+
+  it('books a confirmed order, needs no carrier and cancels without calling one', async () => {
+    const setup = await setupWorkspaceWithProduct();
+    const token = setup.auth.accessToken;
+    const order = await placeOrder(token, setup.workspace.id, setup.variant.id);
+    await confirmOrder(token, setup.workspace.id, order.id);
 
     const first = await createShipment(token, setup.workspace.id, order.id, { carrierCode: 'manual', waybillNumber: 'WB-1' });
     expect(first.status).toBe(201);
@@ -1243,6 +1286,7 @@ describe('a manual courier name that spells "bosta"', () => {
     const ctx = await readyToBook();
     const setup = await setupWorkspaceWithProduct();
     const unconnectedOrder = await placeOrder(setup.auth.accessToken, setup.workspace.id, setup.variant.id);
+    await confirmOrder(setup.auth.accessToken, setup.workspace.id, unconnectedOrder.id);
     fake.calls = [];
 
     const names = [
@@ -1316,6 +1360,7 @@ describe('a manual courier name that spells "bosta"', () => {
     const token = setup.auth.accessToken;
     for (const name of ['Aramex', 'Bosta Express Local']) {
       const order = await placeOrder(token, setup.workspace.id, setup.variant.id);
+      await confirmOrder(token, setup.workspace.id, order.id);
       const res = await createShipment(token, setup.workspace.id, order.id, { carrierCode: name, waybillNumber: 'WB-1' });
       expect(res.status).toBe(201);
       expect(res.body.shipment).toMatchObject({ carrierCode: name, carrierResponse: null });
@@ -1335,6 +1380,7 @@ describe('one active shipment per order, manual shipments included', () => {
     const setup = await setupWorkspaceWithProduct({ stock: 20 });
     const token = setup.auth.accessToken;
     const order = await placeOrder(token, setup.workspace.id, setup.variant.id);
+    await confirmOrder(token, setup.workspace.id, order.id);
     return { ...setup, token, order };
   }
 

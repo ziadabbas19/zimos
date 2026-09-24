@@ -17,21 +17,9 @@ const { createInvoiceForOrder } = require('../invoices/invoiceService');
 const { recordAudit } = require('../audit/auditService');
 const { setConfirmationState } = require('./orderStateService');
 const { STAGES, STAGE_SQL, ORDERS_WITH_STAGE_FROM } = require('./orderStage');
-const { SHIPMENT_IN_MOTION, generateTrackingCode, insertShipment, transitionShipment } = require('./shipmentLifecycle');
+const { assertNotShipped, generateTrackingCode, insertShipment, transitionShipment } = require('./shipmentLifecycle');
 const carrierShipmentService = require('../shipping/carrierShipmentService');
-
-async function assertNotShipped(order, transaction) {
-  if (order.fulfillmentState === 'fulfilled' || order.fulfillmentState === 'partially_fulfilled' || order.fulfillmentState === 'returned') {
-    throw new AppError('ORDER_ALREADY_SHIPPED', 'This order has already been shipped and can no longer be changed', 409);
-  }
-  const moving = await db.Shipment.count({
-    where: { orderId: order.id, status: SHIPMENT_IN_MOTION },
-    transaction,
-  });
-  if (moving > 0) {
-    throw new AppError('ORDER_ALREADY_SHIPPED', 'This order has a shipment in transit and can no longer be changed', 409);
-  }
-}
+const confirmationService = require('../cod/confirmationService');
 
 function generateOrderNumber() {
   const rand = crypto.randomBytes(4).toString('hex').toUpperCase();
@@ -346,7 +334,11 @@ async function getOrder(workspaceId, orderId) {
     ],
   });
   if (!order) throw new NotFoundError('Order');
-  return { ...order.toJSON(), stage: await stageForOrder(order.id) };
+  return {
+    ...order.toJSON(),
+    stage: await stageForOrder(order.id),
+    confirmationTask: await confirmationService.taskSummaryForOrder(workspaceId, order.id),
+  };
 }
 
 // `%` and `_` are wildcards in LIKE, and a backslash escapes them: a merchant
@@ -609,11 +601,9 @@ async function cancelOrder(workspaceId, orderId, { reason }, req) {
       { where: { orderId: order.id, status: 'created' }, transaction }
     );
 
-    // Close any confirmation task still in the queue for this order.
-    await db.ConfirmationTask.update(
-      { status: 'done', outcome: 'rejected', rejectionReason: reason, lockedByUserId: null, lockedAt: null },
-      { where: { orderId: order.id, status: ['queued', 'in_progress'] }, transaction }
-    );
+    // Close any confirmation task still in the queue for this order, recorded
+    // as an order-page rejection so the queue's Done tab shows who and why.
+    await confirmationService.closeTasksForCancelledOrder(workspaceId, order.id, reason, req, transaction);
 
     const before = { confirmationState: order.confirmationState, cancelledAt: order.cancelledAt };
     await order.update({ cancelledAt: new Date(), cancellationReason: reason }, { transaction });
@@ -695,7 +685,7 @@ async function createShipment(workspaceId, orderId, data, req) {
       lock: transaction.LOCK.UPDATE,
     });
     if (!order) throw new NotFoundError('Order');
-    if (order.cancelledAt) throw new AppError('ORDER_CANCELLED', 'This order is cancelled', 409);
+    carrierShipmentService.assertConfirmedOrPaid(order);
     await carrierShipmentService.assertNoActiveShipment(order.id, transaction);
 
     const shipment = await insertShipment(

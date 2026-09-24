@@ -57,6 +57,10 @@ module.exports = {
     params: Joi.object({ workspaceId: uuid.required(), orderId: uuid.required() }),
     body: Joi.object({ reason: Joi.string().min(1).max(500).required() }),
   },
+  confirm: {
+    params: Joi.object({ workspaceId: uuid.required(), orderId: uuid.required() }),
+    body: Joi.object({ notes: Joi.string().max(1000).allow('').optional() }),
+  },
   update: {
     params: Joi.object({ workspaceId: uuid.required(), orderId: uuid.required() }),
     body: Joi.object({

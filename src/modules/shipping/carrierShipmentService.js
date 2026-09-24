@@ -97,7 +97,13 @@ function isCarrierBooked(shipment) {
   );
 }
 
-function assertReadyToShip(order) {
+/**
+ * The order may leave the building: not cancelled, and a COD order confirmed
+ * on the call or a prepaid one paid. Every shipment path — courier-booked or
+ * manual — goes through this, so the queue can't be skipped by typing a
+ * courier name by hand.
+ */
+function assertConfirmedOrPaid(order) {
   if (order.cancelledAt || order.confirmationState === 'rejected') {
     throw new AppError('ORDER_CANCELLED', 'This order is cancelled', 409);
   }
@@ -107,6 +113,10 @@ function assertReadyToShip(order) {
   if (order.paymentMethod !== 'cod' && order.financialState !== 'paid') {
     throw new AppError('ORDER_NOT_PAID', 'This prepaid order must be paid before booking a courier', 409);
   }
+}
+
+function assertReadyToShip(order) {
+  assertConfirmedOrPaid(order);
   if (!order.shippingAddressSnapshot) {
     throw new AppError('SHIPPING_ADDRESS_REQUIRED', 'This order has no shipping address', 409);
   }
@@ -404,6 +414,7 @@ async function cancelCarrierShipmentsForOrder(workspaceId, orderId, transaction)
 }
 
 module.exports = {
+  assertConfirmedOrPaid,
   shouldBookWithCarrier,
   assertNoActiveShipment,
   isCarrierBooked,

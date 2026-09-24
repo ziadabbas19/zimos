@@ -2,6 +2,7 @@
 
 const crypto = require('crypto');
 const db = require('../../db/models');
+const { AppError } = require('../../core/errors/AppError');
 const { recordAudit } = require('../audit/auditService');
 const { setFulfillmentState } = require('./orderStateService');
 
@@ -88,8 +89,26 @@ async function transitionShipment(workspaceId, shipment, updates, { transaction,
   return shipment;
 }
 
+/**
+ * Refuses a change to an order whose parcel has left the merchant's hands:
+ * fulfilled/returned on the order itself, or any shipment in motion.
+ */
+async function assertNotShipped(order, transaction) {
+  if (order.fulfillmentState === 'fulfilled' || order.fulfillmentState === 'partially_fulfilled' || order.fulfillmentState === 'returned') {
+    throw new AppError('ORDER_ALREADY_SHIPPED', 'This order has already been shipped and can no longer be changed', 409);
+  }
+  const moving = await db.Shipment.count({
+    where: { orderId: order.id, status: SHIPMENT_IN_MOTION },
+    transaction,
+  });
+  if (moving > 0) {
+    throw new AppError('ORDER_ALREADY_SHIPPED', 'This order has a shipment in transit and can no longer be changed', 409);
+  }
+}
+
 module.exports = {
   SHIPMENT_IN_MOTION,
+  assertNotShipped,
   SHIPMENT_FULFILLMENT,
   generateTrackingCode,
   insertShipment,

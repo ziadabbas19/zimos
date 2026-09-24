@@ -4,7 +4,7 @@
 // distinct from the UUID PK, unique, generated with a collision-retry loop.
 // It's what shows on the waybill and shipment responses.
 
-const { app, request, setupWorkspaceWithProduct } = require('../helpers/factories');
+const { app, request, setupWorkspaceWithProduct, confirmCodOrder } = require('../helpers/factories');
 const db = require('../../src/db/models');
 const orderService = require('../../src/modules/orders/orderService');
 const waybillService = require('../../src/modules/waybill/waybillService');
@@ -24,6 +24,8 @@ async function placeOrder(token, workspaceId, variantId, i = 0) {
       paymentMethod: 'cod',
     });
   if (res.status !== 201) throw new Error(`placeOrder failed: ${res.status} ${JSON.stringify(res.body)}`);
+  // Every order here is shipped, and a COD order ships only once confirmed.
+  await confirmCodOrder(token, workspaceId, res.body.order.id);
   return res.body.order;
 }
 
