@@ -662,8 +662,10 @@ async function resolveStepPayload(workspaceId, snapshot, stepKey) {
   if (!step) throw stepNotFound();
   const payload = { step: renderStepData(snapshot, stepKey) };
   if (OFFER_STEP_TYPES.has(step.stepType) && step.offerId) {
+    // An archived offer (e.g. its product was archived) isn't shown; accepting
+    // it would fail anyway (createFollowOnOrder also requires 'active').
     const offer = await db.Offer.findOne({
-      where: { id: step.offerId, workspaceId },
+      where: { id: step.offerId, workspaceId, status: 'active' },
       include: [{ model: db.OfferVariant, as: 'lines' }],
     });
     if (offer) {

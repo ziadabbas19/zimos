@@ -91,12 +91,38 @@
     },
 
     "/workspaces/{workspaceId}/catalog/products": {
-      "post": { "summary": "Create a product (requires products.manage)", "parameters": [{ "$ref": "#/components/parameters/workspaceId" }], "responses": { "201": { "description": "Created" } } },
-      "get": { "summary": "List products (cursor paginated)", "parameters": [{ "$ref": "#/components/parameters/workspaceId" }], "responses": { "200": { "description": "OK" } } }
+      "post": {
+        "summary": "Create a product (requires products.manage), optionally with its first variant and initial stock in one transaction",
+        "parameters": [{ "$ref": "#/components/parameters/workspaceId" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": {
+          "name": { "type": "string" }, "status": { "type": "string", "enum": ["draft", "active", "archived"] },
+          "variant": { "type": "object", "description": "Optional. Initial stock is applied as an audited restock movement.", "properties": {
+            "priceAmount": { "type": "integer", "minimum": 0 }, "compareAtAmount": { "type": "integer", "minimum": 0, "nullable": true },
+            "sku": { "type": "string", "nullable": true }, "stockOnHand": { "type": "integer", "minimum": 0, "default": 0 },
+            "allowOverselling": { "type": "boolean", "default": false }
+          }, "required": ["priceAmount"] }
+        }, "required": ["name"] } } } },
+        "responses": { "201": { "description": "{ product } — plus { variant } when one was requested" }, "409": { "description": "Duplicate SKU (nothing is created)" }, "422": { "description": "Validation failed" } }
+      },
+      "get": {
+        "summary": "List products (cursor paginated)",
+        "parameters": [
+          { "$ref": "#/components/parameters/workspaceId" },
+          { "name": "status", "in": "query", "required": false, "description": "One status, a comma-separated list (draft,active) or a repeated param", "schema": { "type": "string" } }
+        ],
+        "responses": { "200": { "description": "OK" } }
+      }
     },
     "/workspaces/{workspaceId}/catalog/products/{productId}": {
       "get": { "summary": "Get a product with variants/offers", "parameters": [{ "$ref": "#/components/parameters/workspaceId" }], "responses": { "200": { "description": "OK" }, "404": { "description": "Not found (including cross-tenant access)" } } },
-      "patch": { "summary": "Update a product", "parameters": [{ "$ref": "#/components/parameters/workspaceId" }], "responses": { "200": { "description": "OK" } } }
+      "patch": { "summary": "Update a product (only the fields sent change). status into/out of 'archived' cascades like DELETE / restore", "parameters": [{ "$ref": "#/components/parameters/workspaceId" }], "responses": { "200": { "description": "OK" } } },
+      "delete": { "summary": "Archive a product with its variants and offers (soft delete)", "parameters": [{ "$ref": "#/components/parameters/workspaceId" }], "responses": { "200": { "description": "{ archived: true, id }" }, "404": { "description": "Not found (including cross-tenant access)" } } }
+    },
+    "/workspaces/{workspaceId}/catalog/products/{productId}/restore": {
+      "post": { "summary": "Restore an archived product to draft, with the variants/offers its archive took down", "parameters": [{ "$ref": "#/components/parameters/workspaceId" }], "responses": { "200": { "description": "{ product } with variants, offers, collections" }, "404": { "description": "Not found (including cross-tenant access)" }, "409": { "description": "PRODUCT_NOT_ARCHIVED" } } }
+    },
+    "/workspaces/{workspaceId}/catalog/products/{productId}/permanent": {
+      "delete": { "summary": "Permanently delete a never-ordered product (any status) and its variants, offers, cart lines, stock history, collection links, product tax rates and reviews", "parameters": [{ "$ref": "#/components/parameters/workspaceId" }], "responses": { "200": { "description": "{ deleted: true, id }" }, "404": { "description": "Not found (including cross-tenant access)" }, "409": { "description": "PRODUCT_HAS_ORDERS (archive instead), or PRODUCT_IN_FUNNEL with details[0] = { field: 'funnelIds', message, funnelIds }" } } }
     },
     "/workspaces/{workspaceId}/catalog/products/{productId}/variants": {
       "post": { "summary": "Create a variant (initial stock is applied via inventoryService, audited)", "parameters": [{ "$ref": "#/components/parameters/workspaceId" }], "responses": { "201": { "description": "Created" } } }

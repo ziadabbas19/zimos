@@ -24,6 +24,8 @@ module.exports = (sequelize, DataTypes) => {
       isDefault: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false, field: 'is_default' },
       shippingOverride: { type: DataTypes.JSONB, allowNull: true, field: 'shipping_override' },
       status: { type: DataTypes.ENUM('active', 'archived'), allowNull: false, defaultValue: 'active' },
+      // True only when archived by its product's archive cascade (see catalogService).
+      archivedWithProduct: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false, field: 'archived_with_product' },
     },
     { tableName: 'offers', indexes: [{ fields: ['workspace_id'] }, { fields: ['product_id'] }] }
   );

@@ -22,6 +22,13 @@ router.get('/products', validate(schemas.productList), canView, controller.listP
 router.get('/products/:productId', validate(schemas.productGet), canView, controller.getProduct);
 router.patch('/products/:productId', validate(schemas.productUpdate), canManage, controller.updateProduct);
 router.delete('/products/:productId', validate(schemas.productDelete), canManage, controller.deleteProduct);
+router.post('/products/:productId/restore', validate(schemas.productRestore), canManage, controller.restoreProduct);
+router.delete(
+  '/products/:productId/permanent',
+  validate(schemas.productDeletePermanent),
+  canManage,
+  controller.deleteProductPermanently
+);
 
 // --- Variants -------------------------------------------------------------
 router.post('/products/:productId/variants', validate(schemas.variant), canManage, controller.createVariant);

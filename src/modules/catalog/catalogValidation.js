@@ -3,25 +3,51 @@
 const Joi = require('joi');
 const uuid = Joi.string().uuid();
 
+const productStatus = Joi.string().valid('draft', 'active', 'archived');
+
+// Field rules only, no defaults: defaults belong to create. A PATCH must
+// leave every field it doesn't send untouched (a defaulted `status` would
+// silently un-archive or un-publish, a defaulted `media` would wipe images).
+const productFields = {
+  name: Joi.string().min(1).max(300),
+  slug: Joi.string().max(300),
+  description: Joi.string().allow('').max(20000),
+  productType: Joi.string().valid('physical', 'digital', 'service'),
+  status: productStatus,
+  options: Joi.array().items(Joi.object({ name: Joi.string().required(), values: Joi.array().items(Joi.string()) })),
+  media: Joi.array().items(Joi.object()),
+  tags: Joi.array().items(Joi.string()),
+  seo: Joi.object(),
+  websiteId: uuid,
+};
+
 const product = {
   params: Joi.object({ workspaceId: uuid.required() }),
   body: Joi.object({
-    name: Joi.string().min(1).max(300).required(),
-    slug: Joi.string().max(300).optional(),
-    description: Joi.string().allow('').max(20000).optional(),
-    productType: Joi.string().valid('physical', 'digital', 'service').default('physical'),
-    status: Joi.string().valid('draft', 'active', 'archived').default('draft'),
-    options: Joi.array().items(Joi.object({ name: Joi.string().required(), values: Joi.array().items(Joi.string()) })).default([]),
-    media: Joi.array().items(Joi.object()).default([]),
-    tags: Joi.array().items(Joi.string()).default([]),
-    seo: Joi.object().default({}),
-    websiteId: uuid.optional(),
+    ...productFields,
+    name: productFields.name.required(),
+    productType: productFields.productType.default('physical'),
+    status: productFields.status.default('draft'),
+    options: productFields.options.default([]),
+    media: productFields.media.default([]),
+    tags: productFields.tags.default([]),
+    seo: productFields.seo.default({}),
+    // Optional first variant, created with the product in one transaction so a
+    // simple product is sellable (priced and stocked) straight away.
+    variant: Joi.object({
+      priceAmount: Joi.number().integer().min(0).required(),
+      compareAtAmount: Joi.number().integer().min(0).allow(null).optional(),
+      sku: Joi.string().max(100).allow(null, '').optional(),
+      stockOnHand: Joi.number().integer().min(0).default(0),
+      allowOverselling: Joi.boolean().default(false),
+    }).optional(),
   }),
 };
 
+// No `variant` here: variants are edited through their own endpoints.
 const productUpdate = {
   params: Joi.object({ workspaceId: uuid.required(), productId: uuid.required() }),
-  body: product.body.fork(['name'], (s) => s.optional()),
+  body: Joi.object(productFields),
 };
 
 const productGet = {
@@ -29,11 +55,22 @@ const productGet = {
 };
 
 const productDelete = productGet;
+const productRestore = productGet;
+const productDeletePermanent = productGet;
 
 const productList = {
   params: Joi.object({ workspaceId: uuid.required() }),
   query: Joi.object({
-    status: Joi.string().valid('draft', 'active', 'archived').optional(),
+    // One status, or several: "draft,active" (or a repeated ?status= param).
+    status: Joi.alternatives()
+      .try(
+        productStatus,
+        Joi.string()
+          .pattern(/^(draft|active|archived)(,(draft|active|archived))+$/)
+          .message('"status" must be draft, active, archived, or a comma-separated list of them'),
+        Joi.array().items(productStatus).min(1)
+      )
+      .optional(),
     collectionId: uuid.optional(),
     limit: Joi.number().integer().min(1).max(200).default(50),
     cursor: uuid.optional(),
@@ -160,6 +197,8 @@ module.exports = {
   productUpdate,
   productGet,
   productDelete,
+  productRestore,
+  productDeletePermanent,
   productList,
   variant,
   variantGet,

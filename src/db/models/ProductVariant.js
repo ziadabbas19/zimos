@@ -35,6 +35,9 @@ module.exports = (sequelize, DataTypes) => {
         allowNull: false,
         defaultValue: 'active',
       },
+      // True only when archived by its product's archive cascade, so a product
+      // restore revives exactly those rows (see catalogService).
+      archivedWithProduct: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false, field: 'archived_with_product' },
       // Optimistic-locking counter, incremented on every stock mutation, used
       // by inventoryService to detect and retry on concurrent-write races in
       // addition to the row lock (defense in depth).

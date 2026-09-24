@@ -43,7 +43,8 @@ function generateOrderNumber() {
 async function priceLine(workspaceId, { variantId, offerId, quantity }, transaction) {
   const variant = await db.ProductVariant.findOne({
     where: { id: variantId, workspaceId, status: 'active' },
-    include: [{ model: db.Product, as: 'product' }],
+    // A draft or archived product isn't for sale, even if its variant row is active.
+    include: [{ model: db.Product, as: 'product', where: { status: 'active' } }],
     transaction,
   });
   if (!variant) throw new NotFoundError('ProductVariant');

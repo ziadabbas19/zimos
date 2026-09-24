@@ -68,7 +68,11 @@ function withComputedTotals(cart) {
 }
 
 async function addItem(workspaceId, cartId, { variantId, offerId, quantity }) {
-  const variant = await db.ProductVariant.findOne({ where: { id: variantId, workspaceId, status: 'active' } });
+  // A draft or archived product isn't for sale, even if its variant row is active.
+  const variant = await db.ProductVariant.findOne({
+    where: { id: variantId, workspaceId, status: 'active' },
+    include: [{ model: db.Product, as: 'product', where: { status: 'active' }, attributes: ['id'] }],
+  });
   if (!variant) throw new NotFoundError('ProductVariant');
 
   let unitPrice = variant.priceAmount;

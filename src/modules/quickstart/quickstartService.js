@@ -42,7 +42,7 @@ async function addProduct(workspaceId, input, req) {
   const imageUrl = input.imageUrl || '';
 
   // 1. Catalog — product + variant + a default fixed-price offer.
-  const product = await catalogService.createProduct(
+  const { product } = await catalogService.createProduct(
     workspaceId,
     {
       name: input.productName,

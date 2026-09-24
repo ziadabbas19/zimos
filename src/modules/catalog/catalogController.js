@@ -6,8 +6,8 @@ const inventoryService = require('../inventory/inventoryService');
 const db = require('../../db/models');
 
 const createProduct = asyncHandler(async (req, res) => {
-  const product = await service.createProduct(req.tenant.workspaceId, req.body, req);
-  res.status(201).json({ product });
+  // `variant` is only in the response when the request created one.
+  res.status(201).json(await service.createProduct(req.tenant.workspaceId, req.body, req));
 });
 
 const listProducts = asyncHandler(async (req, res) => {
@@ -27,6 +27,15 @@ const updateProduct = asyncHandler(async (req, res) => {
 
 const deleteProduct = asyncHandler(async (req, res) => {
   res.json(await service.deleteProduct(req.tenant.workspaceId, req.params.productId, req));
+});
+
+const restoreProduct = asyncHandler(async (req, res) => {
+  const product = await service.restoreProduct(req.tenant.workspaceId, req.params.productId, req);
+  res.json({ product });
+});
+
+const deleteProductPermanently = asyncHandler(async (req, res) => {
+  res.json(await service.deleteProductPermanently(req.tenant.workspaceId, req.params.productId, req));
 });
 
 const createVariant = asyncHandler(async (req, res) => {
@@ -128,6 +137,8 @@ module.exports = {
   getProduct,
   updateProduct,
   deleteProduct,
+  restoreProduct,
+  deleteProductPermanently,
   createVariant,
   getVariant,
   updateVariant,
