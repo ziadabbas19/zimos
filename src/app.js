@@ -3,11 +3,11 @@
 const path = require('path');
 const express = require('express');
 const helmet = require('helmet');
-const cors = require('cors');
 const cookieParser = require('cookie-parser');
 const swaggerUi = require('swagger-ui-express');
 const env = require('./config/env');
 const requestId = require('./core/middleware/requestId');
+const { corsPolicy } = require('./core/middleware/cors');
 const { generalLimiter, storefrontLimiter, carrierWebhookLimiter } = require('./core/middleware/rateLimiters');
 const { errorHandler, notFoundHandler } = require('./core/middleware/errorHandler');
 const { hostResolver } = require('./core/middleware/hostResolver');
@@ -57,12 +57,9 @@ app.set('views', path.join(__dirname, 'views'));
 
 app.use(requestId);
 app.use(helmet());
-app.use(
-  cors({
-    origin: env.cors.origins,
-    credentials: true,
-  })
-);
+// Any origin for the public /api/v1/store API, the CORS_ORIGINS allowlist
+// everywhere else (see core/middleware/cors.js).
+app.use(corsPolicy);
 // `verify` keeps the exact bytes Express parsed so webhook signatures can be
 // checked against what the gateway actually signed — a re-serialised req.body
 // would differ by key order or whitespace and never match. See
