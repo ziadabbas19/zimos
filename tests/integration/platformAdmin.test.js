@@ -777,7 +777,10 @@ describe('platform admin — overview metrics', () => {
   }
 
   /** One standing order. `contactSnapshot` is NOT NULL, so it cannot be skipped. */
-  async function makeOrder(workspaceId, { currency = 'EGP', total = 10000, cancelledAt = null } = {}) {
+  async function makeOrder(
+    workspaceId,
+    { currency = 'EGP', total = 10000, cancelledAt = null, paymentMethod = 'cod', financialState = 'pending' } = {}
+  ) {
     const n = nextSeq();
     const customer = await db.Customer.create({
       workspaceId,
@@ -788,7 +791,8 @@ describe('platform admin — overview metrics', () => {
       workspaceId,
       customerId: customer.id,
       orderNumber: `ORD-${n}`,
-      paymentMethod: 'cod',
+      paymentMethod,
+      financialState,
       currency,
       subtotalAmount: total,
       totalAmount: total,
@@ -872,6 +876,21 @@ describe('platform admin — overview metrics', () => {
     expect(kpis.gmv30dCurrency).toBe('EGP');
     expect(kpis.ordersToday).toBe(2);
     expect(ordersPerDay.find((p) => p.label === utcDay(0)).value).toBe(2);
+  });
+
+  it('leaves unpaid prepaid orders out of GMV and the order counts', async () => {
+    const { H, wid } = await setupAdminWithToken();
+    await makeOrder(wid, { total: 25000 });
+    // The shopper left at the payment page: nothing was sold.
+    await makeOrder(wid, { total: 70000, paymentMethod: 'card', financialState: 'pending' });
+    await makeOrder(wid, { total: 30000, paymentMethod: 'card', financialState: 'failed' });
+    // Paid, and paid-then-refunded, were sales.
+    await makeOrder(wid, { total: 10000, paymentMethod: 'card', financialState: 'paid' });
+    await makeOrder(wid, { total: 5000, paymentMethod: 'wallet', financialState: 'refunded' });
+
+    const { kpis } = (await request(app).get(OVERVIEW).set(H)).body.overview;
+    expect(kpis.gmv30d).toBe(40000);
+    expect(kpis.ordersToday).toBe(3);
   });
 
   it('refuses to total GMV across currencies, and still shows the breakdown', async () => {

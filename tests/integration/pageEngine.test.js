@@ -276,7 +276,7 @@ describe('Page engine — slug-change redirects', () => {
 });
 
 describe('Page engine — paths the storefront itself uses', () => {
-  const RESERVED = ['f', 'cart', 'checkout', 'products', 'orders', 'offer', 'track', 'preview'];
+  const RESERVED = ['f', 'cart', 'checkout', 'products', 'orders', 'offer', 'track', 'preview', 'pay'];
 
   it('refuses to create a page on any of them, or under them, whatever the case or leading slash', async () => {
     const ctx = await setup();

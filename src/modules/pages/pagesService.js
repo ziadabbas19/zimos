@@ -47,7 +47,7 @@ function normalizePath(input) {
 // [workspaceId]/*). Next.js serves those before the catch-all that renders
 // merchant pages, so a page at "/cart" or "/products/sale" would be saved,
 // published — and never shown. The whole first segment is reserved.
-const RESERVED_PAGE_SEGMENTS = Object.freeze(['f', 'cart', 'checkout', 'products', 'orders', 'offer', 'track', 'preview']);
+const RESERVED_PAGE_SEGMENTS = Object.freeze(['f', 'cart', 'checkout', 'products', 'orders', 'offer', 'track', 'preview', 'pay']);
 
 /** 422 PAGE_PATH_RESERVED when a normalised path would be shadowed by a storefront route. */
 function assertPathNotReserved(path) {

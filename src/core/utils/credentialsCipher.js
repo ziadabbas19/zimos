@@ -1,13 +1,13 @@
 'use strict';
 
 const crypto = require('crypto');
-const env = require('../../config/env');
 const logger = require('./logger');
 
 /**
  * Encryption at rest for third-party credentials a merchant hands us (courier
- * API keys today). AES-256-GCM: authenticated, so a flipped byte in the
- * database fails loudly on decrypt instead of producing a wrong key.
+ * API keys, payment gateway keys). AES-256-GCM: authenticated, so a flipped
+ * byte in the database fails loudly on decrypt instead of producing a wrong
+ * key.
  *
  * Stored format (one text column, all parts base64url, colon-separated):
  *
@@ -24,40 +24,36 @@ const logger = require('./logger');
  * written for, so copying one workspace's encrypted credentials onto another
  * workspace's row does not decrypt.
  *
- * The key is CARRIER_CREDENTIALS_KEY: 32 bytes, base64. Unset or malformed
- * means "not configured" — callers answer 503 CARRIERS_NOT_CONFIGURED; the app
- * still boots.
+ * The key is always passed in. Each feature owns its own key
+ * (CARRIER_CREDENTIALS_KEY, GATEWAY_CREDENTIALS_KEY) and reads it with
+ * parseKey, so a leak of one never opens the other's rows. Unset or malformed
+ * means "not configured" — the feature answers 503; the app still boots.
  */
 
 const VERSION = 'v1';
 const IV_BYTES = 12;
 const TAG_BYTES = 16;
 
-let warnedInvalidKey = false;
+const warnedInvalid = new Set();
 
-function parseKey(raw) {
+/**
+ * 32 bytes of base64 → a key Buffer; anything else → null. `name` is the env
+ * variable, used only in the one-time warning about a malformed value.
+ */
+function parseKey(raw, name = 'credentials key') {
   if (!raw) return null;
   const key = Buffer.from(raw, 'base64');
   if (key.length !== 32) {
-    if (!warnedInvalidKey) {
-      warnedInvalidKey = true;
-      logger.error('CARRIER_CREDENTIALS_KEY is set but is not 32 bytes of base64 — carrier features are disabled');
+    if (!warnedInvalid.has(name)) {
+      warnedInvalid.add(name);
+      logger.error(`${name} is set but is not 32 bytes of base64 — the features it protects are disabled`);
     }
     return null;
   }
   return key;
 }
 
-/** The configured key, or null. Read on every call so tests can swap it. */
-function getKey() {
-  return parseKey(env.carriers.credentialsKey);
-}
-
-function isConfigured() {
-  return getKey() !== null;
-}
-
-function encrypt(value, aad, key = getKey()) {
+function encrypt(value, aad, key) {
   if (!key) throw new Error('credentials key is not configured');
   const iv = crypto.randomBytes(IV_BYTES);
   const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
@@ -68,7 +64,7 @@ function encrypt(value, aad, key = getKey()) {
 }
 
 /** Throws on a wrong key, a wrong `aad`, or any tampering. */
-function decrypt(stored, aad, key = getKey()) {
+function decrypt(stored, aad, key) {
   if (!key) throw new Error('credentials key is not configured');
   const parts = typeof stored === 'string' ? stored.split(':') : [];
   if (parts.length !== 4 || parts[0] !== VERSION) throw new Error('unrecognised credentials format');
@@ -84,4 +80,4 @@ function decrypt(stored, aad, key = getKey()) {
   return JSON.parse(plain.toString('utf8'));
 }
 
-module.exports = { encrypt, decrypt, isConfigured, getKey, parseKey };
+module.exports = { encrypt, decrypt, parseKey };

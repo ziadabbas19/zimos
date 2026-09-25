@@ -24,8 +24,9 @@
  *   delivery_failed   the courier could not deliver it
  *   out_for_delivery  with the courier, out on the round
  *   shipped           collected by the courier, in transit
+ *   awaiting_payment  prepaid (card / wallet / bank transfer) and not paid yet
  *   needs_follow_up   COD call went unanswered or the customer postponed
- *   pending_confirmation  waiting on the COD call, or on a prepaid payment
+ *   pending_confirmation  waiting on the COD call
  *   ready_to_ship     everything else: confirmed (or paid) and still here
  */
 
@@ -33,6 +34,7 @@
 // `stage` against it and the counts endpoint zero-fills with it, so a key
 // added here without a matching CASE arm would simply always count zero.
 const STAGES = [
+  'awaiting_payment',
   'pending_confirmation',
   'needs_follow_up',
   'ready_to_ship',
@@ -72,6 +74,28 @@ const LATEST_SHIPMENT_JOIN = `
 /** `FROM` clause every stage-aware query shares. */
 const ORDERS_WITH_STAGE_FROM = `orders o${LATEST_SHIPMENT_JOIN}`;
 
+/**
+ * Money has actually moved on the order, or it is COD (collected on delivery,
+ * so it stands as a sale from the moment it is placed). Once paid, a refund
+ * does not undo this: the order was a sale that was later refunded.
+ */
+const PAID_STATES_SQL = "('paid', 'partially_paid', 'refunded', 'partially_refunded')";
+
+/** A prepaid order that has not been paid. `alias` is the orders alias (or '' for none). */
+function unpaidPrepaidSql(alias) {
+  const p = alias ? `${alias}.` : '';
+  return `(${p}payment_method <> 'cod' AND ${p}financial_state NOT IN ${PAID_STATES_SQL})`;
+}
+
+/**
+ * Orders that count as sales in GMV / revenue: everything except a prepaid
+ * order that was never paid — a checkout the shopper abandoned at the payment
+ * page is not revenue.
+ */
+function countsAsSaleSql(alias) {
+  return `NOT ${unpaidPrepaidSql(alias)}`;
+}
+
 const STAGE_SQL = `CASE
       WHEN o.cancelled_at IS NOT NULL OR o.confirmation_state = 'rejected' THEN 'cancelled'
 
@@ -94,19 +118,19 @@ const STAGE_SQL = `CASE
       WHEN ls.status IS NULL AND o.fulfillment_state = 'returned' THEN 'returned'
       WHEN ls.status IS NULL AND o.fulfillment_state = 'fulfilled' THEN 'delivered'
 
-      -- Nothing has shipped: where the confirmation call stands.
+      -- Nothing has shipped. A prepaid order that has not been paid is
+      -- waiting on the shopper, not on anyone in the store: no confirmation
+      -- task is ever created for it (see orderService.createOrder), so its
+      -- confirmation_state stays 'pending' for life and would otherwise read
+      -- as "waiting on a call".
+      WHEN ${unpaidPrepaidSql('o')} THEN 'awaiting_payment'
+
+      -- Where the confirmation call stands. Past the arm above, a prepaid
+      -- order is paid and waiting on nothing, so it is ready to ship.
       WHEN o.confirmation_state IN ('unreachable', 'postponed') THEN 'needs_follow_up'
-      -- A confirmation task is only ever created for COD (see
-      -- orderService.createOrder), so a card/wallet/bank order's
-      -- confirmation_state stays 'pending' for life. Reading that as "waiting
-      -- on a call" would park every prepaid order in the New tab forever, so
-      -- a prepaid order that has been paid is not waiting on anything and
-      -- falls through to ready_to_ship. An unpaid one genuinely is new.
-      WHEN o.confirmation_state = 'pending'
-           AND NOT (o.payment_method <> 'cod' AND o.financial_state IN ('paid', 'partially_paid'))
-        THEN 'pending_confirmation'
+      WHEN o.confirmation_state = 'pending' AND o.payment_method = 'cod' THEN 'pending_confirmation'
 
       ELSE 'ready_to_ship'
     END`;
 
-module.exports = { STAGES, STAGE_SQL, LATEST_SHIPMENT_JOIN, ORDERS_WITH_STAGE_FROM };
+module.exports = { STAGES, STAGE_SQL, LATEST_SHIPMENT_JOIN, ORDERS_WITH_STAGE_FROM, unpaidPrepaidSql, countsAsSaleSql };

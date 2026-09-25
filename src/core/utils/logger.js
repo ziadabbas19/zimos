@@ -17,6 +17,13 @@ const REDACT_KEYS = new Set([
   'cvv',
   'secret',
   'apiSecret',
+  // Gateway credentials and signatures.
+  'secretKey',
+  'apiKey',
+  'hmacSecret',
+  'hmac',
+  'signature',
+  'credentials',
 ]);
 
 function redact(meta) {

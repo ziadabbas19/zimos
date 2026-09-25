@@ -8,10 +8,11 @@ const swaggerUi = require('swagger-ui-express');
 const env = require('./config/env');
 const requestId = require('./core/middleware/requestId');
 const { corsPolicy } = require('./core/middleware/cors');
-const { generalLimiter, storefrontLimiter, carrierWebhookLimiter } = require('./core/middleware/rateLimiters');
+const { generalLimiter, storefrontLimiter, carrierWebhookLimiter, paymentWebhookLimiter } = require('./core/middleware/rateLimiters');
 const { errorHandler, notFoundHandler } = require('./core/middleware/errorHandler');
 const { hostResolver } = require('./core/middleware/hostResolver');
 const logger = require('./core/utils/logger');
+const { redactUrl } = require('./core/utils/redactUrl');
 const db = require('./db/models');
 
 const authRoutes = require('./modules/auth/authRoutes');
@@ -45,6 +46,8 @@ const checkoutSessionRoutes = require('./modules/checkoutSessions/checkoutSessio
 const templateRoutes = require('./modules/templates/templateRoutes');
 const carrierRoutes = require('./modules/shipping/carrierRoutes');
 const carrierWebhookRoutes = require('./modules/shipping/carrierWebhookRoutes');
+const onlinePaymentRoutes = require('./modules/payments/onlinePaymentRoutes');
+const paymentWebhookRoutes = require('./modules/payments/paymentWebhookRoutes');
 
 const app = express();
 
@@ -77,7 +80,9 @@ app.use(cookieParser());
 
 if (!env.isTest) {
   app.use((req, res, next) => {
-    logger.info(`${req.method} ${req.originalUrl}`, { requestId: req.id, ip: req.ip });
+    // Gateway callbacks carry their signature in the query string (?hmac=):
+    // it never reaches a log line.
+    logger.info(`${req.method} ${redactUrl(req.originalUrl)}`, { requestId: req.id, ip: req.ip });
     next();
   });
 }
@@ -88,6 +93,7 @@ app.use(`/api/${env.apiVersion}/store`, storefrontLimiter);
 // Courier webhooks all come from the courier's servers: limited per merchant
 // webhook token, not per IP (see rateLimiters.js).
 app.use(`/api/${env.apiVersion}/webhooks/carriers`, carrierWebhookLimiter);
+app.use(`/api/${env.apiVersion}/webhooks/payments`, paymentWebhookLimiter);
 app.use(generalLimiter);
 
 // --- Health / readiness -----------------------------------------------
@@ -139,9 +145,13 @@ v1.use('/workspaces/:workspaceId/reviews', reviewRoutes);
 v1.use('/workspaces/:workspaceId/fraud', fraudRoutes);
 v1.use('/workspaces/:workspaceId/checkout-sessions', checkoutSessionRoutes);
 v1.use('/workspaces/:workspaceId/carriers', carrierRoutes);
+v1.use('/workspaces/:workspaceId/payments', onlinePaymentRoutes);
 v1.use('/billing', billingRoutes);
 // Courier status webhooks — public; the token in the path is the identity.
 v1.use('/webhooks/carriers', carrierWebhookRoutes);
+// Payment gateway callbacks — public; the token names the account, the HMAC
+// proves the sender.
+v1.use('/webhooks/payments', paymentWebhookRoutes);
 v1.use('/admin', adminRoutes);
 // Plans, subscriptions, feature flags and announcements. Shares the /admin
 // mount with adminRoutes above, which owns /workspaces and /dashboard.

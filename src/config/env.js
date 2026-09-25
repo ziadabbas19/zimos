@@ -158,6 +158,30 @@ const env = {
 
   payments: {
     defaultProvider: process.env.PAYMENTS_DEFAULT_PROVIDER || 'mock',
+    // Online (gateway) checkout on the storefront. Off: the storefront and the
+    // public API behave exactly as the COD-only store always has. The
+    // dashboard may still connect gateway accounts while it is off.
+    onlineEnabled: process.env.PAYMENTS_ONLINE_ENABLED === 'true',
+    // Encrypts merchants' gateway keys at rest (AES-256-GCM, see
+    // core/utils/credentialsCipher.js): 32 bytes, base64. Separate from
+    // CARRIER_CREDENTIALS_KEY. Unset or malformed: every gateway feature
+    // answers 503 GATEWAYS_NOT_CONFIGURED; the app still boots.
+    credentialsKey: (process.env.GATEWAY_CREDENTIALS_KEY || '').trim(),
+    // How long an unpaid online order holds its stock before it expires.
+    attemptTtlMinutes: Math.max(5, parseInt(process.env.PAYMENT_ATTEMPT_TTL_MINUTES || '30', 10) || 30),
+    // How many payment attempts one order may start (first try + retries).
+    maxAttemptsPerOrder: Math.max(1, parseInt(process.env.PAYMENT_MAX_ATTEMPTS_PER_ORDER || '5', 10) || 5),
+    // POST /webhooks/payments/:code/:token, per token per window.
+    webhookRateLimitMax: parseInt(process.env.PAYMENT_WEBHOOK_RATE_LIMIT_MAX || '300', 10),
+    // Extra hosts (comma-separated) a shopper may be sent back to after
+    // paying, besides the platform's own subdomains and the store's verified
+    // custom domains — e.g. the storefront app's own host.
+    returnHosts: (process.env.PAYMENT_RETURN_HOSTS || '')
+      .split(',')
+      .map((s) => s.trim().toLowerCase())
+      .filter(Boolean),
+    // Where each gateway's API lives. Overridable for a regional account.
+    paymobBaseUrl: (process.env.PAYMOB_BASE_URL || 'https://accept.paymob.com').trim().replace(/\/+$/, ''),
   },
 
   // Shared secret the billing gateway signs its webhook bodies with

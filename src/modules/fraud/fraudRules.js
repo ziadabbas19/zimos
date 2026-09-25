@@ -148,8 +148,12 @@ async function ordersInLastDay(workspaceId, customerId, transaction) {
  * transaction, after the customer is resolved and before anything is
  * reserved. Returns the rule flags that fired; throws OrderRejectedError when
  * the workspace's rules say the order must not be placed.
+ *
+ * `onlinePayment`: the order is paid through a gateway before anything ships,
+ * so the counting rules' "block" only flags it — the money is real, and the
+ * merchant decides. The blocklist still refuses.
  */
-async function evaluateStorefrontOrder({ workspaceId, customer, variantIds, transaction }) {
+async function evaluateStorefrontOrder({ workspaceId, customer, variantIds, transaction, onlinePayment = false }) {
   const workspace = await db.Workspace.findByPk(workspaceId, { attributes: ['id', 'settings'], transaction });
   const rules = resolveFraudRules(workspace && workspace.settings);
 
@@ -177,7 +181,7 @@ async function evaluateStorefrontOrder({ workspaceId, customer, variantIds, tran
     flags.push(FLAGS.HIGH_REJECTION_CUSTOMER);
   }
 
-  if (flags.length > 0 && rules.action === 'block') {
+  if (flags.length > 0 && rules.action === 'block' && !onlinePayment) {
     throw new OrderRejectedError({ customerId: customer.id, flags });
   }
   return flags;

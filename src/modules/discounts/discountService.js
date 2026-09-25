@@ -54,10 +54,15 @@ async function evaluate(workspaceId, code, { subtotal, productIds, collectionIds
  * and inserts a DiscountRedemption row, using SELECT ... FOR UPDATE on the
  * discount row so two concurrent checkouts racing for the last remaining
  * use of a limited discount cannot both succeed.
+ *
+ * `allowOverLimit` is for a prepaid order redeemed only once its payment is
+ * confirmed (orders/orderCompletion.js): the code was valid when the shopper
+ * placed the order and they were charged the discounted price, so the use is
+ * recorded even if the limit ran out while they were paying.
  */
-async function redeem(discountId, { orderId, customerId, amountAllocated }, transaction) {
+async function redeem(discountId, { orderId, customerId, amountAllocated }, transaction, { allowOverLimit = false } = {}) {
   const discount = await db.Discount.findByPk(discountId, { lock: transaction.LOCK.UPDATE, transaction });
-  if (discount.usageLimit !== null && discount.usageCount >= discount.usageLimit) {
+  if (!allowOverLimit && discount.usageLimit !== null && discount.usageCount >= discount.usageLimit) {
     throw new AppError('DISCOUNT_USAGE_LIMIT_REACHED', 'Discount code has reached its usage limit', 422);
   }
   await discount.update({ usageCount: discount.usageCount + 1 }, { transaction });

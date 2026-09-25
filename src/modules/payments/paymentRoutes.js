@@ -13,6 +13,9 @@ router.use(authenticate, resolveTenant);
 
 router.post('/orders/:orderId/payments', validate(schemas.initialize), requirePermission(PERMISSIONS.ORDERS_MANAGE), controller.initialize);
 router.post('/payments/:paymentId/capture', validate(schemas.capture), requirePermission(PERMISSIONS.ORDERS_MANAGE), controller.capture);
+router.get('/orders/:orderId/payment-timeline', validate(schemas.listRefunds), requirePermission(PERMISSIONS.ORDERS_VIEW), controller.timeline);
+router.post('/orders/:orderId/payments/sync', validate(schemas.listRefunds), requirePermission(PERMISSIONS.ORDERS_MANAGE), controller.sync);
+router.get('/orders/:orderId/refunds', validate(schemas.listRefunds), requirePermission(PERMISSIONS.ORDERS_VIEW), controller.listRefunds);
 router.post('/orders/:orderId/refunds', validate(schemas.refund), requirePermission(PERMISSIONS.REFUNDS_MANAGE), controller.refund);
 
 module.exports = router;

@@ -71,6 +71,13 @@ module.exports = (sequelize, DataTypes) => {
       totalWeightGrams: { type: DataTypes.INTEGER, allowNull: true, field: 'total_weight_grams' },
       weightTierSnapshot: { type: DataTypes.JSONB, allowNull: true, field: 'weight_tier_snapshot' },
       weightEstimated: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false, field: 'weight_estimated' },
+      // When the order became a sale — see modules/orders/orderCompletion.js.
+      completedAt: { type: DataTypes.DATE, allowNull: true, field: 'completed_at' },
+      // Unpaid online orders — see migration 099. The token hash is never
+      // serialized (toJSON below).
+      paymentExpiresAt: { type: DataTypes.DATE, allowNull: true, field: 'payment_expires_at' },
+      paymentTokenHash: { type: DataTypes.STRING(64), allowNull: true, field: 'payment_token_hash' },
+      completionContext: { type: DataTypes.JSONB, allowNull: true, field: 'completion_context' },
     },
     {
       tableName: 'orders',
@@ -84,6 +91,13 @@ module.exports = (sequelize, DataTypes) => {
       ],
     }
   );
+
+  Order.prototype.toJSON = function toJSON() {
+    const values = this.get({ plain: true });
+    delete values.paymentTokenHash;
+    delete values.completionContext;
+    return values;
+  };
 
   Order.associate = (models) => {
     Order.belongsTo(models.Workspace, { foreignKey: 'workspaceId', as: 'workspace' });

@@ -3,7 +3,6 @@
 // The encryption used for merchants' courier credentials at rest.
 
 const crypto = require('crypto');
-const env = require('../../src/config/env');
 const cipher = require('../../src/core/utils/credentialsCipher');
 
 const KEY = crypto.randomBytes(32);
@@ -64,27 +63,31 @@ describe('credentialsCipher', () => {
     expect(() => cipher.decrypt('v2:a:b:c', AAD, KEY)).toThrow();
   });
 
-  describe('configuration', () => {
-    const original = env.carriers.credentialsKey;
-    afterEach(() => {
-      env.carriers.credentialsKey = original;
-    });
-
-    it('is unconfigured without a key, and encrypt refuses', () => {
-      env.carriers.credentialsKey = '';
-      expect(cipher.isConfigured()).toBe(false);
+  describe('keys', () => {
+    it('always needs the key passed in', () => {
       expect(() => cipher.encrypt(SECRET, AAD)).toThrow(/not configured/);
+      expect(() => cipher.decrypt(cipher.encrypt(SECRET, AAD, KEY), AAD)).toThrow(/not configured/);
     });
 
-    it('treats a key that is not 32 bytes as unconfigured instead of crashing', () => {
-      env.carriers.credentialsKey = crypto.randomBytes(16).toString('base64');
-      expect(cipher.isConfigured()).toBe(false);
+    it('parseKey: unset is unconfigured', () => {
+      expect(cipher.parseKey('', 'TEST_KEY')).toBeNull();
+      expect(cipher.parseKey(undefined, 'TEST_KEY')).toBeNull();
     });
 
-    it('uses CARRIER_CREDENTIALS_KEY when it is 32 bytes of base64', () => {
-      env.carriers.credentialsKey = KEY.toString('base64');
-      expect(cipher.isConfigured()).toBe(true);
-      expect(cipher.decrypt(cipher.encrypt(SECRET, AAD), AAD, KEY)).toEqual(SECRET);
+    it('parseKey: a key that is not 32 bytes is unconfigured instead of crashing', () => {
+      expect(cipher.parseKey(crypto.randomBytes(16).toString('base64'), 'TEST_KEY')).toBeNull();
+    });
+
+    it('parseKey: 32 bytes of base64 is a usable key', () => {
+      const key = cipher.parseKey(KEY.toString('base64'), 'TEST_KEY');
+      expect(cipher.decrypt(cipher.encrypt(SECRET, AAD, key), AAD, KEY)).toEqual(SECRET);
+    });
+
+    it('a key for one feature never opens rows written with another', () => {
+      const carrierKey = crypto.randomBytes(32);
+      const gatewayKey = crypto.randomBytes(32);
+      const stored = cipher.encrypt(SECRET, AAD, gatewayKey);
+      expect(() => cipher.decrypt(stored, AAD, carrierKey)).toThrow();
     });
   });
 });

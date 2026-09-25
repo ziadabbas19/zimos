@@ -7,7 +7,7 @@ const pagesService = require('../pages/pagesService');
 const catalogService = require('../catalog/catalogService');
 const inventoryService = require('../inventory/inventoryService');
 const orderService = require('../orders/orderService');
-const checkoutSessionService = require('../checkoutSessions/checkoutSessionService');
+const { afterOrderCompleted } = require('../orders/orderCompletion');
 const storefrontService = require('../storefront/storefrontService');
 const { recordAudit } = require('../audit/auditService');
 const { formatMoney, parsePriceToMinor, parseBullets, storeHomeTree } = require('./quickstartAdapter');
@@ -315,7 +315,7 @@ async function placeSimpleOrder(workspaceId, form, req) {
   );
   // This form has no autosave of its own, but the shopper may have started a
   // checkout on the storefront API with the same phone. Never throws.
-  await checkoutSessionService.convertAfterOrder(workspaceId, order);
+  await afterOrderCompleted(workspaceId, order);
   return order;
 }
 

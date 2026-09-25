@@ -6,7 +6,7 @@ const db = require('../../db/models');
 const { NotFoundError } = require('../../core/errors/AppError');
 const logger = require('../../core/utils/logger');
 const { registerFonts, drawText, hasArabic } = require('../../core/pdf/bidiText');
-const { isCarrierBooked, FINISHED_STATUSES } = require('../shipping/carrierShipmentService');
+const { isCarrierBooked, FINISHED_STATUSES, codAmountFor } = require('../shipping/carrierShipmentService');
 const { getAdapter, MANUAL } = require('../shipping/carriers');
 
 const money = (minor, currency) => `${(Number(minor) / 100).toFixed(2)} ${currency || ''}`.trim();
@@ -127,7 +127,9 @@ async function computeWaybillModel(workspaceId, orderId) {
     trackingValue,
     isCod,
     storeName: (workspace && workspace.name) || 'Store',
-    amountToCollect: isCod ? String(order.totalAmount) : null,
+    // The same figure a courier booking sends as its COD amount: what is
+    // still unpaid, not the order total.
+    amountToCollect: isCod ? String(codAmountFor(order)) : null,
     shipTo: order.contactSnapshot || {},
     address: order.shippingAddressSnapshot || {},
   };

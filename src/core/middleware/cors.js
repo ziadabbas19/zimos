@@ -35,7 +35,9 @@ function isStorefrontApiPath(p) {
 const storefrontCors = cors({
   origin: '*',
   methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'X-Cart-Token', 'Idempotency-Key'],
+  // X-Payment-Token: the shopper's status token for an unpaid online order.
+  // X-Store-Preview: a staff preview token that unlocks test-mode payments.
+  allowedHeaders: ['Content-Type', 'X-Cart-Token', 'Idempotency-Key', 'X-Payment-Token', 'X-Store-Preview'],
   // The storefront reads Retry-After on a 429 to tell the shopper when to retry.
   exposedHeaders: ['Retry-After'],
   maxAge: 7200,

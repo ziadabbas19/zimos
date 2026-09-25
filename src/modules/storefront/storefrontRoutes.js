@@ -13,6 +13,8 @@ const schemas = require('./storefrontValidation');
 const checkoutSchemas = require('../checkout/checkoutValidation');
 const checkoutSessionController = require('../checkoutSessions/checkoutSessionController');
 const checkoutSessionSchemas = require('../checkoutSessions/checkoutSessionValidation');
+const onlinePaymentController = require('../payments/onlinePaymentController');
+const onlinePaymentSchemas = require('../payments/onlinePaymentValidation');
 
 const router = Router({ mergeParams: true });
 router.use(resolvePublicWorkspace);
@@ -35,6 +37,21 @@ router.post('/checkout-sessions', validate(checkoutSessionSchemas.capture), chec
 
 // Read-only: prices the shipping line the checkout would get.
 router.post('/shipping-quote', validate(schemas.shippingQuote), controller.shippingQuote);
+
+// The payment methods the checkout offers (COD only while online payments
+// are off). A valid X-Store-Preview header adds test-mode gateway methods.
+router.get('/payment-methods', validate(onlinePaymentSchemas.storeMethods), onlinePaymentController.storefrontMethods);
+
+// An unpaid online order, for the shopper holding its X-Payment-Token (given
+// once, by the checkout that created the order).
+router.get('/orders/:orderId/payment', validate(onlinePaymentSchemas.shopperStatus), onlinePaymentController.shopperStatus);
+router.post('/orders/:orderId/payment/return', validate(onlinePaymentSchemas.shopperReturn), onlinePaymentController.shopperReturn);
+router.post('/orders/:orderId/payment/retry', validate(onlinePaymentSchemas.shopperRetry), onlinePaymentController.shopperRetry);
+router.post(
+  '/orders/:orderId/payment/switch-to-cod',
+  validate(onlinePaymentSchemas.shopperAction),
+  onlinePaymentController.shopperSwitchToCod
+);
 
 router.post(
   '/checkout',

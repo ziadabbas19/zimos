@@ -795,7 +795,13 @@ async function getSessionStep(workspaceId, funnelId, sessionId) {
 /**
  * Creates the follow-on order for an accepted upsell/downsell through the
  * shared order engine (server-side pricing, transactional inventory,
- * idempotency) and reuses the original order's customer/address/payment.
+ * idempotency) and reuses the original order's customer and address.
+ *
+ * It is always cash on delivery. After a COD order that is the same method;
+ * after an order paid online there is no second payment page to send the
+ * shopper to mid-funnel, and copying 'card' would create an unpaid card order
+ * nothing ever charges — so the add-on is collected on delivery, riding the
+ * same parcel's COD amount when the waybill allows.
  * Runs inside the caller's transaction, so the order and the session move that
  * routes the visitor past the offer commit together or not at all — a failure
  * after the order was created must never leave a charged visitor on a session
@@ -823,7 +829,7 @@ async function createFollowOnOrder(workspaceId, funnelId, step, session, req, tr
       items: [{ variantId: offer.lines[0].variantId, offerId: offer.id, quantity: 1 }],
       contact: original.contactSnapshot,
       shippingAddress: original.shippingAddressSnapshot || undefined,
-      paymentMethod: original.paymentMethod,
+      paymentMethod: 'cod',
       funnelId,
     },
     { user: null, headers: req && req.headers ? req.headers : {}, ip: req ? req.ip : null },
@@ -891,7 +897,19 @@ async function advanceSession(workspaceId, funnelId, sessionId, body, req) {
       followOn = await createFollowOnOrder(workspaceId, funnelId, currentStep, session, req, t);
     }
 
-    // completed_checkout carries the order just placed on this step.
+    // completed_checkout carries the order just placed on this step. An order
+    // paid online only counts once it is paid: the shopper is sent on through
+    // the funnel after the payment page, not before.
+    if (outcome.type === 'completed_checkout' && outcome.orderId) {
+      const placed = await db.Order.findOne({
+        where: { id: outcome.orderId, workspaceId },
+        attributes: ['id', 'paymentMethod', 'financialState', 'cancelledAt'],
+        transaction: t,
+      });
+      if (placed && placed.paymentMethod !== 'cod' && !['paid', 'partially_paid'].includes(placed.financialState)) {
+        throw new AppError('FUNNEL_ORDER_NOT_PAID', 'This order has not been paid yet', 409);
+      }
+    }
     if (outcome.type === 'completed_checkout' && outcome.orderId) {
       const [n] = await db.Order.update(
         { funnelId },

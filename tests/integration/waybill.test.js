@@ -127,6 +127,15 @@ describe('waybill PDF', () => {
     expect(cardModel.amountToCollect).toBeNull();
   });
 
+  it('the amount to collect is what is still unpaid, the same figure a courier booking sends', async () => {
+    const { auth, workspace, variant } = await setupWorkspaceWithProduct({ stock: 20, price: 30000 });
+    const cod = await placeOrder(auth.accessToken, workspace.id, variant.id, 'cod');
+    await db.Order.update({ amountPaid: 10000 }, { where: { id: cod.id } });
+
+    const model = await waybillService.computeWaybillModel(workspace.id, cod.id);
+    expect(model.amountToCollect).toBe(String(Number(cod.totalAmount) - 10000));
+  });
+
   it('is gated by workspace membership (404 cross-workspace)', async () => {
     const A = await setupWorkspaceWithProduct({ workspaceName: 'WB A', stock: 5 });
     const orderA = await placeOrder(A.auth.accessToken, A.workspace.id, A.variant.id);

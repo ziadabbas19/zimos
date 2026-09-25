@@ -13,7 +13,7 @@ const customerService = require('../customers/customerService');
 const discountService = require('../discounts/discountService');
 const { calculateShippingAmount } = require('../shipping/shippingPricing');
 const { calculateTax } = require('../tax/taxService');
-const { createInvoiceForOrder } = require('../invoices/invoiceService');
+const { completeOrderInTransaction } = require('./orderCompletion');
 const { recordAudit } = require('../audit/auditService');
 const { setConfirmationState } = require('./orderStateService');
 const { STAGES, STAGE_SQL, ORDERS_WITH_STAGE_FROM } = require('./orderStage');
@@ -148,8 +148,22 @@ async function recordRefusal(workspaceId, refusal, req) {
  * upsell is the same buyer adding to the order they just placed, so it would
  * always trip duplicate_order. Staff orders (req.user set) are never
  * evaluated and need no option.
+ *
+ * `awaitingPayment` places a storefront order that is paid online: it is
+ * created unpaid, holding its stock until `expiresAt`, and is NOT completed —
+ * no invoice, discount redemption or customer.totalOrders until the payment
+ * lands (payments/onlinePaymentService). `tokenHash` is the shopper's status
+ * token; `completionContext` ({ cartId, checkoutSessionId }) is kept for the
+ * completion step, which also gets the discount to redeem. Fraud rules treat
+ * it as an online payment: the blocklist still refuses, any other rule set to
+ * "block" only flags.
  */
-async function createOrder(workspaceId, payload, req, { transaction: outerTransaction, skipFraudRules = false } = {}) {
+async function createOrder(
+  workspaceId,
+  payload,
+  req,
+  { transaction: outerTransaction, skipFraudRules = false, awaitingPayment = null } = {}
+) {
   const { items, contact, shippingAddress, paymentMethod, discountCode, funnelId, websiteId, notes } = payload;
 
   if (!items || items.length === 0) {
@@ -172,6 +186,7 @@ async function createOrder(workspaceId, payload, req, { transaction: outerTransa
         customer,
         variantIds: [...new Set(items.map((item) => item.variantId).filter(Boolean))],
         transaction,
+        onlinePayment: Boolean(awaitingPayment),
       });
       for (const flag of ruleFlags) if (!riskFlags.includes(flag)) riskFlags.push(flag);
     }
@@ -263,6 +278,16 @@ async function createOrder(workspaceId, payload, req, { transaction: outerTransa
         totalWeightGrams: shipping.weightGrams,
         weightTierSnapshot: shipping.tier,
         weightEstimated: shipping.weightEstimated,
+        ...(awaitingPayment
+          ? {
+              paymentExpiresAt: awaitingPayment.expiresAt,
+              paymentTokenHash: awaitingPayment.tokenHash,
+              completionContext: {
+                ...(awaitingPayment.completionContext || {}),
+                discount: discountRecord ? { discountId: discountRecord.id, amountAllocated: discountAmount } : null,
+              },
+            }
+          : {}),
       },
       { transaction }
     );
@@ -293,22 +318,21 @@ async function createOrder(workspaceId, payload, req, { transaction: outerTransa
       );
     }
 
-    if (discountRecord) {
-      await discountService.redeem(
-        discountRecord.id,
-        { orderId: order.id, customerId: customer.id, amountAllocated: discountAmount },
-        transaction
-      );
-    }
-
     if (paymentMethod === 'cod') {
       await db.ConfirmationTask.create({ workspaceId, orderId: order.id, status: 'queued' }, { transaction });
     }
 
     order.items = orderItems;
-    await createInvoiceForOrder(order, transaction);
-
-    await customer.increment('totalOrders', { by: 1, transaction });
+    // Invoice, discount redemption, customer.totalOrders — the order is a
+    // sale from this moment (see orderCompletion.js). An order paid online
+    // becomes one when its payment lands.
+    if (!awaitingPayment) {
+      await completeOrderInTransaction(
+        order,
+        { discount: discountRecord ? { discountId: discountRecord.id, amountAllocated: discountAmount } : null },
+        transaction
+      );
+    }
 
     await recordAudit({
       workspaceId,
@@ -358,7 +382,12 @@ async function getOrder(workspaceId, orderId) {
     include: [
       { model: db.OrderItem, as: 'items' },
       { model: db.Payment, as: 'payments' },
+      { model: db.Refund, as: 'refunds' },
       { model: db.Shipment, as: 'shipments' },
+    ],
+    order: [
+      [{ model: db.Payment, as: 'payments' }, 'createdAt', 'ASC'],
+      [{ model: db.Refund, as: 'refunds' }, 'createdAt', 'ASC'],
     ],
   });
   if (!order) throw new NotFoundError('Order');

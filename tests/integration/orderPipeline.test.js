@@ -106,6 +106,9 @@ async function buildEveryStage(auth, workspace, variant) {
   // New: a COD order nobody has called yet.
   built.pending_confirmation = await placeOrder(token, ws, variant.id);
 
+  // Awaiting payment: a prepaid order the shopper has not paid.
+  built.awaiting_payment = await placeOrder(token, ws, variant.id, { paymentMethod: 'card' });
+
   // Needs follow-up: the call went unanswered.
   built.needs_follow_up = await placeOrder(token, ws, variant.id);
   await recordConfirmation(token, ws, built.needs_follow_up.id, 'unreachable');
@@ -311,14 +314,14 @@ describe('derived order stage', () => {
     expect((await getOrder(auth.accessToken, workspace.id, order.id)).body.order.stage).toBe('delivery_failed');
   });
 
-  it('does not park prepaid orders in New: an unpaid card order is new, a paid one is ready to ship', async () => {
+  it('does not park prepaid orders in New: an unpaid card order awaits payment, a paid one is ready to ship', async () => {
     const { auth, workspace, variant } = await setupWorkspaceWithProduct({ stock: 10, price: 15000 });
     const order = await placeOrder(auth.accessToken, workspace.id, variant.id, { paymentMethod: 'card' });
 
     // No confirmation task is ever created for a prepaid order, so its
     // confirmation_state stays 'pending' for life.
     expect(await db.ConfirmationTask.count({ where: { orderId: order.id } })).toBe(0);
-    expect((await getOrder(auth.accessToken, workspace.id, order.id)).body.order.stage).toBe('pending_confirmation');
+    expect((await getOrder(auth.accessToken, workspace.id, order.id)).body.order.stage).toBe('awaiting_payment');
 
     await payOrder(auth.accessToken, workspace.id, order.id);
     expect((await db.Order.findByPk(order.id)).financialState).toBe('paid');

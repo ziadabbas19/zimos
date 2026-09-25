@@ -114,6 +114,10 @@ function assertConfirmedOrPaid(order) {
   if (order.paymentMethod !== 'cod' && order.financialState !== 'paid') {
     throw new AppError('ORDER_NOT_PAID', 'This prepaid order must be paid before booking a courier', 409);
   }
+  // Paid with a gateway's test keys: no money moved, so nothing ships.
+  if ((order.riskFlags || []).includes('test_payment')) {
+    throw new AppError('ORDER_TEST_PAYMENT', 'This order was paid in test mode and cannot be shipped', 409);
+  }
 }
 
 function assertReadyToShip(order) {

@@ -13,6 +13,12 @@ module.exports = (sequelize, DataTypes) => {
       status: { type: DataTypes.ENUM('pending', 'processed', 'failed'), allowNull: false, defaultValue: 'pending' },
       creditNoteId: { type: DataTypes.UUID, allowNull: true, field: 'credit_note_id' },
       processedByUserId: { type: DataTypes.UUID, allowNull: true, field: 'processed_by_user_id' },
+      // 'merchant' (dashboard) or 'gateway' (made in the gateway's dashboard,
+      // reported by webhook). See migration 098.
+      source: { type: DataTypes.STRING(20), allowNull: false, defaultValue: 'merchant' },
+      providerRefundReference: { type: DataTypes.STRING(200), allowNull: true, field: 'provider_refund_reference' },
+      failureReason: { type: DataTypes.STRING(300), allowNull: true, field: 'failure_reason' },
+      processedAt: { type: DataTypes.DATE, allowNull: true, field: 'processed_at' },
     },
     { tableName: 'refunds', indexes: [{ fields: ['workspace_id'] }, { fields: ['order_id'] }] }
   );

@@ -28,7 +28,7 @@ const generalLimiter = rateLimit({
   // The public storefront API is limited per shopper by storefrontLimiter,
   // which marks the requests it handled. Counting them again here, by IP,
   // would put every shopper behind our storefront server back in one bucket.
-  skip: (req) => skip() || req.rateLimitScope === 'storefront' || req.rateLimitScope === 'carrier_webhook',
+  skip: (req) => skip() || req.rateLimitScope === 'storefront' || req.rateLimitScope === 'carrier_webhook' || req.rateLimitScope === 'payment_webhook',
   handler,
 });
 
@@ -296,9 +296,34 @@ const carrierWebhookLimiter = [
   }),
 ];
 
+// Payment gateway callbacks: like the courier ones, all from the gateway's
+// servers, so limited per merchant webhook token rather than per IP.
+function paymentWebhookKey(req) {
+  const [, code = '', token = ''] = (req.path || '').split('/');
+  return `payment-webhook:${code.slice(0, 50)}:${sha256(token).toString('hex').slice(0, 32)}`;
+}
+
+const paymentWebhookLimiter = [
+  (req, res, next) => {
+    req.rateLimitScope = 'payment_webhook';
+    next();
+  },
+  rateLimit({
+    windowMs: env.rateLimit.windowMs,
+    limit: env.payments.webhookRateLimitMax,
+    standardHeaders: true,
+    legacyHeaders: false,
+    skip,
+    keyGenerator: paymentWebhookKey,
+    handler,
+  }),
+];
+
 module.exports = {
   generalLimiter,
   carrierWebhookLimiter,
+  paymentWebhookLimiter,
+  paymentWebhookKey,
   carrierWebhookKey,
   authLimiter,
   storefrontLimiter,

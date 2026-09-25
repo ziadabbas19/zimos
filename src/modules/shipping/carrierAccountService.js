@@ -25,8 +25,11 @@ const { buildIndex } = require('./carrierAddressMatching');
 // written for (see credentialsCipher).
 const aadFor = (workspaceId, carrierCode) => `${workspaceId}:${carrierCode}`;
 
+/** Read on every call so tests can swap it. */
+const credentialsKey = () => cipher.parseKey(env.carriers.credentialsKey, 'CARRIER_CREDENTIALS_KEY');
+
 function assertConfigured() {
-  if (!cipher.isConfigured()) {
+  if (!credentialsKey()) {
     logger.error('Carrier request refused: CARRIER_CREDENTIALS_KEY is not configured');
     throw new AppError(
       'CARRIERS_NOT_CONFIGURED',
@@ -78,7 +81,7 @@ async function listCarriers(workspaceId) {
   const accounts = await db.CarrierAccount.findAll({ where: { workspaceId } });
   const byCode = new Map(accounts.map((a) => [a.carrierCode, a]));
   return {
-    configured: cipher.isConfigured(),
+    configured: credentialsKey() !== null,
     carriers: listAdapters().map((adapter) => ({
       ...describeAdapter(adapter),
       connection: describeConnection(byCode.get(adapter.code)),
@@ -163,7 +166,7 @@ async function connect(workspaceId, code, body, req) {
   );
 
   const values = {
-    credentialsEncrypted: cipher.encrypt(credentials, aadFor(workspaceId, code)),
+    credentialsEncrypted: cipher.encrypt(credentials, aadFor(workspaceId, code), credentialsKey()),
     settings,
     status: 'active',
     lastVerifiedAt: new Date(),
@@ -238,7 +241,7 @@ async function disconnect(workspaceId, code, req) {
 function decryptFor(account) {
   assertConfigured();
   try {
-    return cipher.decrypt(account.credentialsEncrypted, aadFor(account.workspaceId, account.carrierCode));
+    return cipher.decrypt(account.credentialsEncrypted, aadFor(account.workspaceId, account.carrierCode), credentialsKey());
   } catch (err) {
     // Wrong/rotated key or a tampered row. The message never includes the value.
     logger.error('Could not decrypt carrier credentials', {

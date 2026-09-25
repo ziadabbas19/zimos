@@ -3,6 +3,7 @@
 const { Op, QueryTypes } = require('sequelize');
 const db = require('../../db/models');
 const { listSubscriptions, aggregateMrr } = require('./platformAdminService');
+const { countsAsSaleSql } = require('../orders/orderStage');
 
 // Windows the console draws. Daily series cover today plus the 29 UTC days
 // before it; the trend covers the current month plus the 11 before it. Every
@@ -93,7 +94,9 @@ function totalInOneCurrency(amountByCurrency) {
  * numbers this feeds — `ordersPerDay`, `ordersToday` and `gmv30d` — all
  * describe one population: orders that still stand. A cancelled order
  * therefore leaves the chart it was counted in, which is the convention the
- * revenue number has to follow anyway.
+ * revenue number has to follow anyway. A prepaid order that was never paid is
+ * left out for the same reason: the shopper walked away at the payment page,
+ * and nothing was sold.
  *
  * COUNT is cast to int because pg hands BIGINT to the driver as a string; SUM
  * stays BIGINT and is cast with Number() on the way out, matching the /admin
@@ -108,6 +111,7 @@ function orderBuckets(since) {
        FROM orders
       WHERE created_at >= :since
         AND cancelled_at IS NULL
+        AND ${countsAsSaleSql('')}
       GROUP BY day, currency`,
     { replacements: { since }, type: QueryTypes.SELECT }
   );

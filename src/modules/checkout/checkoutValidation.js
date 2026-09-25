@@ -28,15 +28,16 @@ module.exports = {
     body: Joi.object({
       contact: contact.required(),
       shippingAddress: address.optional(),
-      // Cash on delivery only, deliberately. No online gateway is connected
-      // yet (see modules/payments/paymentService.js), so accepting 'card' /
-      // 'wallet' / 'bank_transfer' here would place an order the shopper
-      // believes is paid and that nothing ever charges. Re-enable them the
-      // day a real gateway (Paymob) lands:
-      //   .valid('cod', 'card', 'wallet', 'bank_transfer')
-      // Staff order creation (orders/orderValidation.js) still accepts every
+      // 'card' / 'wallet' go through the store's connected gateway and are
+      // refused unless PAYMENTS_ONLINE_ENABLED is on (see checkoutController):
+      // with it off the checkout takes cash on delivery only, as it always
+      // has. Staff order creation (orders/orderValidation.js) accepts every
       // method — a merchant recording a bank transfer they received is real.
-      paymentMethod: Joi.string().valid('cod').required(),
+      paymentMethod: Joi.string().valid('cod', 'card', 'wallet').required(),
+      // Which gateway, when more than one offers the method. Optional.
+      paymentProvider: Joi.string().max(50).optional(),
+      // Where the gateway sends the shopper back to (online methods only).
+      returnUrl: Joi.string().max(2000).optional(),
       discountCode: Joi.string().max(100).optional(),
       funnelId: uuid.optional(),
       websiteId: uuid.optional(),

@@ -15,4 +15,18 @@ const refund = asyncHandler(async (req, res) => {
   res.status(201).json({ refund: result });
 });
 
-module.exports = { initialize, capture, refund };
+const listRefunds = asyncHandler(async (req, res) => {
+  const refunds = await service.listRefunds(req.tenant.workspaceId, req.params.orderId);
+  res.json({ refunds });
+});
+
+const sweep = require('./paymentSweepService');
+
+const timeline = asyncHandler(async (req, res) => {
+  res.json({ timeline: await sweep.timeline(req.tenant.workspaceId, req.params.orderId) });
+});
+const sync = asyncHandler(async (req, res) => {
+  res.json({ timeline: await sweep.syncOrder(req.tenant.workspaceId, req.params.orderId) });
+});
+
+module.exports = { initialize, capture, refund, listRefunds, timeline, sync };

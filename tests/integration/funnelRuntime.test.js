@@ -235,6 +235,37 @@ describe('funnel runtime — upsell atomicity', () => {
     return { funnel, variant, offer };
   }
 
+  it('an order paid online only moves the funnel once it is paid; its upsell is cash on delivery', async () => {
+    const ctx = await setup();
+    const { funnel, variant } = await upsellFunnel(ctx);
+    const { order: card } = await orderService.createOrder(
+      ctx.workspace.id,
+      {
+        items: [{ variantId: variant.id, quantity: 1 }],
+        contact: { fullName: 'Card Buyer', phone: nextPhone() },
+        shippingAddress: { country: 'EG', city: 'Cairo', addressLine: '1 A St' },
+        paymentMethod: 'card',
+      },
+      { user: null, headers: {}, ip: null }
+    );
+
+    const sid = (await ctx.startSession(funnel.id, { visitorId: 'paid-first-1' })).body.session.id;
+    const early = await ctx.advance(funnel.id, sid, { outcome: { type: 'completed_checkout', orderId: card.id } });
+    expect(early.status).toBe(409);
+    expect(early.body.error.code).toBe('FUNNEL_ORDER_NOT_PAID');
+    expect((await db.FunnelSession.findByPk(sid)).currentStepKey).toBe('checkout');
+
+    await db.Order.update({ financialState: 'paid', amountPaid: card.totalAmount }, { where: { id: card.id } });
+    const paid = await ctx.advance(funnel.id, sid, { outcome: { type: 'completed_checkout', orderId: card.id } });
+    expect(paid.status).toBe(200);
+
+    const accepted = await ctx.advance(funnel.id, sid, { outcome: { type: 'accepted_offer' } });
+    expect(accepted.status).toBe(200);
+    const followOn = await db.Order.findByPk(accepted.body.followOnOrder.id);
+    expect(followOn.paymentMethod).toBe('cod');
+    expect(await db.ConfirmationTask.count({ where: { orderId: followOn.id } })).toBe(1);
+  });
+
   it('commits the follow-on order with the session move', async () => {
     const ctx = await setup();
     const { funnel, variant } = await upsellFunnel(ctx);
