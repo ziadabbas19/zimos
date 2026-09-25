@@ -15,7 +15,14 @@ const gateways = require('./gateways');
  * 'paymob:wallet'). A method is AVAILABLE when its gateway is connected and
  * its settings can take it; the stored list only records the merchant's order
  * and on/off switches, so connecting a gateway later needs no migration of
- * this list — a newly available method is appended, switched on.
+ * this list — a newly available method is appended, switched on unless
+ * another gateway already takes that method.
+ *
+ * One gateway per method: with Paymob and Kashier both connected, the
+ * merchant picks which one takes cards and which one takes wallets by
+ * switching the other entry off. At most one entry per method may be on
+ * (updateForDashboard refuses more), and if a stored list ever has two, the
+ * first in the merchant's order is the one shoppers get.
  *
  * What a shopper is offered:
  *   - PAYMENTS_ONLINE_ENABLED off: cash on delivery only, whatever is stored —
@@ -50,7 +57,10 @@ function storedList(workspace) {
 async function allMethods(workspace, accounts = null) {
   const rows = accounts || (await db.PaymentGatewayAccount.findAll({ where: { workspaceId: workspace.id } }));
   const available = new Map([[COD, { provider: null, method: COD, mode: 'live' }]]);
-  for (const account of rows) {
+  // The gateway connected first keeps its methods: one connected later is
+  // appended switched off for any method already taken.
+  const byAge = [...rows].sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
+  for (const account of byAge) {
     if (account.status !== 'active') continue;
     const adapter = gateways.getAdapter(account.providerCode);
     if (!adapter) continue;
@@ -77,7 +87,8 @@ async function allMethods(workspace, accounts = null) {
   }
   for (const [id, info] of available) {
     if (seen.has(id)) continue;
-    out.push({ id, provider: info.provider, method: info.method, enabled: true, available: true, mode: info.mode });
+    const taken = info.method !== COD && out.some((m) => m.method === info.method && m.enabled);
+    out.push({ id, provider: info.provider, method: info.method, enabled: !taken, available: true, mode: info.mode });
   }
   return out;
 }
@@ -89,11 +100,20 @@ async function allMethods(workspace, accounts = null) {
 async function storefrontMethods(workspace, { preview = false } = {}) {
   const codOnly = [{ id: COD, provider: null, method: COD, mode: 'live' }];
   if (!env.payments.onlineEnabled) return codOnly;
-  const list = (await allMethods(workspace))
-    .filter((m) => m.enabled && m.available)
-    .filter((m) => m.mode === 'live' || preview)
-    .map(({ id, provider, method, mode }) => ({ id, provider, method, mode }));
-  return list.length > 0 ? list : codOnly;
+  const list = [];
+  for (const m of await allMethods(workspace)) {
+    if (!m.enabled || !m.available) continue;
+    // The merchant's chosen gateway for this method; a test-mode one is not
+    // replaced by another gateway for real shoppers.
+    if (list.some((x) => x.method === m.method)) continue;
+    if (m.mode !== 'live' && !preview) {
+      list.push({ id: m.id, provider: m.provider, method: m.method, mode: m.mode, hidden: true });
+      continue;
+    }
+    list.push({ id: m.id, provider: m.provider, method: m.method, mode: m.mode });
+  }
+  const shown = list.filter((m) => !m.hidden);
+  return shown.length > 0 ? shown : codOnly;
 }
 
 /** Whether cash on delivery is on offer for this shopper. */
@@ -136,6 +156,7 @@ async function updateForDashboard(workspaceId, { methods }, req) {
 
     const problems = [];
     const seen = new Set();
+    const onFor = new Map();
     methods.forEach((m, i) => {
       const { provider, method } = parseId(m.id);
       const known =
@@ -143,6 +164,14 @@ async function updateForDashboard(workspaceId, { methods }, req) {
       if (!known) problems.push({ field: `methods.${i}.id`, message: `Unknown payment method "${m.id}"` });
       if (seen.has(m.id)) problems.push({ field: `methods.${i}.id`, message: `"${m.id}" is listed twice` });
       seen.add(m.id);
+      if (known && m.enabled && m.id !== COD) {
+        if (onFor.has(method)) {
+          problems.push({
+            field: `methods.${i}.enabled`,
+            message: `Only one gateway can take ${method} payments: switch off "${onFor.get(method)}" or "${m.id}"`,
+          });
+        } else onFor.set(method, m.id);
+      }
     });
     if (problems.length) throw new ValidationError(problems, 'Invalid body');
 

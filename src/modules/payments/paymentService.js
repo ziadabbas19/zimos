@@ -291,7 +291,7 @@ function financialStateAfterRefund(order) {
  * webhook and the sweep can all report the same result without counting it
  * twice.
  *
- * @param {object} result  { status: 'processed' | 'failed' | 'pending', providerRefundReference?, failureReason? }
+ * @param {object} result  { status: 'processed' | 'failed' | 'pending', providerRefundReference?, failureReason?, failureCode? }
  * @param {object} [req]   the merchant's request, or null for a webhook / the sweep
  */
 async function settleRefund(workspaceId, refundId, result, req = null) {
@@ -311,6 +311,7 @@ async function settleRefund(workspaceId, refundId, result, req = null) {
     if (result.status === 'failed') {
       refund.status = 'failed';
       refund.failureReason = String(result.failureReason || 'The gateway declined the refund').slice(0, 300);
+      refund.failureCode = result.failureCode ? String(result.failureCode).slice(0, 60) : null;
       await refund.save({ transaction });
       await recordAudit({
         workspaceId,
@@ -318,7 +319,7 @@ async function settleRefund(workspaceId, refundId, result, req = null) {
         action: 'order.refund_failed',
         entityType: 'Refund',
         entityId: refund.id,
-        after: { amount: Number(refund.amount), failureReason: refund.failureReason },
+        after: { amount: Number(refund.amount), failureReason: refund.failureReason, failureCode: refund.failureCode },
         req,
         transaction,
       });

@@ -18,6 +18,8 @@ module.exports = (sequelize, DataTypes) => {
       source: { type: DataTypes.STRING(20), allowNull: false, defaultValue: 'merchant' },
       providerRefundReference: { type: DataTypes.STRING(200), allowNull: true, field: 'provider_refund_reference' },
       failureReason: { type: DataTypes.STRING(300), allowNull: true, field: 'failure_reason' },
+      // e.g. REFUND_INSUFFICIENT_GATEWAY_BALANCE — see migration 101.
+      failureCode: { type: DataTypes.STRING(60), allowNull: true, field: 'failure_code' },
       processedAt: { type: DataTypes.DATE, allowNull: true, field: 'processed_at' },
     },
     { tableName: 'refunds', indexes: [{ fields: ['workspace_id'] }, { fields: ['order_id'] }] }

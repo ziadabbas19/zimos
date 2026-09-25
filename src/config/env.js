@@ -182,6 +182,14 @@ const env = {
       .filter(Boolean),
     // Where each gateway's API lives. Overridable for a regional account.
     paymobBaseUrl: (process.env.PAYMOB_BASE_URL || 'https://accept.paymob.com').trim().replace(/\/+$/, ''),
+    // Kashier: the API host (sessions, inquiry) and the checkout host (refund
+    // / void), per mode. A test key only works on the test hosts.
+    kashier: {
+      testApiUrl: (process.env.KASHIER_TEST_API_URL || 'https://test-api.kashier.io').trim().replace(/\/+$/, ''),
+      liveApiUrl: (process.env.KASHIER_LIVE_API_URL || 'https://api.kashier.io').trim().replace(/\/+$/, ''),
+      testFepUrl: (process.env.KASHIER_TEST_FEP_URL || 'https://test-fep.kashier.io').trim().replace(/\/+$/, ''),
+      liveFepUrl: (process.env.KASHIER_LIVE_FEP_URL || 'https://fep.kashier.io').trim().replace(/\/+$/, ''),
+    },
   },
 
   // Shared secret the billing gateway signs its webhook bodies with

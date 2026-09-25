@@ -9,8 +9,10 @@ const paymentService = require('./paymentService');
 /**
  * Refunds and voids the gateway reports, whoever started them.
  *
- * A refund or void is its own gateway transaction whose parent is the
- * payment's transaction. It is matched, in order, to:
+ * A refund or void is its own gateway transaction. Its payment is found by
+ * the parent transaction (Paymob) or, when the gateway names none, by the
+ * attempt's order reference (Kashier). The refund itself is matched, in order,
+ * to:
  *
  *   1. a refund row already carrying this gateway reference — our own refund
  *      whose answer we recorded, now settled by its callback;
@@ -24,17 +26,29 @@ const paymentService = require('./paymentService');
  * Settling is idempotent (paymentService.settleRefund), and a gateway refund
  * is recorded once per reference (unique index, migration 098).
  */
+async function findRefundedPayment(account, tx) {
+  const base = { workspaceId: account.workspaceId, providerCode: account.providerCode };
+  if (tx.parentTransactionId) {
+    return db.Payment.findOne({ where: { ...base, providerTransactionId: tx.parentTransactionId } });
+  }
+  if (tx.providerOrderId) return db.Payment.findOne({ where: { ...base, providerOrderId: tx.providerOrderId } });
+  return null;
+}
+
 async function recordRefundTransaction(account, tx) {
-  if (!tx.parentTransactionId) return { outcome: 'unmatched_refund' };
-  const payment = await db.Payment.findOne({
-    where: {
-      workspaceId: account.workspaceId,
-      providerCode: account.providerCode,
-      providerTransactionId: tx.parentTransactionId,
-    },
-  });
+  const payment = await findRefundedPayment(account, tx);
   if (!payment) return { outcome: 'unmatched_refund' };
   const ids = { paymentId: payment.id, orderId: payment.orderId };
+  // The payment's own transaction reported as a refund is not one — a
+  // notification whose unsigned event name was changed, most likely.
+  if (tx.transactionId && payment.providerTransactionId && tx.transactionId === payment.providerTransactionId) {
+    return { outcome: 'refund_is_payment_ignored', ...ids };
+  }
+  // The payment itself is not recorded yet (its notification is late, or
+  // failed to process): left unprocessed for the sweep to retry, after it.
+  if (!['captured', 'partially_refunded', 'refunded'].includes(payment.status)) {
+    throw new Error('Refund reported before its payment was recorded');
+  }
 
   // A void gives back the whole payment.
   const amount = tx.kind === 'void' ? Number(payment.amount) : tx.amount;
@@ -42,6 +56,7 @@ async function recordRefundTransaction(account, tx) {
     status: tx.status,
     providerRefundReference: tx.transactionId,
     failureReason: tx.failureReason,
+    failureCode: tx.failureCode || null,
   };
 
   let refund = tx.transactionId
@@ -115,12 +130,16 @@ async function settlePendingRefunds({ olderThanMs = 5 * 60 * 1000, limit = 50, w
     try {
       const ctx = await gatewayRuntime.contextFor(refund.workspaceId, refund.payment.providerCode);
       if (!ctx.adapter.inquireTransaction) continue;
-      const tx = await ctx.adapter.inquireTransaction(ctx.credentials, { transactionId: refund.providerRefundReference });
+      const tx = await ctx.adapter.inquireTransaction(ctx.credentials, {
+        transactionId: refund.providerRefundReference,
+        payment: refund.payment,
+      });
       if (!tx || tx.status === 'pending') continue;
       const settled = await paymentService.settleRefund(refund.workspaceId, refund.id, {
         status: tx.status === 'processed' ? 'processed' : 'failed',
         providerRefundReference: tx.transactionId,
         failureReason: tx.failureReason,
+        failureCode: tx.failureCode || null,
       });
       if (settled.status !== 'pending') summary.settled += 1;
     } catch (err) {

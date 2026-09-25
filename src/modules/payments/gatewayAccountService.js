@@ -83,6 +83,9 @@ function describeAdapter(adapter) {
     setupSteps: adapter.setupSteps,
     helpLinks: adapter.helpLinks,
     webhookSetup: adapter.webhookSetup,
+    // Card / wallet / … as this gateway's own account shows them: the methods
+    // come from the account itself, nothing to type in.
+    methodsFromAccount: adapter.settingFields.length === 0,
   };
 }
 
@@ -145,26 +148,38 @@ async function connect(workspaceId, code, body, req) {
     throw new ValidationError([{ field: 'credentials', message: '"credentials" is required to connect' }], 'Invalid body');
   }
 
-  const settings = validatePart(adapter.settingsSchema, body.settings || (existing ? existing.settings : {}), 'settings');
-  if (adapter.availableMethods(settings).length === 0) {
+  let settings = validatePart(adapter.settingsSchema, body.settings || (existing ? existing.settings : {}), 'settings');
+  // A gateway whose methods the merchant types in (Paymob's integration IDs)
+  // is checked before any call; one whose methods come from the gateway
+  // (Kashier) after verifying, below.
+  if (adapter.settingFields.length > 0 && adapter.availableMethods(settings).length === 0) {
     throw new ValidationError(
       [{ field: 'settings', message: 'Enter the integration ID of at least one payment method' }],
       'Invalid body'
     );
   }
-  const credentials = body.credentials
+  let credentials = body.credentials
     ? validatePart(adapter.credentialsSchema, body.credentials, 'credentials')
     : decryptFor(existing);
 
   let mode;
   try {
-    ({ mode } = await adapter.verifyCredentials(credentials, settings));
+    const verified = await adapter.verifyCredentials(credentials, settings);
+    mode = verified.mode;
+    if (verified.credentials) credentials = verified.credentials;
+    if (verified.settings) settings = { ...settings, ...verified.settings };
   } catch (err) {
     // The STORED keys failing is a revoked key, not a typo: mark the account.
     if (err instanceof GatewayAuthError && !body.credentials && existing) {
       await existing.update({ status: 'invalid' });
     }
     throw err;
+  }
+  if (adapter.availableMethods(settings).length === 0) {
+    throw new ValidationError(
+      [{ field: 'settings', message: `This ${adapter.name} account takes neither card nor wallet payments` }],
+      'Invalid body'
+    );
   }
 
   const values = {

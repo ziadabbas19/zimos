@@ -62,7 +62,8 @@ const shopperSwitchToCod = asyncHandler(async (req, res) => {
 // --- /webhooks/payments/:code/:token (public) -----------------------------------
 
 const webhook = asyncHandler(async (req, res) => {
-  res.json(await events.acceptWebhook(req.params.code, req.params.token, req));
+  const { statusCode, body } = await events.acceptWebhook(req.params.code, req.params.token, req);
+  res.status(statusCode).json(body);
 });
 
 module.exports = {

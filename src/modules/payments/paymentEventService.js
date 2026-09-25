@@ -139,12 +139,14 @@ async function reprocessPending({ limit = 50 } = {}) {
 
 /**
  * POST /webhooks/payments/:code/:token. The token in the path names the
- * merchant's account; the signature is checked with that account's HMAC
- * secret. Answers:
- *   404  unknown gateway or token (nothing said about which)
- *   401  WEBHOOK_SIGNATURE_INVALID
+ * merchant's account; the signature is checked with that account's secret.
+ * Resolves { statusCode, body }:
+ *   404  unknown gateway or token (nothing said about which) — thrown
+ *   401  WEBHOOK_SIGNATURE_INVALID — thrown
  *   200  { received: true } — stored (and processed, or queued for a retry),
  *        or a callback type we do not act on
+ *   409  { received: true, outcome: 'duplicate' } — a callback already
+ *        processed, for a gateway that asks for that (Kashier); others get 200
  */
 async function acceptWebhook(code, token, req) {
   const gateways = require('./gateways');
@@ -157,8 +159,8 @@ async function acceptWebhook(code, token, req) {
   const account = await accounts.findByWebhookToken(code, token);
   if (!account) throw new NotFoundError('Webhook');
 
-  const parsed = adapter.parseWebhook({ query: req.query || {}, body: req.body }, account.credentials);
-  if (!parsed) return { received: true, ignored: true };
+  const parsed = adapter.parseWebhook({ query: req.query || {}, body: req.body, headers: req.headers || {} }, account.credentials);
+  if (!parsed) return { statusCode: 200, body: { received: true, ignored: true } };
   if (!parsed.valid) {
     // Never log the received or expected signature.
     logger.warn('Payment webhook with an invalid signature', { workspaceId: account.workspaceId, providerCode: code });
@@ -167,7 +169,8 @@ async function acceptWebhook(code, token, req) {
 
   await db.PaymentGatewayAccount.update({ lastWebhookAt: new Date() }, { where: { id: account.id } });
   const result = await ingest(account, parsed, 'webhook');
-  return { received: true, outcome: result.outcome };
+  const statusCode = result.outcome === 'duplicate' && adapter.webhookDuplicateStatus ? adapter.webhookDuplicateStatus : 200;
+  return { statusCode, body: { received: true, outcome: result.outcome } };
 }
 
 module.exports = { ingest, reprocessPending, acceptWebhook, MAX_ATTEMPTS };

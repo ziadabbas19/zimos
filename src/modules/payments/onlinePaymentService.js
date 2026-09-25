@@ -179,7 +179,7 @@ async function startAttempt(order, { provider, method, returnUrl: template }) {
     if (!ctx.adapter.currencies.includes(order.currency)) {
       throw new AppError('PAYMENT_CURRENCY_UNSUPPORTED', `${ctx.adapter.name} cannot take payments in ${order.currency}`, 422);
     }
-    const workspace = await db.Workspace.findByPk(order.workspaceId, { attributes: ['id', 'name'] });
+    const workspace = await db.Workspace.findByPk(order.workspaceId, { attributes: ['id', 'name', 'defaultLocale'] });
     const result = await ctx.adapter.createPayment(ctx.credentials, {
       attempt,
       order,
@@ -189,6 +189,7 @@ async function startAttempt(order, { provider, method, returnUrl: template }) {
       webhookUrl: ctx.account.webhookUrl,
       expiresInSeconds: Math.max(60, (new Date(expiresAt).getTime() - Date.now()) / 1000),
       storeName: workspace ? workspace.name : null,
+      locale: workspace ? workspace.defaultLocale : null,
     });
     await attempt.update({
       providerOrderId: result.providerOrderId,
@@ -295,7 +296,14 @@ async function recordPaymentTransaction(account, tx) {
   const completed = { value: null };
   const outcome = await db.sequelize.transaction(async (transaction) => {
     const payment = await db.Payment.findOne({ where: { id: attempt.id }, transaction, lock: transaction.LOCK.UPDATE });
-    if (['captured', 'partially_refunded', 'refunded'].includes(payment.status)) return 'already_recorded';
+    if (['captured', 'partially_refunded', 'refunded'].includes(payment.status)) {
+      // Recorded from an inquiry that had no transaction id (Kashier's session
+      // lookup gives none): the webhook that follows fills it in.
+      if (!payment.providerTransactionId && tx.transactionId) {
+        await payment.update({ providerTransactionId: tx.transactionId, maskedDisplay: payment.maskedDisplay || tx.maskedDisplay }, { transaction });
+      }
+      return 'already_recorded';
+    }
 
     const order = await db.Order.findOne({ where: { id: payment.orderId }, transaction, lock: transaction.LOCK.UPDATE });
     let flags = [...(order.riskFlags || [])];
