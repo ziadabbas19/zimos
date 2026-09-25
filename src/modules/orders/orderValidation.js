@@ -83,6 +83,9 @@ module.exports = {
         districtId: Joi.string().max(100).required(),
       }).optional(),
       notes: Joi.string().max(500).allow(null, '').optional(),
+      // Connected couriers only: book as this weight tier instead of the one
+      // stored on the order at checkout.
+      tierId: uuid.optional(),
     }),
   },
   updateShipment: {

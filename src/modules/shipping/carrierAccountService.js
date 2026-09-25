@@ -120,6 +120,20 @@ async function withAuthHandling(account, fn) {
 }
 
 /**
+ * A tierMap keeps only this store's current tiers. Deleting a tier leaves
+ * its id behind in the saved map; dropping it here (rather than refusing the
+ * whole save) keeps every later settings save working.
+ */
+async function ownTiersOnly(workspaceId, tierMap) {
+  const ids = Object.keys(tierMap);
+  if (ids.length === 0) return tierMap;
+  const own = new Set(
+    (await db.ShippingWeightTier.findAll({ where: { workspaceId, id: ids }, attributes: ['id'] })).map((t) => t.id)
+  );
+  return Object.fromEntries(Object.entries(tierMap).filter(([id]) => own.has(id)));
+}
+
+/**
  * PUT /carriers/:code. Verifies with the carrier before anything is written;
  * a rejected key stores nothing. `credentials` may be omitted to change only
  * the settings of an existing connection (the stored ones are re-verified).
@@ -134,6 +148,7 @@ async function connect(workspaceId, code, body, req) {
   }
 
   const settings = validatePart(adapter.settingsSchema, body.settings || (existing ? existing.settings : {}), 'settings');
+  if (settings.tierMap) settings.tierMap = await ownTiersOnly(workspaceId, settings.tierMap);
   let credentials;
   if (body.credentials) {
     credentials = validatePart(adapter.credentialsSchema, body.credentials, 'credentials');

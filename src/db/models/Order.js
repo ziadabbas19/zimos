@@ -67,6 +67,10 @@ module.exports = (sequelize, DataTypes) => {
       // Links an appended-order (e.g. COD upsell that couldn't be merged
       // because the waybill was already created) back to the original order.
       linkedFromOrderId: { type: DataTypes.UUID, allowNull: true, field: 'linked_from_order_id' },
+      // Weight snapshot taken at checkout — see migration 097.
+      totalWeightGrams: { type: DataTypes.INTEGER, allowNull: true, field: 'total_weight_grams' },
+      weightTierSnapshot: { type: DataTypes.JSONB, allowNull: true, field: 'weight_tier_snapshot' },
+      weightEstimated: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false, field: 'weight_estimated' },
     },
     {
       tableName: 'orders',

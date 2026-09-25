@@ -18,6 +18,7 @@ module.exports = (sequelize, DataTypes) => {
   );
   ShippingZone.associate = (models) => {
     ShippingZone.hasMany(models.ShippingRate, { foreignKey: 'zoneId', as: 'rates' });
+    ShippingZone.hasMany(models.ShippingZoneTierPrice, { foreignKey: 'zoneId', as: 'tierPrices' });
   };
   return ShippingZone;
 };

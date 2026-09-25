@@ -40,7 +40,20 @@ async function priceLine(workspaceId, { variantId, offerId, quantity }, transact
   if (offerId) {
     const offer = await db.Offer.findOne({
       where: { id: offerId, workspaceId, productId: variant.productId, status: 'active' },
-      include: [{ model: db.OfferVariant, as: 'lines' }],
+      include: [
+        {
+          model: db.OfferVariant,
+          as: 'lines',
+          include: [
+            {
+              model: db.ProductVariant,
+              as: 'variant',
+              attributes: ['id', 'weightGrams'],
+              include: [{ model: db.Product, as: 'product', attributes: ['productType'] }],
+            },
+          ],
+        },
+      ],
       transaction,
     });
     if (!offer) throw new NotFoundError('Offer');
@@ -64,7 +77,8 @@ async function priceLine(workspaceId, { variantId, offerId, quantity }, transact
       consumedInventory: consumedLines,
       currency: offer.currency,
       shippingOverride: offer.shippingOverride,
-      weightGrams: (variant.weightGrams || 0) * quantity,
+      // One bundle weighs what its offer lines weigh — not the anchor variant.
+      weightUnits: offer.lines.map((l) => weightUnit(l.variant, l.quantity)),
     };
   }
 
@@ -84,7 +98,16 @@ async function priceLine(workspaceId, { variantId, offerId, quantity }, transact
     consumedInventory: [{ variantId: variant.id, quantity }],
     currency: variant.currency,
     shippingOverride: null,
-    weightGrams: (variant.weightGrams || 0) * quantity,
+    weightUnits: [weightUnit(variant, 1)],
+  };
+}
+
+// One component of a line's unit, for shippingWeight.summarizeWeight.
+function weightUnit(variant, quantity) {
+  return {
+    weightGrams: variant ? variant.weightGrams : null,
+    quantity,
+    weightless: Boolean(variant && variant.product && variant.product.productType !== 'physical'),
   };
 }
 
@@ -178,7 +201,6 @@ async function createOrder(workspaceId, payload, req, { transaction: outerTransa
 
     const subtotal = add(...pricedLines.map((l) => l.lineTotalAmount));
     const productIds = pricedLines.map((l) => l.productId);
-    const totalWeightGrams = add(...pricedLines.map((l) => l.weightGrams));
     const totalQuantity = pricedLines.reduce((sum, l) => sum + l.quantity, 0);
     const offerShippingOverride = pricedLines.find((l) => l.shippingOverride)?.shippingOverride || null;
 
@@ -197,16 +219,18 @@ async function createOrder(workspaceId, payload, req, { transaction: outerTransa
       discountsSnapshot = [{ code: discountCode, type: evaluation.discount.type, amount: discountAmount }];
     }
 
-    const shippingAmount = shippingAddress
-      ? await calculateShippingAmount(workspaceId, {
-          country: shippingAddress.country,
-          region: shippingAddress.province,
-          subtotal,
-          totalWeightGrams,
-          totalQuantity,
-          offerShippingOverride,
-        })
-      : 0;
+    // Always priced, even without an address (amount 0 then): the weight
+    // and tier are stored on the order either way.
+    const shipping = await calculateShippingAmount(workspaceId, {
+      country: shippingAddress ? shippingAddress.country : null,
+      region: shippingAddress ? shippingAddress.province : null,
+      subtotal,
+      totalQuantity,
+      offerShippingOverride,
+      weightLines: pricedLines.map((l) => ({ quantity: l.quantity, units: l.weightUnits })),
+      transaction,
+    });
+    const shippingAmount = shipping.amount;
 
     const { taxAmount } = await calculateTax(workspaceId, {
       country: shippingAddress ? shippingAddress.country : null,
@@ -236,6 +260,9 @@ async function createOrder(workspaceId, payload, req, { transaction: outerTransa
         discountsSnapshot,
         notes: notes || null,
         riskFlags,
+        totalWeightGrams: shipping.weightGrams,
+        weightTierSnapshot: shipping.tier,
+        weightEstimated: shipping.weightEstimated,
       },
       { transaction }
     );
@@ -243,7 +270,7 @@ async function createOrder(workspaceId, payload, req, { transaction: outerTransa
     // Sequential, not Promise.all — see note in workspaceService: one
     // transaction = one pooled connection, so concurrent queries on it are unsafe.
     const orderItems = [];
-    for (const line of pricedLines) {
+    for (const [index, line] of pricedLines.entries()) {
       orderItems.push(
         await db.OrderItem.create(
           {
@@ -259,6 +286,7 @@ async function createOrder(workspaceId, payload, req, { transaction: outerTransa
             unitPriceAmount: line.unitPriceAmount,
             unitCostAmount: line.unitCostAmount,
             lineTotalAmount: line.lineTotalAmount,
+            unitWeightGrams: shipping.lineWeights[index],
           },
           { transaction }
         )

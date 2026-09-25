@@ -37,6 +37,9 @@ module.exports = {
         free_shipping_threshold_amount: Joi.number().integer().min(0).allow(null).optional(),
         default_shipping_rate_amount: Joi.number().integer().min(0).allow(null).optional(),
         tax_enabled: Joi.boolean().optional(),
+        // Grams used for a product with no weight when pricing by weight tiers
+        // or telling a courier the parcel weight. Tier mode needs it set.
+        default_item_weight_grams: Joi.number().integer().min(1).max(1000000).allow(null).optional(),
         // Which optional checkout fields this store asks for. Key names track
         // the checkout request fields they govern — see
         // modules/checkout/checkoutSettings.js. Sub-keys merge, so a form that

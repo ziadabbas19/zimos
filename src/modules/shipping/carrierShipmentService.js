@@ -10,6 +10,7 @@ const { getAdapter, reservedAdapterFor, MANUAL } = require('./carriers');
 const accounts = require('./carrierAccountService');
 const { matchAddress } = require('./carrierAddressMatching');
 const { CarrierAuthError } = require('./carriers/carrierErrors');
+const { loadTiers } = require('./shippingPricing');
 
 /**
  * Shipments booked through a merchant's connected courier account.
@@ -136,6 +137,22 @@ function webhookUrlForShipment(account) {
 }
 
 /**
+ * The weight tier a booking uses: the merchant's override (`tierId`, which
+ * must be one of the store's current tiers) or the tier stored on the order
+ * at checkout. Null for an order placed before the store had tiers.
+ */
+async function bookingTier(workspaceId, order, tierId, transaction) {
+  if (!tierId) return order.weightTierSnapshot || null;
+  const tier = (await loadTiers(workspaceId, transaction)).find((t) => t.id === tierId);
+  if (!tier) {
+    throw new AppError('VALIDATION_ERROR', 'Validation failed', 422, [
+      { field: 'tierId', message: "Not one of this store's weight tiers" },
+    ]);
+  }
+  return { ...tier, flags: [] };
+}
+
+/**
  * POST /orders/:orderId/shipments with a carrier that has an adapter.
  *
  * Double-click safety: the order row is locked FOR UPDATE for the whole
@@ -167,6 +184,10 @@ async function createCarrierShipment(workspaceId, orderId, data, req) {
 
       const address = await matchAddress(adapter.code, index, order.shippingAddressSnapshot, data.carrierAddress);
 
+      // Resolved before the carrier call, so an unmapped tier costs nothing.
+      const tier = await bookingTier(workspaceId, order, data.tierId, transaction);
+      const pkg = adapter.resolvePackage ? adapter.resolvePackage(account.settings || {}, tier) : null;
+
       const items = await db.OrderItem.findAll({ where: { orderId: order.id }, transaction });
       const snapshot = order.shippingAddressSnapshot;
       booked = await accounts.withAuthHandling(account, () =>
@@ -179,6 +200,7 @@ async function createCarrierShipment(workspaceId, orderId, data, req) {
           description: items.map((item) => `${item.quantity}x ${item.productNameSnapshot}`).join(', '),
           notes: data.notes || null,
           carrierSettings: account.settings || {},
+          package: pkg,
           webhookUrl: webhookUrlForShipment(account),
         })
       );
@@ -195,6 +217,7 @@ async function createCarrierShipment(workspaceId, orderId, data, req) {
             carrierShipmentId: booked.carrierShipmentId,
             labelUrl: booked.labelUrl || null,
             address: { cityId: address.cityId, districtId: address.districtId, zoneId: address.zoneId },
+            package: pkg ? { ...pkg, tierOverridden: Boolean(data.tierId) } : null,
           },
           status: 'created',
         },

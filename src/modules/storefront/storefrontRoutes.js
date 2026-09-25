@@ -33,6 +33,9 @@ router.get('/orders/track', trackingLimiter, validate(schemas.track), controller
 // the visitor, so a replay is harmless and it takes no Idempotency-Key.
 router.post('/checkout-sessions', validate(checkoutSessionSchemas.capture), checkoutSessionController.capture);
 
+// Read-only: prices the shipping line the checkout would get.
+router.post('/shipping-quote', validate(schemas.shippingQuote), controller.shippingQuote);
+
 router.post(
   '/checkout',
   validate(checkoutSchemas.checkout),

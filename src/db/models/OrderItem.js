@@ -25,6 +25,8 @@ module.exports = (sequelize, DataTypes) => {
       lineTotalAmount: { type: DataTypes.BIGINT, allowNull: false, field: 'line_total_amount' },
       isOrderBump: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false, field: 'is_order_bump' },
       isUpsell: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false, field: 'is_upsell' },
+      // One unit of the line (one bundle for an offer); null when unknown.
+      unitWeightGrams: { type: DataTypes.INTEGER, allowNull: true, field: 'unit_weight_grams' },
     },
     { tableName: 'order_items', indexes: [{ fields: ['order_id'] }] }
   );

@@ -33,11 +33,16 @@ const bosta = require('./bosta');
  * ./carrierHttp.request — creates without retry, reads with retry.
  *
  *   verifyCredentials(creds, settings) -> { pickupLocations?: [...] }
+ *   resolvePackage(settings, tier) -> package description (optional)
+ *       The package to book for a weight tier ({ id, ... } or null), from
+ *       the account settings. Throws 422 CARRIER_TIER_UNMAPPED when the
+ *       settings map tiers but not this one. Passed back as `package`.
  *   listCities(creds) -> [{ id, name, nameAr, dropOffAvailable,
  *                           districts: [{ id, name, nameAr, zoneId, zoneName,
  *                                         zoneNameAr, dropOffAvailable }] }]
  *   createShipment(creds, { order, address, cod, goodsValue, itemsCount,
- *                           description, notes, carrierSettings, webhookUrl })
+ *                           description, notes, carrierSettings, package,
+ *                           webhookUrl })
  *       -> { trackingNumber, carrierShipmentId, trackingUrl?, labelUrl?, raw }
  *       `cod` and `goodsValue` are in OUR minor units; the adapter converts.
  *       `raw` is what gets stored on the shipment: whitelist, no PII/secrets.

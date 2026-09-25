@@ -122,6 +122,7 @@ const MERCHANT_SETTINGS_KEYS = [
   'free_shipping_threshold_amount',
   'default_shipping_rate_amount',
   'tax_enabled',
+  'default_item_weight_grams',
 ];
 
 // Nested settings objects, merged a level deeper so a form that toggles one
@@ -221,6 +222,18 @@ async function updateWorkspace({ workspaceId, patch }, req) {
   }
   if (patch.settings !== undefined) {
     next.settings = applyMerchantSettings(workspace.settings, patch.settings);
+    // Tier pricing weighs products without a weight at the default weight;
+    // it can't be removed while tier pricing depends on it.
+    const clearsDefaultWeight =
+      patch.settings && patch.settings.default_item_weight_grams === null && next.settings.shipping_pricing_mode === 'weight_tiers';
+    if (clearsDefaultWeight) {
+      throw new AppError(
+        'DEFAULT_ITEM_WEIGHT_REQUIRED',
+        'The default item weight is required while shipping is priced by weight tiers',
+        422,
+        [{ field: 'settings.default_item_weight_grams', message: 'Required while tier pricing is on' }]
+      );
+    }
   }
 
   try {

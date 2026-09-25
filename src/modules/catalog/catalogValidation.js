@@ -5,6 +5,16 @@ const uuid = Joi.string().uuid();
 
 const productStatus = Joi.string().valid('draft', 'active', 'archived');
 
+// Shipping weight in grams; null clears it ("no weight set"). 0 is a real
+// weight. The cap matches shipping/shippingWeight.MAX_WEIGHT_GRAMS (1 t).
+const weightGrams = Joi.number().integer().min(0).max(1000000).allow(null);
+// Package dimensions in centimetres, all three or none.
+const dimensions = Joi.object({
+  lengthCm: Joi.number().positive().max(10000).required(),
+  widthCm: Joi.number().positive().max(10000).required(),
+  heightCm: Joi.number().positive().max(10000).required(),
+}).allow(null);
+
 // Field rules only, no defaults: defaults belong to create. A PATCH must
 // leave every field it doesn't send untouched (a defaulted `status` would
 // silently un-archive or un-publish, a defaulted `media` would wipe images).
@@ -40,6 +50,8 @@ const product = {
       sku: Joi.string().max(100).allow(null, '').optional(),
       stockOnHand: Joi.number().integer().min(0).default(0),
       allowOverselling: Joi.boolean().default(false),
+      weightGrams: weightGrams.optional(),
+      dimensions: dimensions.optional(),
     }).optional(),
   }),
 };
@@ -88,8 +100,8 @@ const variant = {
     costAmount: Joi.number().integer().min(0).allow(null).optional(),
     currency: Joi.string().length(3).default('EGP'),
     allowOverselling: Joi.boolean().default(false),
-    weightGrams: Joi.number().integer().min(0).allow(null).optional(),
-    dimensions: Joi.object().allow(null).optional(),
+    weightGrams: weightGrams.optional(),
+    dimensions: dimensions.optional(),
     // Initial stock is set here at creation only; all later mutations go through /inventory endpoints.
     stockOnHand: Joi.number().integer().min(0).default(0),
   }),
@@ -108,6 +120,8 @@ const variantUpdate = {
     compareAtAmount: Joi.number().integer().min(0).allow(null).optional(),
     costAmount: Joi.number().integer().min(0).allow(null).optional(),
     allowOverselling: Joi.boolean().optional(),
+    weightGrams: weightGrams.optional(),
+    dimensions: dimensions.optional(),
     status: Joi.string().valid('active', 'archived').optional(),
   }),
 };

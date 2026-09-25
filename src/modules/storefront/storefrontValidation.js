@@ -29,6 +29,26 @@ module.exports = {
       number: Joi.string().required().trim().regex(/^[A-Za-z0-9-]{3,40}$/),
     }),
   },
+  // Shipping price for the checkout form. `items` or an X-Cart-Token header,
+  // like checkout itself. `governorate` is the address's province.
+  shippingQuote: {
+    params: Joi.object({ workspaceId: workspaceIdParam }),
+    body: Joi.object({
+      country: Joi.string().length(2).uppercase().default('EG'),
+      governorate: Joi.string().max(100).allow(null, '').optional(),
+      items: Joi.array()
+        .items(
+          Joi.object({
+            variantId: uuid.required(),
+            offerId: uuid.optional(),
+            quantity: Joi.number().integer().min(1).max(1000).default(1),
+          })
+        )
+        .min(1)
+        .max(50)
+        .optional(),
+    }),
+  },
   workspaceParam: { params: Joi.object({ workspaceId: workspaceIdParam }) },
   getCollection: { params: Joi.object({ workspaceId: workspaceIdParam, collectionId: uuid.required() }) },
 };

@@ -35,6 +35,10 @@ const MAX_COD_EGP = 30000;
 // Order type "Deliver" — the only type this integration creates.
 const DELIVERY_TYPE_DELIVER = 10;
 const PACKAGE_TYPES = ['Parcel', 'Document', 'Light Bulky', 'Heavy Bulky'];
+// specs.size, from the create-delivery schema: SMALL / MEDIUM / LARGE for a
+// Parcel; a bulky package's size is its package type ("Light Bulky").
+const PARCEL_SIZES = ['SMALL', 'MEDIUM', 'LARGE'];
+const BULKY_TYPES = ['Light Bulky', 'Heavy Bulky'];
 
 /**
  * Bosta state code -> our Shipment status, for the orders we create (type
@@ -216,11 +220,64 @@ const settingsSchema = Joi.object({
   // Which of the merchant's Bosta pickup locations parcels are collected
   // from; Bosta uses the default location when absent.
   businessLocationId: Joi.string().trim().max(100).allow(null, '').optional(),
+  // Used for every booking when there is no tierMap, and for orders placed
+  // before the store had tiers.
   packageType: Joi.string().valid(...PACKAGE_TYPES).optional(),
+  // Weight tier id -> the package Bosta is told about. Tier ids are checked
+  // against the store's tiers by carrierAccountService.connect.
+  tierMap: Joi.object()
+    .pattern(
+      Joi.string().uuid(),
+      Joi.object({
+        packageType: Joi.string().valid(...PACKAGE_TYPES).required(),
+        size: Joi.when('packageType', {
+          is: 'Parcel',
+          then: Joi.string().valid(...PARCEL_SIZES).required(),
+          otherwise: Joi.forbidden(),
+        }),
+      })
+    )
+    .max(20)
+    .optional(),
   // Label (AWB) print options, from the mass-awb endpoint.
   awbType: Joi.string().valid('A4', 'A6').optional(),
   awbLang: Joi.string().valid('ar', 'en').optional(),
 });
+
+/**
+ * The package for a booking. With a tierMap, the booked tier must be mapped
+ * (422 CARRIER_TIER_UNMAPPED otherwise); an order with no tier (placed before
+ * the store had tiers) and a connection with no tierMap use the single
+ * `packageType` setting, as bookings did before tiers existed.
+ *
+ * @param {object} carrierSettings  the account's settings
+ * @param {object|null} tier        { id, ... } — the order's or the override
+ * @returns {{ packageType: string, size?: string, tierId: string|null, source: 'tier_map'|'default' }}
+ */
+function resolvePackage(carrierSettings = {}, tier = null) {
+  const map = carrierSettings.tierMap || {};
+  if (Object.keys(map).length === 0 || !tier) {
+    const packageType = carrierSettings.packageType || 'Parcel';
+    return { packageType, tierId: tier ? tier.id : null, source: 'default' };
+  }
+  const entry = map[tier.id];
+  if (!entry) {
+    throw new AppError(
+      'CARRIER_TIER_UNMAPPED',
+      'This weight tier has no Bosta package type. Map it in the Bosta connection settings, or book with another tier.',
+      422,
+      { tierId: tier.id }
+    );
+  }
+  return { packageType: entry.packageType, ...(entry.size ? { size: entry.size } : {}), tierId: tier.id, source: 'tier_map' };
+}
+
+/** specs.packageType / specs.size for a resolved package. */
+function packageSpecs(pkg) {
+  if (pkg.packageType === 'Parcel' && pkg.size) return { packageType: 'Parcel', size: pkg.size };
+  if (BULKY_TYPES.includes(pkg.packageType)) return { packageType: pkg.packageType, size: pkg.packageType };
+  return { packageType: pkg.packageType };
+}
 
 /**
  * GET /pickup-locations is the cheapest authenticated call Bosta documents,
@@ -288,10 +345,12 @@ async function listCities(creds) {
  * @param {string} input.description
  * @param {string} [input.notes]
  * @param {object} [input.carrierSettings]
+ * @param {object} [input.package]      from resolvePackage(); defaults to the settings' packageType
  * @param {string} [input.webhookUrl]   per-delivery status webhook
  */
 async function createShipment(creds, input) {
   const { order, address, cod, goodsValue, itemsCount, description, notes, carrierSettings = {}, webhookUrl } = input;
+  const pkg = input.package || resolvePackage(carrierSettings, null);
 
   if (order.currency !== 'EGP') {
     throw new AppError('CARRIER_CURRENCY_UNSUPPORTED', 'Bosta only collects cash in EGP; this order is in another currency', 422);
@@ -312,7 +371,7 @@ async function createShipment(creds, input) {
     type: DELIVERY_TYPE_DELIVER,
     cod: codEgp,
     specs: {
-      packageType: carrierSettings.packageType || 'Parcel',
+      ...packageSpecs(pkg),
       packageDetails: { itemsCount, description: description.slice(0, 250) },
     },
     goodsInfo: { amount: toEgp(goodsValue) },
@@ -448,6 +507,8 @@ module.exports = {
   settingFields: [
     { key: 'businessLocationId', label: 'Pickup location' },
     { key: 'packageType', label: 'Package type', options: PACKAGE_TYPES },
+    // Edited by the tier mapping on the connect card, not as a plain field.
+    { key: 'tierMap', label: 'Package per weight tier', kind: 'tier_map', packageTypes: PACKAGE_TYPES, parcelSizes: PARCEL_SIZES },
     { key: 'awbType', label: 'Label size', options: ['A4', 'A6'] },
     { key: 'awbLang', label: 'Label language', options: ['ar', 'en'] },
   ],
@@ -455,6 +516,7 @@ module.exports = {
   credentialsSchema,
   settingsSchema,
   verifyCredentials,
+  resolvePackage,
   listCities,
   createShipment,
   getShipment,
@@ -466,5 +528,6 @@ module.exports = {
   STATE_NAMES,
   mapState,
   toEgp,
+  packageSpecs,
   BASE_URL,
 };

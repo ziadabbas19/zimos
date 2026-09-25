@@ -1,43 +1,110 @@
 'use strict';
 
 const db = require('../../db/models');
+const { summarizeWeight, describeTiers, resolveTier } = require('./shippingWeight');
 
 /**
- * Selects the cheapest applicable shipping rate for a destination + order
- * shape. Real carrier integration (waybill creation, tracking) lives in
- * modules/shipping/carriers/*; this function only prices the shipping line
- * shown at checkout.
+ * Prices the shipping line shown at checkout and works out the order's
+ * weight and weight tier. Real carrier integration (waybill creation,
+ * tracking) lives in modules/shipping/carriers/*.
  *
- * Precedence, highest first:
- *   1. An offer-level shipping override (a funnel offer that dictates its own
- *      shipping price) always wins.
- *   2. A configured free-shipping threshold the order subtotal reaches → 0.
- *   3. The cheapest active rate in the matching active zone.
- *   4. The workspace's configured default shipping rate, or 0 when none is
- *      set (free rather than blocking checkout).
+ * Weight: `weightLines` (see shippingWeight.summarizeWeight) are weighed with
+ * the store's default_item_weight_grams standing in for a missing variant
+ * weight. Callers that only have a number may pass `totalWeightGrams`
+ * instead. The tier is resolved whenever the store has tiers, in either
+ * pricing mode, because courier bookings use it too.
+ *
+ * Amount precedence, highest first, in both modes:
+ *   1. No destination country → 0 (nothing to price against).
+ *   2. An offer-level shipping override always wins.
+ *   3. A configured free-shipping threshold the subtotal reaches → 0.
+ *   4. The matching active zone — one lookup (findApplicableZone) shared by
+ *      both modes, so a destination always lands in the same zone — priced
+ *      by settings.shipping_pricing_mode:
+ *        'rates' (default)  the cheapest active rate in that zone, exactly as
+ *                           before tiers existed. Weight-based rates see
+ *                           known weights only (a missing weight counts as
+ *                           0), never the default weight.
+ *        'weight_tiers'     that zone's price for the order's tier. Other
+ *                           matching zones are not consulted.
+ *   5. The workspace's default shipping rate, or 0 when none is set (free
+ *      rather than blocking checkout) — when no zone matches, or the zone has
+ *      no active rate / no price for the tier.
+ *
+ * @returns {Promise<{ amount: number, weightGrams: number|null, tier: object|null,
+ *   weightEstimated: boolean, pricingMode: string, lineWeights: Array<number|null> }>}
  */
 async function calculateShippingAmount(
   workspaceId,
-  { country, region, subtotal, totalWeightGrams, totalQuantity, offerShippingOverride }
+  { country, region, subtotal, totalWeightGrams, totalQuantity, offerShippingOverride, weightLines, transaction }
 ) {
-  if (offerShippingOverride && offerShippingOverride.amount !== undefined) {
-    return offerShippingOverride.amount;
-  }
-
-  const workspace = await db.Workspace.findByPk(workspaceId);
+  const workspace = await db.Workspace.findByPk(workspaceId, { transaction });
   const settings = (workspace && workspace.settings) || {};
+  const pricingMode = settings.shipping_pricing_mode === 'weight_tiers' ? 'weight_tiers' : 'rates';
+
+  const weight = weightLines
+    ? summarizeWeight(weightLines, settings.default_item_weight_grams ?? null)
+    : {
+        grams: totalWeightGrams ?? null,
+        knownGrams: Number(totalWeightGrams) || 0,
+        estimated: false,
+        perLine: [],
+      };
+  const tiers = await loadTiers(workspaceId, transaction);
+  const tier = resolveTier(tiers, weight.grams);
+
+  const result = (amount) => ({
+    amount,
+    weightGrams: weight.grams,
+    tier,
+    weightEstimated: weight.estimated,
+    pricingMode,
+    lineWeights: weight.perLine,
+  });
+
+  if (!country) return result(0);
+
+  if (offerShippingOverride && offerShippingOverride.amount !== undefined) {
+    return result(offerShippingOverride.amount);
+  }
 
   // Free-shipping threshold: an integer minor-unit subtotal at/above which
   // shipping is free, bypassing rate calculation. Only honoured when set.
   const threshold = settings.free_shipping_threshold_amount;
   if (threshold !== undefined && threshold !== null && Number(subtotal) >= Number(threshold)) {
-    return 0;
+    return result(0);
   }
 
   // Fallback used whenever no active zone/rate matches the destination.
   const defaultRate = settings.default_shipping_rate_amount;
   const fallbackAmount = defaultRate !== undefined && defaultRate !== null ? Number(defaultRate) : 0;
 
+  const applicableZone = await findApplicableZone(workspaceId, country, region, transaction);
+  if (!applicableZone) return result(fallbackAmount);
+
+  if (pricingMode === 'weight_tiers') {
+    if (!tier) return result(fallbackAmount);
+    const price = await db.ShippingZoneTierPrice.findOne({
+      where: { zoneId: applicableZone.id, tierId: tier.id },
+      transaction,
+    });
+    return result(price ? Number(price.amount) : fallbackAmount);
+  }
+
+  if (applicableZone.rates.length === 0) return result(fallbackAmount);
+  const candidates = applicableZone.rates.map((rate) =>
+    computeRateAmount(rate, { subtotal, totalWeightGrams: weight.knownGrams, totalQuantity })
+  );
+  return result(Math.min(...candidates));
+}
+
+/**
+ * The zone a destination is priced in: the first active zone for the
+ * country that matchesZone accepts, carrying its active rates. This is the
+ * lookup rate pricing has always done, kept as one query so tier pricing
+ * picks exactly the zone rate pricing would.
+ */
+async function findApplicableZone(workspaceId, country, region, transaction) {
   const zones = await db.ShippingZone.findAll({
     where: {
       workspaceId,
@@ -45,19 +112,17 @@ async function calculateShippingAmount(
       countries: { [db.Sequelize.Op.contains]: [country] },
     },
     // LEFT JOIN filtered to active rates — a zone with no active rate still
-    // comes back (with rates: []) and falls through to the fallback below.
+    // comes back (with rates: []) and prices at the fallback.
     include: [{ model: db.ShippingRate, as: 'rates', where: { isActive: true }, required: false }],
+    transaction,
   });
+  return zones.find((z) => matchesZone(z, region)) || null;
+}
 
-  const applicableZone = zones.find((z) => matchesZone(z, region));
-  if (!applicableZone || applicableZone.rates.length === 0) {
-    return fallbackAmount;
-  }
-
-  const candidates = applicableZone.rates.map((rate) =>
-    computeRateAmount(rate, { subtotal, totalWeightGrams, totalQuantity })
-  );
-  return Math.min(...candidates);
+/** The workspace's tiers, described and sorted (see shippingWeight). */
+async function loadTiers(workspaceId, transaction) {
+  const rows = await db.ShippingWeightTier.findAll({ where: { workspaceId }, transaction });
+  return describeTiers(rows);
 }
 
 /**
@@ -102,4 +167,4 @@ function computeRateAmount(rate, { subtotal, totalWeightGrams, totalQuantity }) 
   }
 }
 
-module.exports = { calculateShippingAmount };
+module.exports = { calculateShippingAmount, loadTiers, matchesZone, computeRateAmount };

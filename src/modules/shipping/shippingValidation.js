@@ -48,6 +48,35 @@ const createRateBody = Joi.object({
 
 const updateRateBody = Joi.object(rateFields).min(1);
 
+// Weight tiers: inclusive upper bounds in grams, in order; null = open ended
+// (last tier only — the ordering rules are checked by shippingWeight).
+const tierBody = Joi.object({
+  tiers: Joi.array()
+    .items(
+      Joi.object({
+        id: uuid.optional(),
+        upToGrams: Joi.number().integer().min(1).max(1000000).allow(null).required(),
+      })
+    )
+    .min(1)
+    .max(20)
+    .required(),
+});
+
+const tierPricesBody = Joi.object({
+  prices: Joi.array()
+    .items(Joi.object({ tierId: uuid.required(), amount: Joi.number().integer().min(0).max(100000000).required() }))
+    .max(20)
+    .required(),
+});
+
+const pricingModeBody = Joi.object({
+  mode: Joi.string().valid('rates', 'weight_tiers').required(),
+  defaultItemWeightGrams: Joi.number().integer().min(1).max(1000000).optional(),
+  prefill: Joi.boolean().default(true),
+  dryRun: Joi.boolean().default(false),
+});
+
 module.exports = {
   listZones: { params: Joi.object({ workspaceId: uuid.required() }) },
   zoneParams: { params: Joi.object({ workspaceId: uuid.required(), zoneId: uuid.required() }) },
@@ -63,6 +92,14 @@ module.exports = {
     params: Joi.object({ workspaceId: uuid.required(), zoneId: uuid.required() }),
     body: createRateBody,
   },
+  weightTiers: { params: Joi.object({ workspaceId: uuid.required() }) },
+  replaceWeightTiers: { params: Joi.object({ workspaceId: uuid.required() }), body: tierBody },
+  replaceTierPrices: {
+    params: Joi.object({ workspaceId: uuid.required(), zoneId: uuid.required() }),
+    body: tierPricesBody,
+  },
+  pricingMode: { params: Joi.object({ workspaceId: uuid.required() }), body: pricingModeBody },
+
   updateRate: {
     params: Joi.object({ workspaceId: uuid.required(), rateId: uuid.required() }),
     body: updateRateBody,

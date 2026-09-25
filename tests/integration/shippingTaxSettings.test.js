@@ -57,11 +57,11 @@ describe('shipping pricing — is_active filtering', () => {
     await makeFlatRate(workspace.id, zone.id, 4000, { name: 'active' });
 
     // the 1000 rate is inactive -> the 4000 active rate is used
-    expect(await calculateShippingAmount(workspace.id, dest())).toBe(4000);
+    expect((await calculateShippingAmount(workspace.id, dest())).amount).toBe(4000);
 
     // deactivating the whole zone -> no match -> free fallback (nothing configured)
     await zone.update({ isActive: false });
-    expect(await calculateShippingAmount(workspace.id, dest())).toBe(0);
+    expect((await calculateShippingAmount(workspace.id, dest())).amount).toBe(0);
   });
 });
 
@@ -71,11 +71,11 @@ describe('shipping pricing — positive regions filter', () => {
     const zone = await makeZone(workspace.id, { regions: ['Cairo', 'Giza'], excludedRegions: ['Giza'] });
     await makeFlatRate(workspace.id, zone.id, 7000);
 
-    expect(await calculateShippingAmount(workspace.id, dest({ region: 'Cairo' }))).toBe(7000);
+    expect((await calculateShippingAmount(workspace.id, dest({ region: 'Cairo' }))).amount).toBe(7000);
     // in `regions` but also excluded -> no match -> fallback
-    expect(await calculateShippingAmount(workspace.id, dest({ region: 'Giza' }))).toBe(0);
+    expect((await calculateShippingAmount(workspace.id, dest({ region: 'Giza' }))).amount).toBe(0);
     // not in `regions` -> no match -> fallback
-    expect(await calculateShippingAmount(workspace.id, dest({ region: 'Aswan' }))).toBe(0);
+    expect((await calculateShippingAmount(workspace.id, dest({ region: 'Aswan' }))).amount).toBe(0);
   });
 
   it('an excludedRegions-only zone keeps its original country-wide behaviour', async () => {
@@ -83,9 +83,9 @@ describe('shipping pricing — positive regions filter', () => {
     const zone = await makeZone(workspace.id, { regions: [], excludedRegions: ['Sinai'] });
     await makeFlatRate(workspace.id, zone.id, 6000);
 
-    expect(await calculateShippingAmount(workspace.id, dest({ region: 'Cairo' }))).toBe(6000);
-    expect(await calculateShippingAmount(workspace.id, dest({ region: 'Sinai' }))).toBe(0);
-    expect(await calculateShippingAmount(workspace.id, dest({ region: undefined }))).toBe(6000);
+    expect((await calculateShippingAmount(workspace.id, dest({ region: 'Cairo' }))).amount).toBe(6000);
+    expect((await calculateShippingAmount(workspace.id, dest({ region: 'Sinai' }))).amount).toBe(0);
+    expect((await calculateShippingAmount(workspace.id, dest({ region: undefined }))).amount).toBe(6000);
   });
 });
 
@@ -101,8 +101,8 @@ describe('shipping pricing — free-shipping threshold', () => {
       .send({ settings: { free_shipping_threshold_amount: 50000 } })
       .expect(200);
 
-    expect(await calculateShippingAmount(workspace.id, dest({ subtotal: 49999 }))).toBe(9000);
-    expect(await calculateShippingAmount(workspace.id, dest({ subtotal: 50000 }))).toBe(0);
+    expect((await calculateShippingAmount(workspace.id, dest({ subtotal: 49999 }))).amount).toBe(9000);
+    expect((await calculateShippingAmount(workspace.id, dest({ subtotal: 50000 }))).amount).toBe(0);
 
     // clearing the threshold restores normal pricing
     await request(app)
@@ -110,7 +110,7 @@ describe('shipping pricing — free-shipping threshold', () => {
       .set(H)
       .send({ settings: { free_shipping_threshold_amount: null } })
       .expect(200);
-    expect(await calculateShippingAmount(workspace.id, dest({ subtotal: 50000 }))).toBe(9000);
+    expect((await calculateShippingAmount(workspace.id, dest({ subtotal: 50000 }))).amount).toBe(9000);
   });
 });
 
@@ -119,7 +119,7 @@ describe('shipping pricing — default fallback rate', () => {
     const { workspace, H } = await freshWorkspace();
 
     // nothing configured -> free
-    expect(await calculateShippingAmount(workspace.id, dest({ country: 'DE', region: 'Berlin' }))).toBe(0);
+    expect((await calculateShippingAmount(workspace.id, dest({ country: 'DE', region: 'Berlin' }))).amount).toBe(0);
 
     await request(app)
       .patch(`/api/v1/workspaces/${workspace.id}`)
@@ -127,12 +127,12 @@ describe('shipping pricing — default fallback rate', () => {
       .send({ settings: { default_shipping_rate_amount: 3500 } })
       .expect(200);
 
-    expect(await calculateShippingAmount(workspace.id, dest({ country: 'DE', region: 'Berlin' }))).toBe(3500);
+    expect((await calculateShippingAmount(workspace.id, dest({ country: 'DE', region: 'Berlin' }))).amount).toBe(3500);
 
     // an active matching zone still wins over the fallback
     const zone = await makeZone(workspace.id, { countries: ['DE'] });
     await makeFlatRate(workspace.id, zone.id, 1200);
-    expect(await calculateShippingAmount(workspace.id, dest({ country: 'DE', region: 'Berlin' }))).toBe(1200);
+    expect((await calculateShippingAmount(workspace.id, dest({ country: 'DE', region: 'Berlin' }))).amount).toBe(1200);
   });
 });
 

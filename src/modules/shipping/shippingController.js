@@ -2,6 +2,7 @@
 
 const asyncHandler = require('express-async-handler');
 const service = require('./shippingService');
+const tiers = require('./weightTierService');
 
 const wid = (req) => req.tenant.workspaceId;
 
@@ -27,7 +28,24 @@ const updateRate = asyncHandler(async (req, res) =>
 );
 const deleteRate = asyncHandler(async (req, res) => res.json(await service.deleteRate(wid(req), req.params.rateId, req)));
 
+const getWeightTiers = asyncHandler(async (req, res) => res.json(await tiers.getWeightTierSettings(wid(req))));
+const replaceWeightTiers = asyncHandler(async (req, res) =>
+  res.json(await tiers.replaceTiers(wid(req), req.body.tiers, req))
+);
+const getTierPrices = asyncHandler(async (req, res) =>
+  res.json(await tiers.getZoneTierPrices(wid(req), req.params.zoneId))
+);
+const replaceTierPrices = asyncHandler(async (req, res) =>
+  res.json(await tiers.replaceZoneTierPrices(wid(req), req.params.zoneId, req.body.prices, req))
+);
+const setPricingMode = asyncHandler(async (req, res) => res.json(await tiers.setPricingMode(wid(req), req.body, req)));
+
 module.exports = {
+  getWeightTiers,
+  replaceWeightTiers,
+  getTierPrices,
+  replaceTierPrices,
+  setPricingMode,
   listZones,
   getZone,
   createZone,

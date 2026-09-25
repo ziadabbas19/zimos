@@ -27,4 +27,11 @@ router.get('/rates/:rateId', validate(schemas.rateParams), controller.getRate);
 router.patch('/rates/:rateId', validate(schemas.updateRate), controller.updateRate);
 router.delete('/rates/:rateId', validate(schemas.rateParams), controller.deleteRate);
 
+// --- Weight tiers and tier pricing ----------------------------------------
+router.get('/weight-tiers', validate(schemas.weightTiers), controller.getWeightTiers);
+router.put('/weight-tiers', validate(schemas.replaceWeightTiers), controller.replaceWeightTiers);
+router.get('/zones/:zoneId/tier-prices', validate(schemas.zoneParams), controller.getTierPrices);
+router.put('/zones/:zoneId/tier-prices', validate(schemas.replaceTierPrices), controller.replaceTierPrices);
+router.post('/pricing-mode', validate(schemas.pricingMode), controller.setPricingMode);
+
 module.exports = router;
