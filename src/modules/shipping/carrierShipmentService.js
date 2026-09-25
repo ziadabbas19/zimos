@@ -414,6 +414,7 @@ async function cancelCarrierShipmentsForOrder(workspaceId, orderId, transaction)
 }
 
 module.exports = {
+  FINISHED_STATUSES,
   assertConfirmedOrPaid,
   shouldBookWithCarrier,
   assertNoActiveShipment,

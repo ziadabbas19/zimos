@@ -32,3 +32,6 @@ public/uploads/*
 !public/uploads/.gitkeep
 
 wipe-db.js
+
+# Sample PDFs from scripts/waybill-samples.js
+waybill-samples/

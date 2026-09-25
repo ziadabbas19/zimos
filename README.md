@@ -52,7 +52,7 @@ src/
     invoices/                 atomic counter-based invoice numbering, credit notes
     otp/                      generic SMS one-time codes (hash-only, rate-limited)
     media/                    image upload (local disk or Cloudflare R2), content-validated type
-    waybill/                  order shipping-label PDF (pdfkit + Code128 barcode)
+    waybill/                  order shipping-label PDF (pdfkit + Code128 + QR; Arabic via core/pdf/bidiText)
     audit/                    append-only audit log writer
     notifications/            provider-abstracted email/sms/whatsapp — console default,
                               real Brevo (email) + Twilio (SMS) adapters wired
@@ -237,7 +237,7 @@ transactional email via the real **Brevo** adapter and SMS via the real
 **Twilio** adapter (both behind the `EMAIL_PROVIDER` / `SMS_PROVIDER`
 abstraction, `console` by default), a generic reusable **SMS OTP** module,
 **local image upload** (disk-backed, content-sniffed type check), the order
-**waybill PDF** (pdfkit + Code128 barcode), **product reviews** (gated on a
+**waybill PDF** (pdfkit + Code128 barcode + QR, Arabic-capable), **product reviews** (gated on a
 delivered purchase, staff-moderated, aggregated onto the public product
 endpoint), "**Buy Now**" cartless checkout, the **website page engine**, and
 the **funnel engine**.
