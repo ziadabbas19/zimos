@@ -6,7 +6,7 @@ const { AppError, NotFoundError } = require('../../core/errors/AppError');
 const logger = require('../../core/utils/logger');
 const { recordAudit } = require('../audit/auditService');
 const { insertShipment, transitionShipment } = require('../orders/shipmentLifecycle');
-const { getAdapter, availableFor, reservedAdapterFor, MANUAL } = require('./carriers');
+const { getAdapter, availableFor, assertSandboxAllowed, reservedAdapterFor, MANUAL } = require('./carriers');
 const { isCityDistrict } = require('./carriers/adapterContract');
 const accounts = require('./carrierAccountService');
 const { matchAddress } = require('./carrierAddressMatching');
@@ -276,6 +276,9 @@ function storedAddress(adapter, address) {
 async function createCarrierShipment(workspaceId, orderId, data, req) {
   const connection = await accounts.loadConnection(workspaceId, data.carrierCode);
   const { adapter, account, credentials } = connection;
+  // Checked again at booking: a store that left the test list keeps its
+  // stored sandbox connection, and must not book real orders into it.
+  await assertSandboxAllowed(adapter, credentials, workspaceId, { booking: true });
 
   // Loaded (and cached) before the order row is locked: on a cold cache this
   // is a retried carrier read, and it must not hold the lock while it runs.
@@ -391,7 +394,7 @@ async function createCarrierShipment(workspaceId, orderId, data, req) {
         trackingNumber: booked.trackingNumber,
         reason: err.message,
       });
-      await adapter.cancelShipment(credentials, booked.trackingNumber).catch((cancelErr) =>
+      await adapter.cancelShipment(credentials, booked.trackingNumber, { carrierShipmentId: booked.carrierShipmentId }).catch((cancelErr) =>
         logger.error('Could not cancel the orphaned carrier shipment — cancel it in the carrier dashboard', {
           carrierCode: adapter.code,
           trackingNumber: booked.trackingNumber,
@@ -591,7 +594,11 @@ async function cancelCarrierShipmentsForOrder(workspaceId, orderId, transaction,
       transaction,
     });
     try {
-      await accounts.withAuthHandling(account, () => adapter.cancelShipment(credentials, shipment.waybillNumber));
+      await accounts.withAuthHandling(account, () =>
+        adapter.cancelShipment(credentials, shipment.waybillNumber, {
+          carrierShipmentId: shipment.carrierResponse ? shipment.carrierResponse.carrierShipmentId : null,
+        })
+      );
     } catch (err) {
       const check = await alreadySettledAtCarrier(adapter, account, credentials, shipment, err);
       if (!check.settled) {

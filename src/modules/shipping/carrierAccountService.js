@@ -168,6 +168,7 @@ async function connect(workspaceId, code, body, req) {
   } else {
     credentials = decryptFor(existing);
   }
+  await carriers.assertSandboxAllowed(adapter, credentials, workspaceId);
 
   // A rejected key here is the merchant typing it wrong: 422, nothing stored.
   // If it is the STORED key that was rejected, the account is marked invalid.

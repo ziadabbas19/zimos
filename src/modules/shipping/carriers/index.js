@@ -3,7 +3,10 @@
 const db = require('../../../db/models');
 const env = require('../../../config/env');
 const bosta = require('./bosta');
+const mylerz = require('./mylerz');
+const jtexpress = require('./jtexpress');
 const { defineAdapter } = require('./adapterContract');
+const { AppError, ValidationError } = require('../../../core/errors/AppError');
 
 /**
  * Courier adapters: one file per carrier, built with defineAdapter() (see
@@ -69,16 +72,25 @@ const { defineAdapter } = require('./adapterContract');
  *   getShipments(creds, trackingNumbers)  (bulkStatus)
  *       -> Map(trackingNumber -> getShipment-shaped result); a number the
  *       carrier did not answer for is simply absent
- *   cancelShipment(creds, trackingNumber) -> resolves, or throws if refused
- *       (cancel 'api' only)
+ *   cancelShipment(creds, trackingNumber, { carrierShipmentId }) -> resolves,
+ *       or throws if refused (cancel 'api' only). carrierShipmentId is what
+ *       createShipment returned, for a carrier that cancels by its own id
+ *       rather than the tracking number.
  *   isCancelSettled(carrierStatus) -> boolean (optional)
  *   getLabel(creds, trackingNumber, settings) -> PDF Buffer (label)
  *   parseWebhook(req) -> { ref, status?, carrierStatus? } | null
  *       `ref` is the tracking number. The status is used only when
  *       capabilities.webhookRefetch is false and verifyWebhook passed.
  *   verifyWebhook(req, { account, credentials }) -> boolean (optional)
+ *   isSandbox(creds) -> boolean (optional)
+ *       The credentials point at the carrier's test environment, which ships
+ *       nothing. Only stores in CARRIERS_BETA_WORKSPACES may connect such an
+ *       account or book with it (assertSandboxAllowed).
  */
-const REGISTERED = new Map([[bosta.code, bosta]]);
+// Registering an adapter does not switch it on: only CARRIERS_ENABLED /
+// CARRIERS_BETA make it exist on a server (rollout below). Every carrier
+// after Bosta ships as beta first.
+const REGISTERED = new Map([bosta, mylerz, jtexpress].map((adapter) => [adapter.code, adapter]));
 
 const MANUAL = 'manual';
 
@@ -107,6 +119,21 @@ async function workspaceInBeta(workspaceId) {
   if (!workspaceId || env.carriers.betaWorkspaces.length === 0) return false;
   const workspace = await db.Workspace.findByPk(workspaceId, { attributes: ['slug'] });
   return Boolean(workspace && env.carriers.betaWorkspaces.includes(String(workspace.slug).toLowerCase()));
+}
+
+/**
+ * 422 on connect / 409 on booking when the credentials point at the carrier's
+ * sandbox and the store is not a test store: a real store must never book
+ * real orders into a test system that ships nothing.
+ */
+async function assertSandboxAllowed(adapter, credentials, workspaceId, { booking = false } = {}) {
+  if (typeof adapter.isSandbox !== 'function' || !adapter.isSandbox(credentials)) return;
+  if (await workspaceInBeta(workspaceId)) return;
+  const message = `The ${adapter.name} sandbox only creates test shipments, and it is available to test stores only. Connect a production ${adapter.name} account.`;
+  if (booking) {
+    throw new AppError('CARRIER_SANDBOX_NOT_ALLOWED', `${message} Nothing was booked.`, 409, { carrierCode: adapter.code });
+  }
+  throw new ValidationError([{ field: 'credentials.environment', message }]);
 }
 
 /** Whether this store may see and use the adapter. */
@@ -179,6 +206,7 @@ module.exports = {
   adapterFor,
   adaptersFor,
   availableFor,
+  assertSandboxAllowed,
   reservedAdapterFor,
   registerTestAdapter,
   MANUAL,

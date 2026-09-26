@@ -6,6 +6,7 @@ const env = require('../../config/env');
 const logger = require('../../core/utils/logger');
 const carriers = require('./carriers');
 const accounts = require('./carrierAccountService');
+const { CarrierAuthError } = require('./carriers/carrierErrors');
 const {
   applyCarrierStatus,
   flagUnconfirmedCancel,
@@ -106,6 +107,22 @@ async function pollFailed(adapter, row, now, outcome, reason) {
   });
 }
 
+/**
+ * The account's credentials were rejected (status 'invalid'): no carrier
+ * call is made for it — repeated logins with a wrong password can lock a
+ * carrier account. Its shipments keep a slot at the normal interval (a
+ * database write only), so polling resumes by itself once the merchant
+ * reconnects; one past the polling age limit is dropped as usual.
+ */
+async function pauseForInvalidAccount(adapter, rows, now, outcome) {
+  const maxAgeMs = env.carriers.pollMaxAgeDays * 24 * 60 * 60 * 1000;
+  for (const row of rows) {
+    const tooOld = now - new Date(row.createdAt) > maxAgeMs;
+    await setSchedule(row.id, { nextPollAt: tooOld ? null : new Date(now.getTime() + minutes(adapter.pollIntervalMinutes)) });
+    outcome.paused += 1;
+  }
+}
+
 async function pollGroup(connection, rows, now, outcome) {
   const { adapter, account, credentials } = connection;
   if (adapter.capabilities.bulkStatus) {
@@ -117,6 +134,11 @@ async function pollGroup(connection, rows, now, outcome) {
           adapter.getShipments(credentials, chunk.map((r) => r.waybillNumber))
         );
       } catch (err) {
+        if (err instanceof CarrierAuthError) {
+          // Just marked invalid: the rest of the group waits for a reconnect.
+          await pauseForInvalidAccount(adapter, rows.slice(i), now, outcome);
+          return;
+        }
         for (const row of chunk) await pollFailed(adapter, row, now, outcome, err.message);
         continue;
       }
@@ -128,11 +150,16 @@ async function pollGroup(connection, rows, now, outcome) {
     }
     return;
   }
-  for (const row of rows) {
+  for (let i = 0; i < rows.length; i += 1) {
+    const row = rows[i];
     let result;
     try {
       result = await accounts.withAuthHandling(account, () => adapter.getShipment(credentials, row.waybillNumber));
     } catch (err) {
+      if (err instanceof CarrierAuthError) {
+        await pauseForInvalidAccount(adapter, rows.slice(i), now, outcome);
+        return;
+      }
       await pollFailed(adapter, row, now, outcome, err.message);
       continue;
     }
@@ -203,10 +230,10 @@ async function loadGroupConnection(workspaceId, carrierCode) {
 
 /**
  * One batch: claims up to `limit` due shipments and reads them.
- * @returns {{ claimed, changed, unchanged, failed, stopped, flagged, cancelConfirmed }}
+ * @returns {{ claimed, changed, unchanged, failed, stopped, paused, flagged, cancelConfirmed }}
  */
 async function syncDueOnce({ limit = env.carriers.syncBatchSize, now = new Date() } = {}) {
-  const outcome = { claimed: 0, changed: 0, unchanged: 0, failed: 0, stopped: 0, flagged: 0, cancelConfirmed: 0 };
+  const outcome = { claimed: 0, changed: 0, unchanged: 0, failed: 0, stopped: 0, paused: 0, flagged: 0, cancelConfirmed: 0 };
   const rows = await claimDue({ limit, now });
   outcome.claimed = rows.length;
 
@@ -229,6 +256,10 @@ async function syncDueOnce({ limit = env.carriers.syncBatchSize, now = new Date(
     }
     if (loaded.error) {
       for (const row of group) await pollFailed(null, row, now, outcome, loaded.error.message);
+      continue;
+    }
+    if (loaded.connection.account.status === 'invalid') {
+      await pauseForInvalidAccount(loaded.connection.adapter, group, now, outcome);
       continue;
     }
 

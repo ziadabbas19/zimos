@@ -8,12 +8,15 @@ const { AppError } = require('../../../core/errors/AppError');
  * CarrierAuthError by marking the account 'invalid'.
  */
 
-/** The carrier rejected the credentials themselves (e.g. revoked API key). */
+/**
+ * The carrier rejected the credentials themselves (e.g. revoked API key).
+ * `what` names them for the merchant ("the username or password").
+ */
 class CarrierAuthError extends AppError {
-  constructor(carrierName) {
+  constructor(carrierName, what = 'the API key') {
     super(
       'CARRIER_AUTH_FAILED',
-      `${carrierName} rejected the API key. Check it in ${carrierName}'s dashboard and connect the account again.`,
+      `${carrierName} rejected ${what}. Check it in ${carrierName}'s dashboard and connect the account again.`,
       422
     );
     this.name = 'CarrierAuthError';

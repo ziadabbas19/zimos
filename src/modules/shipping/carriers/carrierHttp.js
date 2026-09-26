@@ -32,13 +32,22 @@ class CarrierUnreachableError extends Error {
   }
 }
 
-async function sendOnce({ method, url, headers, body, timeoutMs }) {
+function encodeBody(body, form) {
+  if (form !== undefined) {
+    return { type: 'application/x-www-form-urlencoded', payload: new URLSearchParams(form).toString() };
+  }
+  if (body !== undefined) return { type: 'application/json', payload: JSON.stringify(body) };
+  return { type: null, payload: undefined };
+}
+
+async function sendOnce({ method, url, headers, body, form, timeoutMs }) {
+  const { type, payload } = encodeBody(body, form);
   let res;
   try {
     res = await fetch(url, {
       method,
-      headers: { accept: 'application/json', ...(body !== undefined ? { 'content-type': 'application/json' } : {}), ...headers },
-      body: body !== undefined ? JSON.stringify(body) : undefined,
+      headers: { accept: 'application/json', ...(type ? { 'content-type': type } : {}), ...headers },
+      body: payload,
       signal: AbortSignal.timeout(timeoutMs),
     });
   } catch (err) {
@@ -60,14 +69,17 @@ async function sendOnce({ method, url, headers, body, timeoutMs }) {
  * @param {string}  opts.url
  * @param {object} [opts.headers]
  * @param {*}      [opts.body]       JSON-serialised when present
+ * @param {object} [opts.form]       sent as application/x-www-form-urlencoded
+ *                                   instead (OAuth token endpoints); never
+ *                                   together with body
  * @param {number} [opts.timeoutMs]
  * @param {boolean}[opts.retry]      true only for idempotent reads. Never for a
  *                                   create: a retried create whose first
  *                                   attempt did land is a second parcel.
  */
-async function request({ method = 'GET', url, headers = {}, body, timeoutMs = DEFAULT_TIMEOUT_MS, retry = false }) {
+async function request({ method = 'GET', url, headers = {}, body, form, timeoutMs = DEFAULT_TIMEOUT_MS, retry = false }) {
   const once = async () => {
-    const res = await sendOnce({ method, url, headers, body, timeoutMs });
+    const res = await sendOnce({ method, url, headers, body, form, timeoutMs });
     if (retry && (res.status === 429 || res.status >= 500)) {
       // Thrown only so withRetry tries again; unwrapped below if it never recovers.
       const err = new Error(`carrier returned ${res.status}`);
