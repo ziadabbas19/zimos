@@ -332,6 +332,9 @@ describe('connecting a Bosta account', () => {
     expect(second.status).toBe(200);
     expect(settingsOnly.status).toBe(200);
     expect(settingsOnly.body.carrier.connection.settings).toEqual({ awbType: 'A6' });
+    // Bosta has no sandbox: no environment to report.
+    expect(settingsOnly.body.carrier.connection).not.toHaveProperty('environment');
+    expect(list.body.carriers.find((c) => c.code === 'bosta').connection).not.toHaveProperty('environment');
     expect(second.body.webhook.url).toBe(first.body.webhook.url);
 
     for (const res of [first, second, settingsOnly, list]) {

@@ -462,6 +462,31 @@ describe('the J&T sandbox is for test stores only', () => {
     expect(fake.callsTo('vip/checkCusPwd')[0].url).toMatch(/^https:\/\/demoopenapi\.jtjms-eg\.com\//);
   });
 
+  it('the connection says which environment it is on, in the connect response and the listing, and no credential value', async () => {
+    const ctx = await store();
+    const sandbox = await connect(ctx, { credentials: SANDBOX, settings: SETTINGS });
+    expect(sandbox.body.carrier.connection.environment).toBe('sandbox');
+    let list = await ctx.api('get', '/carriers');
+    expect(list.body.carriers.find((c) => c.code === 'jtexpress').connection.environment).toBe('sandbox');
+
+    const production = await connect(ctx, { credentials: CREDS, settings: SETTINGS });
+    expect(production.body.carrier.connection.environment).toBe('production');
+    // A settings-only save reads the stored credentials.
+    const settingsOnly = await connect(ctx, { settings: SETTINGS });
+    expect(settingsOnly.body.carrier.connection.environment).toBe('production');
+    list = await ctx.api('get', '/carriers');
+    const listed = list.body.carriers.find((c) => c.code === 'jtexpress').connection;
+    expect(listed.environment).toBe('production');
+
+    for (const res of [sandbox, production, settingsOnly, list]) {
+      const text = JSON.stringify(res.body);
+      for (const secret of [fake.PRIVATE_KEY, fake.PASSWORD, fake.API_ACCOUNT, fake.CUSTOMER_CODE]) {
+        expect(text).not.toContain(secret);
+      }
+    }
+    expect(listed).not.toHaveProperty('credentials');
+  });
+
   it('any other store gets 422 on credentials.environment, before J&T is called, and nothing is stored', async () => {
     const ctx = await regularStore();
     const res = await connect(ctx, { credentials: SANDBOX, settings: SETTINGS });

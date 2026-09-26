@@ -57,9 +57,14 @@ function newWebhookToken() {
   return crypto.randomBytes(32).toString('base64url');
 }
 
-function describeConnection(account) {
+/**
+ * `environment` ('production' | 'sandbox') only for a carrier with a sandbox,
+ * and only when the credentials could be read. It is derived from the
+ * credentials; no credential value is ever part of the result.
+ */
+function describeConnection(account, adapter, credentials) {
   if (!account) return null;
-  return {
+  const connection = {
     status: account.status,
     settings: account.settings || {},
     lastVerifiedAt: account.lastVerifiedAt,
@@ -67,6 +72,23 @@ function describeConnection(account) {
     updatedAt: account.updatedAt,
     webhookUrl: webhookUrlFor(account),
   };
+  if (adapter && typeof adapter.isSandbox === 'function' && credentials) {
+    connection.environment = adapter.isSandbox(credentials) ? 'sandbox' : 'production';
+  }
+  return connection;
+}
+
+/**
+ * The stored credentials for a listing, or null when they can't be read:
+ * a listing never fails over one unreadable row (decryptFor logs it).
+ */
+function credentialsForListing(adapter, account) {
+  if (!account || typeof adapter.isSandbox !== 'function' || !credentialsKey()) return null;
+  try {
+    return decryptFor(account);
+  } catch {
+    return null;
+  }
 }
 
 function describeAdapter(adapter) {
@@ -88,7 +110,7 @@ function describeAdapter(adapter) {
 }
 
 async function listCarriers(workspaceId) {
-  const accounts = await db.CarrierAccount.findAll({ where: { workspaceId } });
+  const accounts = await db.CarrierAccount.scope('withCredentials').findAll({ where: { workspaceId } });
   const byCode = new Map(accounts.map((a) => [a.carrierCode, a]));
   const { adapters, slug, inBeta } = await carriers.resolveAdaptersFor(workspaceId);
   // Settles "why doesn't this store see carrier X?" from the logs alone.
@@ -97,7 +119,11 @@ async function listCarriers(workspaceId) {
     configured: credentialsKey() !== null,
     carriers: adapters.map((adapter) => ({
       ...describeAdapter(adapter),
-      connection: describeConnection(byCode.get(adapter.code)),
+      connection: describeConnection(
+        byCode.get(adapter.code),
+        adapter,
+        credentialsForListing(adapter, byCode.get(adapter.code))
+      ),
     })),
   };
 }
@@ -231,7 +257,7 @@ async function connect(workspaceId, code, body, req) {
 
   clearCitiesCache(workspaceId, code);
   return {
-    carrier: { ...describeAdapter(adapter), connection: describeConnection(account) },
+    carrier: { ...describeAdapter(adapter), connection: describeConnection(account, adapter, credentials) },
     webhook: {
       url: webhookUrlFor(account),
       // Bosta takes the URL on every delivery we create, so there is nothing
