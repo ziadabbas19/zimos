@@ -25,6 +25,17 @@ if (storefrontProxySecret && storefrontProxySecret.length < 32) {
   throw new Error('STOREFRONT_PROXY_SECRET must be at least 32 characters (generate one with `openssl rand -hex 32`)');
 }
 
+// A comma-separated env var as a list of lower-cased, trimmed entries. Unset
+// uses the fallback; set but empty is an empty list. Under NODE_ENV=test the
+// fallback always wins, so a dev .env can't change what the suite sees.
+function csvList(raw, fallback) {
+  const value = raw === undefined || process.env.NODE_ENV === 'test' ? fallback : raw;
+  return String(value)
+    .split(',')
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+}
+
 const env = {
   nodeEnv: process.env.NODE_ENV || 'development',
   isProduction: process.env.NODE_ENV === 'production',
@@ -220,6 +231,17 @@ const env = {
     credentialsKey: (process.env.CARRIER_CREDENTIALS_KEY || '').trim(),
     // POST /webhooks/carriers/:code/:token, per token per window.
     webhookRateLimitMax: parseInt(process.env.CARRIER_WEBHOOK_RATE_LIMIT_MAX || '300', 10),
+    // Which adapters exist on this server (modules/shipping/carriers/index.js).
+    // CARRIERS_ENABLED: for every store (unset: bosta; set but empty: none).
+    // CARRIERS_BETA: only for the stores whose slugs are in
+    // CARRIERS_BETA_WORKSPACES; every other store never sees them.
+    enabled: csvList(process.env.CARRIERS_ENABLED, 'bosta'),
+    beta: csvList(process.env.CARRIERS_BETA, ''),
+    betaWorkspaces: csvList(process.env.CARRIERS_BETA_WORKSPACES, ''),
+    // scripts/sync-carrier-shipments.js: shipments per run, and how long a
+    // shipment is polled at all after it was booked.
+    syncBatchSize: Math.max(1, parseInt(process.env.CARRIER_SYNC_BATCH_SIZE || '200', 10) || 200),
+    pollMaxAgeDays: Math.max(1, parseInt(process.env.CARRIER_POLL_MAX_AGE_DAYS || '45', 10) || 45),
   },
 };
 

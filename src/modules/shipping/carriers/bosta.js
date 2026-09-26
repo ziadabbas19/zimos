@@ -7,6 +7,7 @@ const { AppError } = require('../../../core/errors/AppError');
 const { assertInt } = require('../../../core/utils/money');
 const { normalizePhone } = require('../../../core/utils/phone');
 const logger = require('../../../core/utils/logger');
+const { defineAdapter } = require('./adapterContract');
 
 /**
  * Bosta (Egypt) adapter. Every endpoint, field and state code here is taken
@@ -96,6 +97,11 @@ const STATE_MAP = {
   //   23 Picked up from consignee                  (CRP / Exchange)
   //   25 Fulfilled, 60 Returned to stock           (Fulfillment)
 };
+
+// States after which a terminate has nothing left to stop: 46 Returned to
+// business, 48 Terminated, 49 Canceled. Delivered (45) is not here — an order
+// whose parcel was handed over must not quietly become "cancelled".
+const CANCEL_SETTLED_STATES = [46, 48, 49];
 
 /** One row per mapping, for the report / docs endpoint. */
 const STATE_NAMES = {
@@ -494,15 +500,33 @@ function parseWebhook(req) {
   return { ref };
 }
 
-module.exports = {
+/** A refused terminate is settled when Bosta already shows one of these. */
+function isCancelSettled(carrierStatus) {
+  const code = carrierStatus ? carrierStatus.code : null;
+  return code != null && CANCEL_SETTLED_STATES.includes(Number(code));
+}
+
+module.exports = defineAdapter({
   code: 'bosta',
   name: 'Bosta',
   // Other ways merchants write the name, refused as manual courier names.
   // Matched after folding (carriers/index.js), so بوسطة and بوسطه are one entry.
   nameAliases: ['بوسطة', 'بوسته'],
-  // Bosta accepts a webhookUrl on every delivery we create, so nothing has to
-  // be pasted into Bosta's dashboard.
-  webhookSetup: 'per_shipment',
+  capabilities: {
+    cancel: 'api',
+    label: true,
+    // Bosta accepts a webhookUrl on every delivery we create, so nothing has
+    // to be pasted into Bosta's dashboard.
+    webhook: 'per_shipment',
+    // The per-delivery webhook is unsigned: its status is re-read from the API.
+    webhookRefetch: true,
+    // Webhooks and the merchant's sync button only; the cron leaves Bosta alone.
+    polling: false,
+    bulkStatus: false,
+    addressLevels: ['city', 'district'],
+    // Refused as a manual courier name even before the store connects Bosta.
+    reserveNameWhenUnconnected: true,
+  },
   credentialFields: [{ key: 'apiKey', label: 'API key', secret: true }],
   settingFields: [
     { key: 'businessLocationId', label: 'Pickup location' },
@@ -512,7 +536,6 @@ module.exports = {
     { key: 'awbType', label: 'Label size', options: ['A4', 'A6'] },
     { key: 'awbLang', label: 'Label language', options: ['ar', 'en'] },
   ],
-  supportsLabel: true,
   credentialsSchema,
   settingsSchema,
   verifyCredentials,
@@ -521,13 +544,15 @@ module.exports = {
   createShipment,
   getShipment,
   cancelShipment,
+  isCancelSettled,
   getLabel,
   parseWebhook,
   // Exposed for tests and the docs.
   STATE_MAP,
   STATE_NAMES,
+  CANCEL_SETTLED_STATES,
   mapState,
   toEgp,
   packageSpecs,
   BASE_URL,
-};
+});

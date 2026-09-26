@@ -1,15 +1,17 @@
 'use strict';
 
 const crypto = require('crypto');
+const { Op } = require('sequelize');
 const db = require('../../db/models');
 const env = require('../../config/env');
 const { AppError, NotFoundError, ValidationError } = require('../../core/errors/AppError');
 const cipher = require('../../core/utils/credentialsCipher');
 const logger = require('../../core/utils/logger');
 const { recordAudit } = require('../audit/auditService');
-const { getAdapter, listAdapters } = require('./carriers');
+const carriers = require('./carriers');
+const { isCityDistrict } = require('./carriers/adapterContract');
 const { CarrierAuthError } = require('./carriers/carrierErrors');
-const { buildIndex } = require('./carrierAddressMatching');
+const { buildIndex, citiesToTree } = require('./carrierAddressMatching');
 
 /**
  * A merchant's connected courier accounts: connect (verify first, store only
@@ -39,8 +41,9 @@ function assertConfigured() {
   }
 }
 
-function requireAdapter(code) {
-  const adapter = getAdapter(code);
+/** The adapter as this store sees it; 404 when it doesn't exist for the store. */
+async function requireAdapter(workspaceId, code) {
+  const adapter = await carriers.adapterFor(code, workspaceId);
   if (!adapter) throw new NotFoundError('Carrier');
   return adapter;
 }
@@ -74,6 +77,13 @@ function describeAdapter(adapter) {
     supportsLabel: Boolean(adapter.supportsLabel),
     credentialFields: adapter.credentialFields,
     settingFields: adapter.settingFields,
+    capabilities: {
+      cancel: adapter.capabilities.cancel,
+      label: adapter.capabilities.label,
+      webhook: adapter.capabilities.webhook,
+      polling: adapter.capabilities.polling,
+      addressLevels: adapter.capabilities.addressLevels,
+    },
   };
 }
 
@@ -82,7 +92,7 @@ async function listCarriers(workspaceId) {
   const byCode = new Map(accounts.map((a) => [a.carrierCode, a]));
   return {
     configured: credentialsKey() !== null,
-    carriers: listAdapters().map((adapter) => ({
+    carriers: (await carriers.adaptersFor(workspaceId)).map((adapter) => ({
       ...describeAdapter(adapter),
       connection: describeConnection(byCode.get(adapter.code)),
     })),
@@ -142,7 +152,7 @@ async function ownTiersOnly(workspaceId, tierMap) {
  * the settings of an existing connection (the stored ones are re-verified).
  */
 async function connect(workspaceId, code, body, req) {
-  const adapter = requireAdapter(code);
+  const adapter = await requireAdapter(workspaceId, code);
   assertConfigured();
 
   const existing = await db.CarrierAccount.scope('withCredentials').findOne({ where: { workspaceId, carrierCode: code } });
@@ -172,35 +182,48 @@ async function connect(workspaceId, code, body, req) {
     lastVerifiedAt: new Date(),
   };
 
-  const account = await db.sequelize.transaction(async (transaction) => {
-    let row;
-    let action;
-    let before = null;
-    if (existing) {
-      before = { status: existing.status, settings: existing.settings };
-      await existing.update(values, { transaction });
-      row = existing;
-      action = 'carrier_account.update';
-    } else {
-      row = await db.CarrierAccount.create(
-        { workspaceId, carrierCode: code, webhookToken: newWebhookToken(), ...values },
-        { transaction }
-      );
-      action = 'carrier_account.connect';
-    }
-    await recordAudit({
-      workspaceId,
-      actorUserId: req.user.id,
-      action,
-      entityType: 'CarrierAccount',
-      entityId: row.id,
-      before,
-      after: { carrierCode: code, status: 'active', settings, credentialsUpdated: Boolean(body.credentials) },
-      req,
-      transaction,
+  const account = await db.sequelize
+    .transaction(async (transaction) => {
+      let row;
+      let action;
+      let before = null;
+      if (existing) {
+        before = { status: existing.status, settings: existing.settings };
+        await existing.update(values, { transaction });
+        row = existing;
+        action = 'carrier_account.update';
+      } else {
+        row = await db.CarrierAccount.create(
+          { workspaceId, carrierCode: code, webhookToken: newWebhookToken(), ...values },
+          { transaction }
+        );
+        action = 'carrier_account.connect';
+      }
+      await recordAudit({
+        workspaceId,
+        actorUserId: req.user.id,
+        action,
+        entityType: 'CarrierAccount',
+        entityId: row.id,
+        before,
+        after: { carrierCode: code, status: 'active', settings, credentialsUpdated: Boolean(body.credentials) },
+        req,
+        transaction,
+      });
+      return row;
+    })
+    .catch((err) => {
+      // Two first-time connects raced: the other one's row won the unique
+      // (workspace, carrier) index. Nothing of this request was stored.
+      if (err.name === 'SequelizeUniqueConstraintError') {
+        throw new AppError(
+          'CARRIER_CONNECT_CONFLICT',
+          `${adapter.name} was connected by another request at the same time. Reload to see the connection, then save again if needed.`,
+          409
+        );
+      }
+      throw err;
     });
-    return row;
-  });
 
   clearCitiesCache(workspaceId, code);
   return {
@@ -216,12 +239,20 @@ async function connect(workspaceId, code, body, req) {
   };
 }
 
-/** DELETE /carriers/:code. Shipments keep their data; syncing them stops. */
+/**
+ * DELETE /carriers/:code. Shipments keep their data; syncing them stops,
+ * scheduled polls and manual-cancel checks included (nothing left to read
+ * with).
+ */
 async function disconnect(workspaceId, code, req) {
-  requireAdapter(code);
+  await requireAdapter(workspaceId, code);
   return db.sequelize.transaction(async (transaction) => {
     const account = await db.CarrierAccount.findOne({ where: { workspaceId, carrierCode: code }, transaction });
     if (!account) throw new NotFoundError('Carrier connection');
+    await db.Shipment.update(
+      { nextPollAt: null },
+      { where: { workspaceId, carrierCode: code, nextPollAt: { [Op.ne]: null } }, transaction }
+    );
     await account.destroy({ transaction });
     await recordAudit({
       workspaceId,
@@ -262,7 +293,7 @@ function decryptFor(account) {
  * 503 when the server has no key; 409 CARRIER_NOT_CONNECTED otherwise.
  */
 async function loadConnection(workspaceId, code, { transaction } = {}) {
-  const adapter = requireAdapter(code);
+  const adapter = await requireAdapter(workspaceId, code);
   assertConfigured();
   const account = await db.CarrierAccount.scope('withCredentials').findOne({
     where: { workspaceId, carrierCode: code },
@@ -288,27 +319,43 @@ function clearCitiesCache(workspaceId, code) {
   else citiesCache.delete(`${workspaceId}:${code}`);
 }
 
-/** { cities, index } — the carrier list and its normalised match index. */
+/**
+ * { cities, tree, index } — the carrier's address list, as a tree, and its
+ * normalised match index. `cities` is the carrier's own list: listCities()
+ * for a city/district carrier, the tree itself otherwise.
+ */
 async function loadCities(connection) {
   const key = `${connection.account.workspaceId}:${connection.adapter.code}`;
   const hit = citiesCache.get(key);
   if (hit && Date.now() - hit.at < CITIES_TTL_MS) return hit.value;
 
-  const cities = await withAuthHandling(connection.account, () => connection.adapter.listCities(connection.credentials));
-  const value = { cities, index: await buildIndex(cities) };
+  const { adapter, credentials } = connection;
+  const legacy = typeof adapter.listCities === 'function' && isCityDistrict(adapter.capabilities.addressLevels);
+  const cities = await withAuthHandling(connection.account, () =>
+    legacy ? adapter.listCities(credentials) : adapter.listAddressTree(credentials)
+  );
+  const tree = legacy ? citiesToTree(cities) : cities;
+  const value = { cities, tree, index: await buildIndex(tree) };
   citiesCache.set(key, { at: Date.now(), value });
   return value;
 }
 
+/**
+ * GET /carriers/:code/cities. A city/district carrier answers { cities } as
+ * it always has; a carrier with other levels answers { levels, cities } with
+ * each node's `children`.
+ */
 async function getCities(workspaceId, code, { cityId } = {}) {
   const connection = await loadConnection(workspaceId, code);
   const { cities } = await loadCities(connection);
+  const levels = connection.adapter.capabilities.addressLevels;
+  const extra = isCityDistrict(levels) ? {} : { levels };
   if (cityId) {
     const city = cities.find((c) => c.id === cityId);
     if (!city) throw new NotFoundError('City');
-    return { cities: [city] };
+    return { ...extra, cities: [city] };
   }
-  return { cities };
+  return { ...extra, cities };
 }
 
 module.exports = {

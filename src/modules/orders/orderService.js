@@ -617,7 +617,7 @@ async function orderPipeline(workspaceId, { q, from, to } = {}) {
  * uncollected shipment, closes open confirmation tasks and records the
  * reason. Refused once a parcel has shipped — use a return after that.
  */
-async function cancelOrder(workspaceId, orderId, { reason }, req) {
+async function cancelOrder(workspaceId, orderId, { reason, acknowledgeManualCancel = false }, req) {
   return db.sequelize.transaction(async (transaction) => {
     const order = await db.Order.findOne({
       where: { id: orderId, workspaceId },
@@ -649,8 +649,13 @@ async function cancelOrder(workspaceId, orderId, { reason }, req) {
     // A shipment booked with a connected courier is cancelled there first. If
     // the courier refuses, this throws and the whole cancellation rolls back:
     // the order must not say "cancelled" while a courier still plans to
-    // collect the parcel.
-    await carrierShipmentService.cancelCarrierShipmentsForOrder(workspaceId, order.id, transaction);
+    // collect the parcel. A courier without a cancel API needs the
+    // merchant's acknowledgeManualCancel (409 CARRIER_MANUAL_CANCEL_REQUIRED).
+    await carrierShipmentService.cancelCarrierShipmentsForOrder(workspaceId, order.id, transaction, {
+      acknowledgeManualCancel,
+      req,
+      trigger: 'order_cancel',
+    });
 
     // Cancel any shipment that was created but never collected.
     await db.Shipment.update(
@@ -776,12 +781,18 @@ async function updateShipment(workspaceId, orderId, shipmentId, data, req) {
   return db.sequelize.transaction(async (transaction) => {
     const shipment = await db.Shipment.findOne({ where: { id: shipmentId, workspaceId, orderId }, transaction });
     if (!shipment) throw new NotFoundError('Shipment');
+    // Cancelling a booking whose courier has no cancel API needs the
+    // merchant's acknowledgeManualCancel; a final status stops polling.
+    const extra = carrierShipmentService.manualCancelUpdates(shipment, data, req);
+    if (!extra.cancelMode && carrierShipmentService.TERMINAL_STATUSES.includes(data.status) && shipment.nextPollAt) {
+      extra.nextPollAt = null;
+    }
     // The stamps, fulfillment state and audit row live in shipmentLifecycle,
     // shared with the carrier status updates.
     return transitionShipment(
       workspaceId,
       shipment,
-      { status: data.status, waybillNumber: data.waybillNumber, trackingUrl: data.trackingUrl },
+      { status: data.status, waybillNumber: data.waybillNumber, trackingUrl: data.trackingUrl, ...extra },
       { transaction, req, actorUserId: req.user.id }
     );
   });

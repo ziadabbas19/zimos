@@ -446,7 +446,7 @@ async function closeTasksForCancelledOrder(workspaceId, orderId, reason, req, tr
  * The order's confirmation state, not the task's outcome, is the truth being
  * corrected.
  */
-async function correctOutcome(workspaceId, taskId, { outcome, reason, notes }, req) {
+async function correctOutcome(workspaceId, taskId, { outcome, reason, notes, acknowledgeManualCancel = false }, req) {
   return db.sequelize.transaction(async (transaction) => {
     const task = await db.ConfirmationTask.findOne({ where: { id: taskId, workspaceId }, transaction, lock: transaction.LOCK.UPDATE });
     if (!task) throw new NotFoundError('ConfirmationTask');
@@ -473,7 +473,11 @@ async function correctOutcome(workspaceId, taskId, { outcome, reason, notes }, r
     if (outcome === 'rejected') {
       // A shipment booked with a courier is cancelled there first; if the
       // courier refuses, this throws and the correction rolls back.
-      await carrierShipmentService.cancelCarrierShipmentsForOrder(workspaceId, order.id, transaction);
+      await carrierShipmentService.cancelCarrierShipmentsForOrder(workspaceId, order.id, transaction, {
+        acknowledgeManualCancel,
+        req,
+        trigger: 'confirmation_correction',
+      });
       await db.Shipment.update({ status: 'cancelled' }, { where: { orderId: order.id, status: 'created' }, transaction });
       await releaseOrderStock(workspaceId, order.id, 'order_rejected', req.user.id, transaction);
       await db.Customer.increment('totalRejectedOrders', { by: 1, where: { id: order.customerId }, transaction });

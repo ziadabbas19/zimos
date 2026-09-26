@@ -5,18 +5,21 @@ const { Op } = require('sequelize');
 const db = require('../../db/models');
 const logger = require('../../core/utils/logger');
 const { NotFoundError } = require('../../core/errors/AppError');
-const { getAdapter } = require('./carriers');
+const { getAdapter, availableFor } = require('./carriers');
 const accounts = require('./carrierAccountService');
 const { applyCarrierStatus } = require('./carrierShipmentService');
 
 /**
  * POST /webhooks/carriers/:code/:token.
  *
- * The token in the URL is the only identity (Bosta's per-delivery webhook has
- * no signature). The payload itself is never trusted: the adapter pulls out
- * the tracking number and nothing else, and the status is re-read from the
- * carrier's API with the merchant's credentials. A forged body can at most
- * make us ask Bosta about a parcel — Bosta's answer is what gets applied.
+ * The token in the URL identifies the account (Bosta's per-delivery webhook
+ * has no signature). By default the payload itself is never trusted: the
+ * adapter pulls out the tracking number and nothing else, and the status is
+ * re-read from the carrier's API with the merchant's credentials. A forged
+ * body can at most make us ask the carrier about a parcel — its answer is
+ * what gets applied. Only an adapter whose webhooks are signed
+ * (capabilities.webhookRefetch false + verifyWebhook) has its payload status
+ * applied directly.
  *
  * The carrier gets its 200 before that fetch runs. Bosta documents no retry
  * policy, so we never answer a known token with a 5xx: a failure is logged,
@@ -52,10 +55,13 @@ async function resolveAccount(code, token) {
   const a = Buffer.from(account.webhookToken, 'utf8');
   const b = Buffer.from(token, 'utf8');
   if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) throw new NotFoundError('Webhook');
+  // A beta carrier's hook only works for the stores it is rolled out to.
+  if (!(await availableFor(adapter, account.workspaceId))) throw new NotFoundError('Webhook');
   return { adapter, account };
 }
 
-async function processUpdate(adapter, account, ref) {
+async function processUpdate(adapter, account, parsed) {
+  const { ref } = parsed;
   const shipment = await db.Shipment.findOne({
     // Only shipments we booked (they carry a carrierResponse); a manual row
     // that merely shares the tracking number is never touched.
@@ -75,8 +81,13 @@ async function processUpdate(adapter, account, ref) {
     return;
   }
 
-  const credentials = accounts.decryptFor(account);
-  const result = await accounts.withAuthHandling(account, () => adapter.getShipment(credentials, ref));
+  let result;
+  if (adapter.capabilities.webhookRefetch) {
+    const credentials = accounts.decryptFor(account);
+    result = await accounts.withAuthHandling(account, () => adapter.getShipment(credentials, ref));
+  } else {
+    result = { status: parsed.status || null, carrierStatus: parsed.carrierStatus || null };
+  }
   const { changed } = await applyCarrierStatus(account.workspaceId, shipment.id, result, { trigger: 'webhook' });
   logger.info('Carrier webhook processed', {
     workspaceId: account.workspaceId,
@@ -93,13 +104,20 @@ async function processUpdate(adapter, account, ref) {
 async function accept(code, token, req) {
   const { adapter, account } = await resolveAccount(code, token);
   const parsed = adapter.parseWebhook(req);
+  if (parsed && typeof adapter.verifyWebhook === 'function') {
+    const verified = await adapter.verifyWebhook(req, { account, credentials: accounts.decryptFor(account) });
+    if (!verified) {
+      logger.warn('Carrier webhook failed its signature check', { carrierCode: code, workspaceId: account.workspaceId });
+      throw new NotFoundError('Webhook');
+    }
+  }
   if (!parsed) {
     logger.warn('Carrier webhook without a usable shipment reference', { carrierCode: code, workspaceId: account.workspaceId });
     return null;
   }
   return () =>
     track(
-      processUpdate(adapter, account, parsed.ref).catch((err) =>
+      processUpdate(adapter, account, parsed).catch((err) =>
         logger.error('Carrier webhook processing failed', {
           carrierCode: code,
           workspaceId: account.workspaceId,

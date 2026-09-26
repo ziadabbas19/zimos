@@ -55,7 +55,12 @@ module.exports = {
   get: { params: Joi.object({ workspaceId: uuid.required(), orderId: uuid.required() }) },
   cancel: {
     params: Joi.object({ workspaceId: uuid.required(), orderId: uuid.required() }),
-    body: Joi.object({ reason: Joi.string().min(1).max(500).required() }),
+    body: Joi.object({
+      reason: Joi.string().min(1).max(500).required(),
+      // The merchant cancelled the order's courier booking in the courier's
+      // own dashboard (couriers without a cancel API only).
+      acknowledgeManualCancel: Joi.boolean().optional(),
+    }),
   },
   confirm: {
     params: Joi.object({ workspaceId: uuid.required(), orderId: uuid.required() }),
@@ -77,10 +82,13 @@ module.exports = {
       trackingUrl: Joi.string().uri().max(500).allow(null, '').optional(),
       // Connected couriers only (see modules/shipping/carriers). The carrier's
       // own ids for the drop-off address, sent when the order's free-text
-      // address couldn't be matched (422 CARRIER_ADDRESS_UNMATCHED).
+      // address couldn't be matched (422 CARRIER_ADDRESS_UNMATCHED). Either
+      // cityId + districtId (city/district carriers) or `path`, one id per
+      // address level, top first (any carrier).
       carrierAddress: Joi.object({
-        cityId: Joi.string().max(100).required(),
-        districtId: Joi.string().max(100).required(),
+        path: Joi.array().items(Joi.string().max(100)).min(1).max(6).optional(),
+        cityId: Joi.string().max(100).when('path', { is: Joi.exist(), then: Joi.forbidden(), otherwise: Joi.required() }),
+        districtId: Joi.string().max(100).when('path', { is: Joi.exist(), then: Joi.forbidden(), otherwise: Joi.required() }),
       }).optional(),
       notes: Joi.string().max(500).allow(null, '').optional(),
       // Connected couriers only: book as this weight tier instead of the one
@@ -96,7 +104,11 @@ module.exports = {
         .optional(),
       waybillNumber: Joi.string().max(100).allow(null, '').optional(),
       trackingUrl: Joi.string().uri().max(500).allow(null, '').optional(),
-    }).min(1),
+      // With status 'cancelled' on a booking whose courier has no cancel API.
+      acknowledgeManualCancel: Joi.boolean().optional(),
+    })
+      .min(1)
+      .or('status', 'waybillNumber', 'trackingUrl'),
   },
   list: {
     params: Joi.object({ workspaceId: uuid.required() }),

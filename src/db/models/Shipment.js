@@ -23,6 +23,17 @@ module.exports = (sequelize, DataTypes) => {
       carrierResponse: { type: DataTypes.JSONB, allowNull: true, field: 'carrier_response' },
       shippedAt: { type: DataTypes.DATE, allowNull: true, field: 'shipped_at' },
       deliveredAt: { type: DataTypes.DATE, allowNull: true, field: 'delivered_at' },
+      // Migration 102. The carrier account a courier booking went through
+      // (null for manual shipments and after a disconnect).
+      carrierAccountId: { type: DataTypes.UUID, allowNull: true, field: 'carrier_account_id' },
+      // 'api' | 'manual_ack' — how a carrier-booked shipment was cancelled.
+      cancelMode: { type: DataTypes.STRING(20), allowNull: true, field: 'cancel_mode' },
+      cancelAcknowledgedBy: { type: DataTypes.UUID, allowNull: true, field: 'cancel_acknowledged_by' },
+      cancelAcknowledgedAt: { type: DataTypes.DATE, allowNull: true, field: 'cancel_acknowledged_at' },
+      // scripts/sync-carrier-shipments.js scheduling (carrierSyncService).
+      nextPollAt: { type: DataTypes.DATE, allowNull: true, field: 'next_poll_at' },
+      lastPolledAt: { type: DataTypes.DATE, allowNull: true, field: 'last_polled_at' },
+      pollFailures: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0, field: 'poll_failures' },
     },
     {
       tableName: 'shipments',

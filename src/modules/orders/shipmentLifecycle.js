@@ -53,13 +53,26 @@ async function insertShipment(values, transaction) {
  * Callers own the transaction and decide whether a change is due at all.
  *
  * @param {object} updates  any of { status, waybillNumber, trackingUrl, carrierResponse }
+ *                          and the carrier bookkeeping of migration 102
+ *                          (cancelMode, cancelAcknowledgedBy/At, nextPollAt,
+ *                          pollFailures)
  * @param {object} ctx      { transaction, req, actorUserId, metadata }
  */
 async function transitionShipment(workspaceId, shipment, updates, { transaction, req = null, actorUserId = null, metadata = null }) {
   const before = shipment.toJSON();
 
   const changes = {};
-  for (const key of ['status', 'waybillNumber', 'trackingUrl', 'carrierResponse']) {
+  for (const key of [
+    'status',
+    'waybillNumber',
+    'trackingUrl',
+    'carrierResponse',
+    'cancelMode',
+    'cancelAcknowledgedBy',
+    'cancelAcknowledgedAt',
+    'nextPollAt',
+    'pollFailures',
+  ]) {
     if (updates[key] !== undefined) changes[key] = updates[key];
   }
   if (updates.status && SHIPMENT_IN_MOTION.includes(updates.status) && !shipment.shippedAt) {

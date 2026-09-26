@@ -31,6 +31,9 @@ module.exports = {
       outcome: Joi.string().valid('confirmed', 'rejected').required(),
       reason: Joi.string().trim().min(1).max(300).required(),
       notes: Joi.string().max(600).allow('').optional(),
+      // Correcting to rejected cancels the order's courier booking; for a
+      // courier without a cancel API the merchant confirms they did it there.
+      acknowledgeManualCancel: Joi.boolean().optional(),
     }),
   },
 };

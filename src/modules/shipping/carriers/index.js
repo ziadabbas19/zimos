@@ -1,11 +1,21 @@
 'use strict';
 
+const db = require('../../../db/models');
+const env = require('../../../config/env');
 const bosta = require('./bosta');
+const { defineAdapter } = require('./adapterContract');
 
 /**
- * Courier adapters: one file per carrier, registered below. Adding J&T or
- * Aramex is a new file implementing the interface + one line in ADAPTERS;
- * the routes, services, webhook and tests are carrier-agnostic.
+ * Courier adapters: one file per carrier, built with defineAdapter() (see
+ * ./adapterContract for the capabilities) and registered below. Adding a
+ * carrier is a new file + one line in REGISTERED; the routes, services,
+ * webhook, poller and tests are carrier-agnostic.
+ *
+ * Which registered adapters exist on a server is env-driven (env.carriers):
+ *   CARRIERS_ENABLED           every store sees them (default: bosta)
+ *   CARRIERS_BETA              only stores listed in CARRIERS_BETA_WORKSPACES
+ * An adapter in neither list — or a beta one, for any other store — does not
+ * exist: not listed, not connectable, its name free for manual shipments.
  *
  * 'manual' is not an adapter and never will be: it is a shipment the merchant
  * books themselves and types the waybill number into. Any carrierCode without
@@ -15,15 +25,13 @@ const bosta = require('./bosta');
  * Adapter interface
  * ---------------------------------------------------------------------------
  * Descriptive fields
- *   code, name
- *   webhookSetup          'per_shipment' (URL sent on every create) |
- *                         'account' (merchant pastes the URL into the
- *                         carrier's dashboard once)
+ *   code, name, nameAliases
+ *   capabilities          see ./adapterContract
  *   credentialFields      [{ key, label, secret }] — for the connect form
  *   settingFields         [{ key, label, options? }]
- *   supportsLabel         whether getLabel exists
  *   credentialsSchema     Joi schema for the credentials object
  *   settingsSchema        Joi schema for carrier-specific settings
+ *   webhookSetup, supportsLabel   derived from capabilities
  *
  * Every function receives the DECRYPTED credentials first. Never log them.
  * Errors: throw CarrierAuthError (credentials rejected -> 422, account marked
@@ -37,38 +45,90 @@ const bosta = require('./bosta');
  *       The package to book for a weight tier ({ id, ... } or null), from
  *       the account settings. Throws 422 CARRIER_TIER_UNMAPPED when the
  *       settings map tiers but not this one. Passed back as `package`.
- *   listCities(creds) -> [{ id, name, nameAr, dropOffAvailable,
- *                           districts: [{ id, name, nameAr, zoneId, zoneName,
- *                                         zoneNameAr, dropOffAvailable }] }]
+ *   listCities(creds)  (city/district carriers)
+ *       -> [{ id, name, nameAr, dropOffAvailable,
+ *             districts: [{ id, name, nameAr, zoneId, zoneName,
+ *                           zoneNameAr, dropOffAvailable }] }]
+ *   listAddressTree(creds)  (any number of levels)
+ *       -> [{ id, name, nameAr, dropOffAvailable?, aliases?: [name...],
+ *             meta?: {...}, children?: [same shape] }]
+ *       Depth = capabilities.addressLevels.length; leaves are bookable.
  *   createShipment(creds, { order, address, cod, goodsValue, itemsCount,
  *                           description, notes, carrierSettings, package,
  *                           webhookUrl })
  *       -> { trackingNumber, carrierShipmentId, trackingUrl?, labelUrl?, raw }
- *       `cod` and `goodsValue` are in OUR minor units; the adapter converts.
- *       `raw` is what gets stored on the shipment: whitelist, no PII/secrets.
+ *       `address` = { path: [{ id, name, nameAr, level, meta }], firstLine,
+ *       secondLine } plus, for city/district carriers, cityId, cityName,
+ *       districtId, zoneId. `cod` and `goodsValue` are in OUR minor units;
+ *       the adapter converts. `raw` is what gets stored on the shipment:
+ *       whitelist, no PII/secrets.
  *   getShipment(creds, trackingNumber)
  *       -> { status, carrierStatus, raw }
  *       `status` is OUR Shipment status, or null when the carrier state says
  *       nothing we can act on (unknown states are logged by the adapter).
+ *   getShipments(creds, trackingNumbers)  (bulkStatus)
+ *       -> Map(trackingNumber -> getShipment-shaped result); a number the
+ *       carrier did not answer for is simply absent
  *   cancelShipment(creds, trackingNumber) -> resolves, or throws if refused
- *   getLabel(creds, trackingNumber, settings) -> PDF Buffer (if supportsLabel)
- *   parseWebhook(req) -> { ref } | null
- *       ONLY the shipment identifier (the tracking number). The payload's
- *       status is never trusted; the webhook re-reads it with getShipment.
+ *       (cancel 'api' only)
+ *   isCancelSettled(carrierStatus) -> boolean (optional)
+ *   getLabel(creds, trackingNumber, settings) -> PDF Buffer (label)
+ *   parseWebhook(req) -> { ref, status?, carrierStatus? } | null
+ *       `ref` is the tracking number. The status is used only when
+ *       capabilities.webhookRefetch is false and verifyWebhook passed.
+ *   verifyWebhook(req, { account, credentials }) -> boolean (optional)
  */
-const ADAPTERS = Object.freeze({
-  [bosta.code]: bosta,
-});
+const REGISTERED = new Map([[bosta.code, bosta]]);
 
 const MANUAL = 'manual';
 
+/** 'enabled' | 'beta' | null for a registered adapter code. */
+function rollout(code) {
+  if (!code || !REGISTERED.has(code)) return null;
+  if (env.carriers.enabled.includes(code)) return 'enabled';
+  if (env.carriers.beta.includes(code)) return 'beta';
+  return null;
+}
+
+/**
+ * The adapter for a code on this server (enabled or beta), or null. Beta
+ * adapters still need a per-store check: availableFor / adapterFor.
+ */
 function getAdapter(code) {
   if (!code || code === MANUAL) return null;
-  return Object.prototype.hasOwnProperty.call(ADAPTERS, code) ? ADAPTERS[code] : null;
+  return rollout(code) ? REGISTERED.get(code) : null;
 }
 
 function listAdapters() {
-  return Object.values(ADAPTERS);
+  return [...REGISTERED.values()].filter((adapter) => rollout(adapter.code));
+}
+
+async function workspaceInBeta(workspaceId) {
+  if (!workspaceId || env.carriers.betaWorkspaces.length === 0) return false;
+  const workspace = await db.Workspace.findByPk(workspaceId, { attributes: ['slug'] });
+  return Boolean(workspace && env.carriers.betaWorkspaces.includes(String(workspace.slug).toLowerCase()));
+}
+
+/** Whether this store may see and use the adapter. */
+async function availableFor(adapter, workspaceId) {
+  const state = adapter ? rollout(adapter.code) : null;
+  if (state === 'enabled') return true;
+  if (state === 'beta') return workspaceInBeta(workspaceId);
+  return false;
+}
+
+/** The adapter for a code as this store sees it, or null. */
+async function adapterFor(code, workspaceId) {
+  const adapter = getAdapter(code);
+  return adapter && (await availableFor(adapter, workspaceId)) ? adapter : null;
+}
+
+/** Every adapter this store may see, in registration order. */
+async function adaptersFor(workspaceId) {
+  const all = listAdapters();
+  if (all.every((adapter) => rollout(adapter.code) === 'enabled')) return all;
+  const beta = await workspaceInBeta(workspaceId);
+  return all.filter((adapter) => rollout(adapter.code) === 'enabled' || beta);
 }
 
 /**
@@ -80,27 +140,46 @@ function foldCourierName(name) {
   return name
     .normalize('NFKC')
     .toLowerCase()
-    .replace(/[ً-ٰٟۖ-ۭـ]/g, '')
+    .replace(/[ً-ٰٟۖ-ۭـ]/g, '')
     .replace(/ة/g, 'ه')
     .replace(/[\s\-_.]+/g, '');
 }
 
-// Folded name -> adapter, from each adapter's code and its nameAliases.
-const RESERVED_NAMES = new Map();
-for (const adapter of Object.values(ADAPTERS)) {
-  for (const name of [adapter.code, ...(adapter.nameAliases || [])]) {
-    RESERVED_NAMES.set(foldCourierName(name), adapter);
-  }
-}
-
 /**
  * The adapter a free-text courier name spells ("Bosta", " BOSTA ", "bo-sta",
- * "بوسطة" -> bosta), or null. Such a name is never stored as a manual
- * shipment: it would read as a courier booking that never happened.
+ * "بوسطة" -> bosta), or null — among the adapters on this server. Whether the
+ * name is actually refused depends on the store (see
+ * carrierShipmentService.shouldBookWithCarrier).
  */
 function reservedAdapterFor(name) {
   if (typeof name !== 'string') return null;
-  return RESERVED_NAMES.get(foldCourierName(name)) || null;
+  const folded = foldCourierName(name);
+  for (const adapter of listAdapters()) {
+    if ([adapter.code, ...adapter.nameAliases].some((n) => foldCourierName(n) === folded)) return adapter;
+  }
+  return null;
 }
 
-module.exports = { getAdapter, listAdapters, reservedAdapterFor, MANUAL };
+/**
+ * Registers an adapter for the current test file only (tests/helpers/
+ * fakeCarriers.js). Returns the function that removes it again.
+ */
+function registerTestAdapter(spec) {
+  if (!env.isTest) throw new Error('registerTestAdapter is only available under NODE_ENV=test');
+  const adapter = spec.capabilities && Object.isFrozen(spec.capabilities) ? spec : defineAdapter(spec);
+  REGISTERED.set(adapter.code, adapter);
+  return () => {
+    if (REGISTERED.get(adapter.code) === adapter) REGISTERED.delete(adapter.code);
+  };
+}
+
+module.exports = {
+  getAdapter,
+  listAdapters,
+  adapterFor,
+  adaptersFor,
+  availableFor,
+  reservedAdapterFor,
+  registerTestAdapter,
+  MANUAL,
+};
