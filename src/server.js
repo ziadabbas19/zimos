@@ -5,6 +5,7 @@ const env = require('./config/env');
 const db = require('./db/models');
 const logger = require('./core/utils/logger');
 const { describeStorage, r2ConfigError } = require('./modules/media/storage');
+const { logRollout: logCarrierRollout } = require('./modules/shipping/carriers');
 
 async function start() {
   try {
@@ -25,6 +26,10 @@ async function start() {
   logger.info(`Storage backend: ${describeStorage()}`);
   const storageProblem = r2ConfigError();
   if (storageProblem) logger.error(`Storage misconfigured: ${storageProblem} — uploads will fail until this is fixed`);
+
+  // And for couriers: which adapters this process actually switched on, from
+  // CARRIERS_ENABLED / CARRIERS_BETA / CARRIERS_BETA_WORKSPACES as parsed.
+  await logCarrierRollout(logger);
 
   const server = app.listen(env.port, () => {
     logger.info(`Zimos backend listening on port ${env.port}`, { env: env.nodeEnv });

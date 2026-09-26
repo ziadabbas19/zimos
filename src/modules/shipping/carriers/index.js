@@ -115,10 +115,16 @@ function listAdapters() {
   return [...REGISTERED.values()].filter((adapter) => rollout(adapter.code));
 }
 
+/** The store's slug (null when there is no such store) and whether it is in the beta. */
+async function betaMembership(workspaceId) {
+  const workspace = workspaceId ? await db.Workspace.findByPk(workspaceId, { attributes: ['slug'] }) : null;
+  const slug = workspace ? String(workspace.slug).toLowerCase() : null;
+  return { slug, inBeta: Boolean(slug && env.carriers.betaWorkspaces.includes(slug)) };
+}
+
 async function workspaceInBeta(workspaceId) {
   if (!workspaceId || env.carriers.betaWorkspaces.length === 0) return false;
-  const workspace = await db.Workspace.findByPk(workspaceId, { attributes: ['slug'] });
-  return Boolean(workspace && env.carriers.betaWorkspaces.includes(String(workspace.slug).toLowerCase()));
+  return (await betaMembership(workspaceId)).inBeta;
 }
 
 /**
@@ -150,12 +156,97 @@ async function adapterFor(code, workspaceId) {
   return adapter && (await availableFor(adapter, workspaceId)) ? adapter : null;
 }
 
+/**
+ * Every adapter this store may see, in registration order, plus the slug it
+ * was decided on — GET /carriers logs both. The slug is always looked up,
+ * even when no beta adapter is on, so that log line says which store asked.
+ */
+async function resolveAdaptersFor(workspaceId) {
+  const { slug, inBeta } = await betaMembership(workspaceId);
+  const adapters = listAdapters().filter((adapter) => rollout(adapter.code) === 'enabled' || inBeta);
+  return { adapters, slug, inBeta };
+}
+
 /** Every adapter this store may see, in registration order. */
 async function adaptersFor(workspaceId) {
-  const all = listAdapters();
-  if (all.every((adapter) => rollout(adapter.code) === 'enabled')) return all;
-  const beta = await workspaceInBeta(workspaceId);
-  return all.filter((adapter) => rollout(adapter.code) === 'enabled' || beta);
+  return (await resolveAdaptersFor(workspaceId)).adapters;
+}
+
+// A carrier code or slug is lower-case letters, digits, '-' and '_'. Quotes
+// are called out on their own: a dashboard env editor keeps quotes typed
+// around a value, and '"mylerz' is then silently not a carrier.
+const QUOTES = /["'`‘’“”]/;
+const PLAIN_ENTRY = /^[a-z0-9_-]+$/;
+
+/**
+ * The rollout as this process parsed it, and what in it looks wrong — for
+ * the boot log. Codes and slugs only; nothing secret. `existingSlugs`
+ * (lower-cased), when given, checks CARRIERS_BETA_WORKSPACES against the
+ * stores that exist.
+ */
+function describeRollout({ existingSlugs } = {}) {
+  const { enabled, beta, betaWorkspaces } = env.carriers;
+  const registered = [...REGISTERED.keys()];
+  const warnings = [];
+  const lists = [
+    ['CARRIERS_ENABLED', enabled, true],
+    ['CARRIERS_BETA', beta, true],
+    ['CARRIERS_BETA_WORKSPACES', betaWorkspaces, false],
+  ];
+  for (const [name, list, isCodes] of lists) {
+    for (const value of list) {
+      if (QUOTES.test(value)) {
+        warnings.push(`${name} entry ${JSON.stringify(value)} contains a quote character; set the variable without quotes`);
+      } else if (!PLAIN_ENTRY.test(value)) {
+        warnings.push(`${name} entry ${JSON.stringify(value)} contains unexpected characters`);
+      } else if (isCodes && !REGISTERED.has(value)) {
+        warnings.push(`${name} entry ${JSON.stringify(value)} is not a registered carrier (registered: ${registered.join(', ')})`);
+      }
+    }
+  }
+  if (beta.length > 0 && betaWorkspaces.length === 0) {
+    warnings.push('CARRIERS_BETA is set but CARRIERS_BETA_WORKSPACES is empty: no store sees the beta carriers');
+  }
+  if (existingSlugs) {
+    const known = new Set(existingSlugs);
+    for (const slug of betaWorkspaces) {
+      if (!QUOTES.test(slug) && !known.has(slug)) {
+        warnings.push(`CARRIERS_BETA_WORKSPACES entry ${JSON.stringify(slug)} matches no workspace slug`);
+      }
+    }
+  }
+  return {
+    enabled,
+    beta,
+    betaWorkspaces,
+    registered,
+    active: listAdapters().map((adapter) => adapter.code),
+    warnings,
+  };
+}
+
+/**
+ * Logs the parsed rollout once at boot (server.js), one warning per problem.
+ * A failed workspace lookup only skips the slug check.
+ */
+async function logRollout(logger) {
+  let existingSlugs;
+  const slugs = env.carriers.betaWorkspaces;
+  if (slugs.length > 0) {
+    try {
+      const rows = await db.Workspace.findAll({
+        attributes: ['slug'],
+        where: db.Sequelize.where(db.Sequelize.fn('lower', db.Sequelize.col('slug')), { [db.Sequelize.Op.in]: slugs }),
+      });
+      existingSlugs = rows.map((row) => String(row.slug).toLowerCase());
+    } catch (err) {
+      logger.warn('Carrier rollout: could not check CARRIERS_BETA_WORKSPACES against the workspaces', { message: err.message });
+    }
+  }
+  const { warnings, ...config } = describeRollout({ existingSlugs });
+  logger.info('Carrier rollout', config);
+  for (const warning of warnings) logger.warn(`Carrier rollout: ${warning}`);
+  return { ...config, warnings };
 }
 
 /**
@@ -205,6 +296,9 @@ module.exports = {
   listAdapters,
   adapterFor,
   adaptersFor,
+  resolveAdaptersFor,
+  describeRollout,
+  logRollout,
   availableFor,
   assertSandboxAllowed,
   reservedAdapterFor,

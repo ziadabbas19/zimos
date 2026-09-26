@@ -90,9 +90,12 @@ function describeAdapter(adapter) {
 async function listCarriers(workspaceId) {
   const accounts = await db.CarrierAccount.findAll({ where: { workspaceId } });
   const byCode = new Map(accounts.map((a) => [a.carrierCode, a]));
+  const { adapters, slug, inBeta } = await carriers.resolveAdaptersFor(workspaceId);
+  // Settles "why doesn't this store see carrier X?" from the logs alone.
+  logger.info('Carriers listed', { workspaceId, slug, inBeta, carriers: adapters.map((adapter) => adapter.code) });
   return {
     configured: credentialsKey() !== null,
-    carriers: (await carriers.adaptersFor(workspaceId)).map((adapter) => ({
+    carriers: adapters.map((adapter) => ({
       ...describeAdapter(adapter),
       connection: describeConnection(byCode.get(adapter.code)),
     })),
