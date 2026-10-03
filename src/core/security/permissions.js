@@ -28,6 +28,9 @@ const PERMISSIONS = Object.freeze({
   ORDERS_VIEW: 'orders.view',
   ORDERS_MANAGE: 'orders.manage',
   ORDERS_CONFIRM: 'orders.confirm',
+  // Downloading orders as a CSV file. A bulk copy of customer data, so no
+  // system role holds it but Owner ('*'); a custom role can be given it.
+  ORDERS_EXPORT: 'orders.export',
 
   CUSTOMERS_VIEW: 'customers.view',
   CUSTOMERS_MANAGE: 'customers.manage',

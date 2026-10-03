@@ -14,6 +14,8 @@ const returnSchemas = require('../returns/returnValidation');
 const waybillController = require('../waybill/waybillController');
 const carrierController = require('../shipping/carrierController');
 const carrierSchemas = require('../shipping/carrierValidation');
+const exportController = require('./orderExportController');
+const exportSchemas = require('./orderExportValidation');
 
 const router = Router({ mergeParams: true });
 router.use(authenticate, resolveTenant);
@@ -30,6 +32,23 @@ router.get('/', validate(schemas.list), requirePermission(PERMISSIONS.ORDERS_VIE
 // Before '/:orderId', or Express matches "pipeline" as an order id and the
 // request dies as a uuid validation error instead of reaching the counts.
 router.get('/pipeline', validate(schemas.pipeline), requirePermission(PERMISSIONS.ORDERS_VIEW), controller.pipeline);
+// The list as a CSV file, and the columns it can carry (also before
+// '/:orderId'). Exporting is its own permission; the contact columns also
+// need customers.reveal_sensitive (orderExportService).
+router.get(
+  '/export/columns',
+  requirePermission(PERMISSIONS.ORDERS_VIEW),
+  requirePermission(PERMISSIONS.ORDERS_EXPORT),
+  validate(exportSchemas.columns),
+  exportController.columns
+);
+router.get(
+  '/export',
+  requirePermission(PERMISSIONS.ORDERS_VIEW),
+  requirePermission(PERMISSIONS.ORDERS_EXPORT),
+  validate(exportSchemas.exportCsv),
+  exportController.exportCsv
+);
 router.get('/:orderId', validate(schemas.get), requirePermission(PERMISSIONS.ORDERS_VIEW), controller.get);
 
 router.post(
