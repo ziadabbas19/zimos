@@ -180,8 +180,21 @@
     "/workspaces/{workspaceId}/orders/pipeline": {
       "get": { "summary": "Order counts per pipeline stage (the orders-screen tabs), under the same q/from/to as the list", "parameters": [{ "$ref": "#/components/parameters/workspaceId" }], "responses": { "200": { "description": "OK — { stages: { <stage>: count, ... }, total }, every stage key present" } } }
     },
+    "/workspaces/{workspaceId}/orders/export": {
+      "get": { "summary": "The orders list as a CSV file (BOM, CRLF), under the list's own filters and sort; columns=a,b,c, rowPer=order|item, lang=en|ar. Needs orders.view and orders.export; the phone, alternatePhone and email columns also need customers.reveal_sensitive. Cells a spreadsheet would run as a formula (= + - @ tab CR) are written as text. Streamed; audited as order.export", "parameters": [{ "$ref": "#/components/parameters/workspaceId" }], "responses": { "200": { "description": "text/csv — X-Export-Rows: the number of data rows" }, "403": { "description": "Missing orders.export, or a contact column without customers.reveal_sensitive" }, "422": { "description": "EXPORT_TOO_LARGE (over 10000 rows: details.rows / details.maxRows), a date range over 366 days, or an unknown column" } } }
+    },
+    "/workspaces/{workspaceId}/orders/export/columns": {
+      "get": { "summary": "The columns an export can carry for the caller: { columns: [{ key, label: { en, ar }, perItem, sensitive, available }], defaults: { order, item }, maxRows, canRevealSensitive }", "parameters": [{ "$ref": "#/components/parameters/workspaceId" }], "responses": { "200": { "description": "OK" }, "403": { "description": "Missing orders.view or orders.export" } } }
+    },
     "/workspaces/{workspaceId}/orders/{orderId}": {
       "get": { "summary": "Get an order with items/payments/shipments and its derived pipeline stage", "parameters": [{ "$ref": "#/components/parameters/workspaceId" }], "responses": { "200": { "description": "OK" }, "404": { "description": "Not found (including cross-tenant access)" } } }
+    },
+
+    "/workspaces/{workspaceId}/analytics/overview": {
+      "get": { "summary": "The dashboard home: every metric for from/to (default the last 30 days, at most 366) and for the window of the same length before it (compare=previous|none), a per-day series of each, and the top products. Aggregated in Postgres; the same window is served from a 60-second cache. Needs analytics.view", "parameters": [{ "$ref": "#/components/parameters/workspaceId" }], "responses": { "200": { "description": "OK — { overview: { range, previousRange, currency, generatedAt, metrics: { <name>: { value, previous } }, series, previousSeries, topProducts } }" }, "422": { "description": "from not before to, or a window over 366 days" } } }
+    },
+    "/workspaces/{workspaceId}/analytics/utm": {
+      "get": { "summary": "Sales by UTM: visitors, orders, sales, confirmed and delivered per value of groupBy=source|medium|campaign|content|term; source/medium/campaign narrow it to one value. Orders are attributed through their purchase event; orders without one form the not-tracked row. Needs analytics.view", "parameters": [{ "$ref": "#/components/parameters/workspaceId" }], "responses": { "200": { "description": "OK — { report: { range, currency, groupBy, filters, totals, rows: [{ key, tracked, visitors, orders, sales, ... }], truncated, series } }" }, "422": { "description": "from not before to, a window over 366 days, or an unknown groupBy" } } }
     },
 
     "/workspaces/{workspaceId}/confirmation-tasks": {
