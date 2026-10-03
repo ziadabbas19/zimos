@@ -113,18 +113,23 @@ async function getUtmReport(workspaceId, query = {}) {
     : '';
 
   const [visitorRows, orderRows] = await Promise.all([
+    // Each (value, day, visitor) once, then the distinct visitors per value,
+    // per day and in all — cheaper on millions of events than
+    // count(DISTINCT) under GROUPING SETS, which sorts every event per grouping.
     run(
-      `WITH ev AS (
-         SELECT e.visitor_id, ${visitorKey} AS key,
-                to_char(e.created_at AT TIME ZONE :tz, 'YYYY-MM-DD') AS day
+      `WITH seen AS MATERIALIZED (
+         SELECT ${visitorKey} AS key, (e.created_at AT TIME ZONE :tz)::date AS day, e.visitor_id
            FROM analytics_events e
           WHERE e.workspace_id = :workspaceId AND e.created_at >= :start AND e.created_at < :end
                 ${eventFilter.join(' ')}
+          GROUP BY 1, 2, 3
        )
-       SELECT GROUPING(key) AS key_rolled, GROUPING(day) AS day_rolled, key, day,
-              count(DISTINCT visitor_id) AS visitors
-         FROM ev
-        GROUP BY GROUPING SETS ((key), (day), ())`,
+       SELECT 0 AS key_rolled, 1 AS day_rolled, key, NULL::text AS day, count(DISTINCT visitor_id) AS visitors
+         FROM seen GROUP BY key
+       UNION ALL
+       SELECT 1, 0, NULL, day::text, count(DISTINCT visitor_id) FROM seen GROUP BY day
+       UNION ALL
+       SELECT 1, 1, NULL, NULL, count(DISTINCT visitor_id) FROM seen`,
       replacements
     ),
     run(
@@ -133,7 +138,7 @@ async function getUtmReport(workspaceId, query = {}) {
                 (o.cancelled_at IS NOT NULL) AS merchant_cancelled,
                 (o.cancelled_at IS NULL AND o.confirmation_state <> 'rejected') AS live,
                 ${STAGE_SQL} AS stage,
-                to_char(o.created_at AT TIME ZONE :tz, 'YYYY-MM-DD') AS day
+                (o.created_at AT TIME ZONE :tz)::date AS day
            FROM orders o${LATEST_SHIPMENT_JOIN}
           WHERE o.workspace_id = :workspaceId
             AND o.created_at >= :start AND o.created_at < :end
@@ -154,7 +159,7 @@ async function getUtmReport(workspaceId, query = {}) {
            ${landingJoin}
           WHERE TRUE ${purchaseFilter.join(' ')}
        )
-       SELECT GROUPING(key, tracked) AS key_rolled, GROUPING(day) AS day_rolled, key, tracked, day,
+       SELECT GROUPING(key, tracked) AS key_rolled, GROUPING(day) AS day_rolled, key, tracked, day::text AS day,
               count(*) AS orders,
               count(*) FILTER (WHERE tracked) AS tracked_orders,
               count(*) FILTER (WHERE live) AS live_orders,

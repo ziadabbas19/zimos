@@ -57,7 +57,7 @@ const ORDERS_CTE = `
          (o.cancelled_at IS NOT NULL) AS merchant_cancelled,
          (o.cancelled_at IS NULL AND o.confirmation_state <> 'rejected') AS live,
          ${STAGE_SQL} AS stage,
-         to_char(o.created_at AT TIME ZONE :tz, 'YYYY-MM-DD') AS day
+         (o.created_at AT TIME ZONE :tz)::date AS day
     FROM orders o${LATEST_SHIPMENT_JOIN}
    WHERE o.workspace_id = :workspaceId
      AND o.created_at >= :start AND o.created_at < :end
@@ -66,10 +66,10 @@ const ORDERS_CTE = `
 /** Every number of one window: one row per day plus the window's total row. */
 async function collectWindow(workspaceId, { start, end }, tz) {
   const replacements = { workspaceId, start, end, tz, shippedStages: SHIPPED_STAGES };
-  const [orderRows, [customers], eventRows] = await Promise.all([
+  const [orderRows, [customers], sessionRows, [purchases]] = await Promise.all([
     run(
       `WITH ord AS (${ORDERS_CTE})
-       SELECT GROUPING(day) AS is_total, day,
+       SELECT GROUPING(day) AS is_total, day::text AS day,
               count(*) AS orders,
               count(*) FILTER (WHERE live) AS live_orders,
               count(*) FILTER (WHERE NOT live) AS cancelled,
@@ -99,26 +99,34 @@ async function collectWindow(workspaceId, { start, end }, tz) {
          ) f ON TRUE`,
       replacements
     ),
+    // Sessions per day and in all: each (day, session) pair once, then
+    // counted. Cheaper on millions of events than count(DISTINCT) under
+    // GROUPING SETS, which sorts every event once per grouping.
     run(
-      `WITH ev AS (
-         SELECT coalesce(e.session_id, e.visitor_id) AS sid, e.event_name, e.order_id,
-                to_char(e.created_at AT TIME ZONE :tz, 'YYYY-MM-DD') AS day
+      `WITH pairs AS MATERIALIZED (
+         SELECT (e.created_at AT TIME ZONE :tz)::date AS day, coalesce(e.session_id, e.visitor_id) AS sid
            FROM analytics_events e
           WHERE e.workspace_id = :workspaceId AND e.created_at >= :start AND e.created_at < :end
+          GROUP BY 1, 2
        )
-       SELECT GROUPING(day) AS is_total, day,
-              count(DISTINCT sid) AS sessions,
-              count(DISTINCT order_id) FILTER (WHERE event_name = 'purchase' AND order_id IS NOT NULL) AS purchase_orders,
-              count(*) FILTER (WHERE event_name = 'purchase' AND order_id IS NULL) AS purchases_without_order
-         FROM ev
-        GROUP BY GROUPING SETS ((day), ())`,
+       SELECT day::text AS day, count(*) AS sessions FROM pairs GROUP BY day
+       UNION ALL
+       SELECT NULL, count(*) FROM (SELECT sid FROM pairs GROUP BY sid) s`,
+      replacements
+    ),
+    run(
+      `SELECT count(DISTINCT e.order_id) FILTER (WHERE e.order_id IS NOT NULL) AS purchase_orders,
+              count(*) FILTER (WHERE e.order_id IS NULL) AS purchases_without_order
+         FROM analytics_events e
+        WHERE e.workspace_id = :workspaceId AND e.event_name = 'purchase'
+          AND e.created_at >= :start AND e.created_at < :end`,
       replacements
     ),
   ]);
 
   const isTotal = (row) => Number(row.is_total) === 1;
   const orderTotals = orderRows.find(isTotal) || {};
-  const eventTotals = eventRows.find(isTotal) || {};
+  const sessionTotal = sessionRows.find((row) => row.day === null) || {};
 
   const series = new Map(daysOf({ start, end }, tz).map((date) => [date, { date, orders: 0, sales: 0, sessions: 0 }]));
   const dayRow = (date) => {
@@ -128,13 +136,13 @@ async function collectWindow(workspaceId, { start, end }, tz) {
   for (const row of orderRows.filter((r) => !isTotal(r))) {
     Object.assign(dayRow(row.day), { orders: count(row.orders), sales: minor(row.sales) });
   }
-  for (const row of eventRows.filter((r) => !isTotal(r))) dayRow(row.day).sessions = count(row.sessions);
+  for (const row of sessionRows.filter((r) => r.day !== null)) dayRow(row.day).sessions = count(row.sessions);
 
   // Same rule as analyticsService.getTraffic: orders a purchase event named,
   // or, when none named one, the purchase events themselves.
-  const sessions = count(eventTotals.sessions);
-  const purchaseOrders = count(eventTotals.purchase_orders);
-  const purchases = purchaseOrders > 0 ? purchaseOrders : count(eventTotals.purchases_without_order);
+  const sessions = count(sessionTotal.sessions);
+  const purchaseOrders = count(purchases && purchases.purchase_orders);
+  const purchaseCount = purchaseOrders > 0 ? purchaseOrders : count(purchases && purchases.purchases_without_order);
 
   return {
     metrics: {
@@ -147,7 +155,7 @@ async function collectWindow(workspaceId, { start, end }, tz) {
       deliveryRate: rate(count(orderTotals.delivered), count(orderTotals.shipped)),
       deliveredOrders: count(orderTotals.delivered),
       sessions,
-      conversionRate: rate(purchases, sessions),
+      conversionRate: rate(purchaseCount, sessions),
       newCustomers: count(customers && customers.new_customers),
       returningCustomers: count(customers && customers.returning_customers),
     },
