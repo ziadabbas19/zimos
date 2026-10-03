@@ -874,29 +874,17 @@ async function listOrders(
   workspaceId,
   { limit = 50, cursor, sort: sortKey, confirmationState, financialState, fulfillmentState, stage, q, from, to } = {}
 ) {
-  const conditions = ['o.workspace_id = $workspaceId'];
-  const bind = { workspaceId, limit: limit + 1 };
+  const { conditions, bind } = orderListConditions(workspaceId, {
+    confirmationState,
+    financialState,
+    fulfillmentState,
+    stage,
+    q,
+    from,
+    to,
+  });
+  bind.limit = limit + 1;
   const sort = orderSort(sortKey);
-
-  if (confirmationState) {
-    conditions.push('o.confirmation_state = $confirmationState');
-    bind.confirmationState = confirmationState;
-  }
-  if (financialState) {
-    conditions.push('o.financial_state = $financialState');
-    bind.financialState = financialState;
-  }
-  if (fulfillmentState) {
-    conditions.push('o.fulfillment_state = $fulfillmentState');
-    bind.fulfillmentState = fulfillmentState;
-  }
-  if (stage) {
-    // The same expression the tab counts group by, so a tab's count and the
-    // rows behind the tab can never be two different answers.
-    conditions.push(`${STAGE_SQL} = $stage`);
-    bind.stage = stage;
-  }
-  applySearchAndDates(conditions, bind, { q, from, to });
 
   if (cursor) {
     const anchor = await resolveCursor(workspaceId, cursor);
@@ -922,6 +910,40 @@ async function listOrders(
   const page = rows.slice(0, limit);
   const orders = await hydrateOrders(page);
   return { orders, nextCursor: hasMore ? page[page.length - 1].id : null };
+}
+
+/**
+ * The orders list's filters as SQL conditions over `o` (with the stage join),
+ * shared with the CSV export (orderExportService) so a file and the screen
+ * can never disagree about which orders match. Bind parameters only.
+ */
+function orderListConditions(
+  workspaceId,
+  { confirmationState, financialState, fulfillmentState, stage, q, from, to } = {}
+) {
+  const conditions = ['o.workspace_id = $workspaceId'];
+  const bind = { workspaceId };
+
+  if (confirmationState) {
+    conditions.push('o.confirmation_state = $confirmationState');
+    bind.confirmationState = confirmationState;
+  }
+  if (financialState) {
+    conditions.push('o.financial_state = $financialState');
+    bind.financialState = financialState;
+  }
+  if (fulfillmentState) {
+    conditions.push('o.fulfillment_state = $fulfillmentState');
+    bind.fulfillmentState = fulfillmentState;
+  }
+  if (stage) {
+    // The same expression the tab counts group by, so a tab's count and the
+    // rows behind the tab can never be two different answers.
+    conditions.push(`${STAGE_SQL} = $stage`);
+    bind.stage = stage;
+  }
+  applySearchAndDates(conditions, bind, { q, from, to });
+  return { conditions, bind };
 }
 
 /**
@@ -1139,6 +1161,7 @@ module.exports = {
   addLineToOpenOrder,
   getOrder,
   listOrders,
+  orderListConditions,
   orderPipeline,
   resolveCursor,
   generateOrderNumber,
