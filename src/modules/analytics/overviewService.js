@@ -27,8 +27,8 @@ const { resolveReportRange, previousRange, validTimeZone, daysOf } = require('./
  *   deliveryRate       delivered ÷ orders that left with a courier
  *   sessions           storefront sessions (analytics_events)
  *   conversionRate     tracked purchases ÷ sessions, as on the analytics page
- *   newCustomers       buyers in the window whose customer record started in it
- *   returningCustomers buyers in the window who were already customers
+ *   newCustomers       buyers in the window whose first order ever is in it
+ *   returningCustomers buyers in the window who had ordered before it
  *
  * Rates are percentages with one decimal, or null when there is nothing to
  * divide by — a rate over zero orders is not 0%.
@@ -89,10 +89,14 @@ async function collectWindow(workspaceId, { start, end }, tz) {
     run(
       `WITH ord AS (${ORDERS_CTE}),
             buyers AS (SELECT DISTINCT customer_id FROM ord)
-       SELECT count(*) FILTER (WHERE c.created_at >= :start) AS new_customers,
-              count(*) FILTER (WHERE c.created_at < :start) AS returning_customers
+       SELECT count(*) FILTER (WHERE f.first_at >= :start) AS new_customers,
+              count(*) FILTER (WHERE f.first_at < :start) AS returning_customers
          FROM buyers b
-         JOIN customers c ON c.id = b.customer_id AND c.workspace_id = :workspaceId`,
+         JOIN LATERAL (
+           SELECT min(x.created_at) AS first_at
+             FROM orders x
+            WHERE x.workspace_id = :workspaceId AND x.customer_id = b.customer_id
+         ) f ON TRUE`,
       replacements
     ),
     run(

@@ -45,11 +45,10 @@ async function setup(name = 'Home Store') {
   return { auth, workspace, H, placeOrder, overview };
 }
 
-/** Moves an order (and its customer) back in time, as if placed `daysAgo` days ago. */
+/** Moves an order back in time, as if placed `daysAgo` days ago. */
 async function backdate(order, daysAgo) {
   const at = new Date(Date.now() - daysAgo * DAY_MS);
   await db.sequelize.query('UPDATE orders SET created_at = :at WHERE id = :id', { replacements: { at, id: order.id } });
-  await db.sequelize.query('UPDATE customers SET created_at = :at WHERE id = :id', { replacements: { at, id: order.customerId } });
 }
 
 const window7 = () => {
@@ -153,6 +152,15 @@ describe('GET /analytics/overview — numbers', () => {
     expect(m.newCustomers.value).toBe(1);
     expect(m.returningCustomers.value).toBe(1);
     expect(m.confirmationRate.value).toBe(100);
+    // "New" goes by the first order, not by when the customer record was made:
+    // a record older than the window does not make a first-time buyer returning.
+    await db.sequelize.query('UPDATE customers SET created_at = :at WHERE id = :id', {
+      replacements: { at: new Date(Date.now() - 90 * DAY_MS), id: fresh.customerId },
+    });
+    clearOverviewCache();
+    const again2 = (await ctx.overview(window7())).body.overview.metrics;
+    expect(again2.newCustomers.value).toBe(1);
+    expect(again2.returningCustomers.value).toBe(1);
     expect(m.sessions.value).toBe(2);
     expect(m.conversionRate.value).toBe(50);
     expect(m.deliveryRate.value).toBeNull();
