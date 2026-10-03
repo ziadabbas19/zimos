@@ -38,3 +38,16 @@ const webRealtime = asyncHandler(async (req, res) => {
 });
 
 Object.assign(module.exports, { webStats, webSeries, webMetrics, webWeekly, webRealtime });
+
+// --- Dashboard home and sales by UTM -----------------------------------------
+const overviewService = require('./overviewService');
+const utmReportService = require('./utmReportService');
+
+const overview = asyncHandler(async (req, res) => {
+  res.json({ overview: await overviewService.getOverview(req.tenant.workspaceId, req.query) });
+});
+const utm = asyncHandler(async (req, res) => {
+  res.json({ report: await utmReportService.getUtmReport(req.tenant.workspaceId, req.query) });
+});
+
+Object.assign(module.exports, { overview, utm });

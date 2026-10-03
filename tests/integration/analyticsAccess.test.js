@@ -20,7 +20,7 @@ const { errorHandler } = require('../../src/core/middleware/errorHandler');
 const { MAX_BODY_BYTES } = require('../../src/modules/analytics/eventsPublicRoutes');
 
 const DESKTOP_UA = 'Mozilla/5.0 (X11; Linux x86_64; rv:120.0) Gecko/20100101 Firefox/120.0';
-const STAFF_ENDPOINTS = ['summary', 'funnels', 'web/stats', 'web/series', 'web/metrics?type=path', 'web/weekly', 'web/realtime'];
+const STAFF_ENDPOINTS = ['summary', 'overview', 'utm', 'funnels', 'web/stats', 'web/series', 'web/metrics?type=path', 'web/weekly', 'web/realtime'];
 
 async function setup() {
   const auth = await registerAndActivate();
