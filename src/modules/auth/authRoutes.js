@@ -13,6 +13,7 @@ const {
 } = require('../../core/middleware/rateLimiters');
 const controller = require('./authController');
 const schemas = require('./authValidation');
+const uiPreferences = require('./uiPreferences');
 
 const router = Router();
 
@@ -60,6 +61,11 @@ router.post('/me/phone-change/confirm', validate(schemas.verifyConfirm), ...cont
 router.post('/me/email/send-code', verifyCodeLimiter, authLimiter, validate(schemas.meEmailSend), ...controller.sendEmailCode);
 router.post('/me/email/confirm', verifyCodeLimiter, authLimiter, validate(schemas.verifyConfirm), ...controller.confirmEmailCode);
 router.post('/me/plan', authLimiter, validate(schemas.choosePlan), ...controller.choosePlan);
+// The look of the dashboard (auth/uiPreferences), kept on the account so it
+// follows its owner from one device to another. A save is small, strictly
+// validated and limited per account on a counter of its own.
+router.get('/me/ui-preferences', ...controller.getUiPreferences);
+router.patch('/me/ui-preferences', uiPreferences.bodyLimit, validate(schemas.uiPreferences), ...controller.updateUiPreferences);
 // Per IP per hour on its own key (authLimiter's includes the email sent);
 // the per-account limit is in the database and silent.
 router.post(

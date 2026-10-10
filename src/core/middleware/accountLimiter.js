@@ -23,4 +23,22 @@ const accountLimiter = rateLimit({
   handler: (req, res, next) => next(new RateLimitError()),
 });
 
-module.exports = { ACCOUNT_CHANGES_PER_HOUR, accountLimiter };
+/*
+ * The look of the dashboard saved to the account (auth/uiPreferencesService):
+ * per account in the same way, on a counter of its own. The dashboard saves
+ * as its owner moves a slider (once it rests), which must not use up the
+ * changes above; refused here, the look is only saved a little later.
+ */
+const UI_PREFERENCE_SAVES_PER_HOUR = 120;
+
+const uiPreferencesLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  limit: UI_PREFERENCE_SAVES_PER_HOUR,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: () => env.isTest,
+  keyGenerator: (req) => `ui-preferences:${req.user.id}`,
+  handler: (req, res, next) => next(new RateLimitError()),
+});
+
+module.exports = { ACCOUNT_CHANGES_PER_HOUR, accountLimiter, UI_PREFERENCE_SAVES_PER_HOUR, uiPreferencesLimiter };
