@@ -8,7 +8,8 @@ const env = require('../../config/env');
 const usernameService = require('../users/usernameService');
 const signupPolicy = require('./signupPolicy');
 const accountService = require('./accountService');
-const { accountLimiter } = require('../../core/middleware/accountLimiter');
+const uiPreferencesService = require('./uiPreferencesService');
+const { accountLimiter, uiPreferencesLimiter } = require('../../core/middleware/accountLimiter');
 
 const register = asyncHandler(async (req, res) => {
   const result = await authService.register(req.body, req);
@@ -224,6 +225,26 @@ const changeUsername = [
   }),
 ];
 
+// --- The look of the dashboard, saved to the account (auth/uiPreferencesService):
+// always the signed-in account's own.
+
+// GET /auth/me/ui-preferences — null until the account saves something.
+const getUiPreferences = [
+  authenticate,
+  asyncHandler(async (req, res) => {
+    res.json({ uiPreferences: await uiPreferencesService.read(req.user.id) });
+  }),
+];
+
+// PATCH /auth/me/ui-preferences — the appearance part, whole.
+const updateUiPreferences = [
+  authenticate,
+  uiPreferencesLimiter,
+  asyncHandler(async (req, res) => {
+    res.json({ uiPreferences: await uiPreferencesService.saveAppearance(req.user.id, req.body.appearance) });
+  }),
+];
+
 const requestPasswordReset = asyncHandler(async (req, res) => {
   const result = await authService.requestPasswordReset(req.body.email, { locale: req.body.locale });
   res.json(result);
@@ -301,6 +322,8 @@ module.exports = {
   confirmEmailChange,
   requestPhoneChange,
   confirmPhoneChange,
+  getUiPreferences,
+  updateUiPreferences,
   requestPasswordReset,
   resetPassword,
   requestPhoneVerification,

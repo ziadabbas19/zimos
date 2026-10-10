@@ -4,6 +4,7 @@ const Joi = require('joi');
 const joiEmail = require('../../core/utils/joiEmail');
 const { usernameSchema } = require('../users/username');
 const { normalizePhone } = require('../../core/utils/phone');
+const uiPreferences = require('./uiPreferences');
 
 // The sign-up phone, stored the way every other phone is (core/utils/phone):
 // digits with the country code. Required; what cannot be a mobile number is a
@@ -111,6 +112,9 @@ module.exports = {
       locale: Joi.string().valid('ar', 'en').optional(),
     }),
   },
+  // PATCH /auth/me/ui-preferences — the look of the dashboard. Strict: a key
+  // it does not name is refused, not dropped (auth/uiPreferences).
+  uiPreferences: uiPreferences.schema,
   login: {
     // `identifier` is the email or the username, as typed. `email` is what
     // clients from before usernames send; one of the two is required.
