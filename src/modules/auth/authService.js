@@ -15,6 +15,7 @@ const {
 } = require('../../core/security/tokens');
 const { AppError, AuthenticationError, ConflictError, ValidationError } = require('../../core/errors/AppError');
 const { recordAudit } = require('../audit/auditService');
+const sessionGate = require('../../core/security/sessionGate');
 const notify = require('../notifications/notify');
 const googleClient = require('./googleClient');
 const otpService = require('../otp/otpService');
@@ -25,7 +26,7 @@ const signupPolicy = require('./signupPolicy');
 const siteTraffic = require('../siteAnalytics/siteTrafficService');
 const verificationCodes = require('../otp/verificationCodeService');
 
-const REFRESH_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+const DAY_MS = 24 * 60 * 60 * 1000;
 const EMAIL_VERIFICATION_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 const PASSWORD_RESET_TTL_MS = 30 * 60 * 1000; // 30 minutes
 // Reset emails one account may get; past them a request still answers the
@@ -42,6 +43,16 @@ function issueTokenPair(user, req) {
   }));
 }
 
+/**
+ * How long a session made now lasts (SESSION_TTL_DAYS, 30 unless set). An
+ * account with a platform role gets the console's own length
+ * (SESSION_TTL_DAYS_CONSOLE), in the dashboard too. A refresh makes a new
+ * session, so the count starts again at every refresh.
+ */
+function sessionTtlMs(user) {
+  return (user.platformRole ? env.session.consoleTtlDays : env.session.ttlDays) * DAY_MS;
+}
+
 async function createSession(user, req) {
   const { raw, hash } = generateRefreshToken();
   const session = await db.Session.create({
@@ -49,7 +60,7 @@ async function createSession(user, req) {
     refreshTokenHash: hash,
     userAgent: req ? req.headers['user-agent'] : null,
     ipAddress: req ? clientIp(req) : null,
-    expiresAt: new Date(Date.now() + REFRESH_TOKEN_TTL_MS),
+    expiresAt: new Date(Date.now() + sessionTtlMs(user)),
   });
   return { raw, session };
 }
@@ -418,6 +429,14 @@ async function loginWithGoogle(code, req) {
  * and a fresh raw refresh token is returned. Presenting an already-rotated
  * (revoked) token is treated as a possible theft signal and revokes the
  * entire chain, not just the one session.
+ *
+ * A revoked token is one of two things. Rotated away (its session points at
+ * a successor): it was used twice, as a stolen one would be. Or its session
+ * was ended on purpose (signed out, a password reset, the other devices after
+ * a second-step change) and the device that still holds it is asking. Both
+ * end every session of the account, unless REFRESH_REUSE_ROTATED_ONLY is on:
+ * then the second is refused alone, so a device that was left signed in is
+ * not signed out by another one waking up.
  */
 async function refresh(rawRefreshToken, req) {
   const tokenHash = hashToken(rawRefreshToken);
@@ -428,12 +447,30 @@ async function refresh(rawRefreshToken, req) {
   }
 
   if (session.revokedAt) {
+    const rotated = Boolean(session.rotatedToSessionId);
+    if (!rotated && env.session.reuseRotatedOnly) {
+      throw new AuthenticationError('This session has ended. Sign in again.', 'SESSION_ENDED');
+    }
     // Reuse of a rotated-away token: revoke every session for this user as a
     // precaution against a stolen refresh token being replayed.
-    await db.Session.update(
-      { revokedAt: new Date() },
+    const now = new Date();
+    const [sessionsRevoked] = await db.Session.update(
+      { revokedAt: now },
       { where: { userId: session.userId, revokedAt: null } }
     );
+    // Recorded when it ended something: two tabs refreshing at the same
+    // moment, or a refresh whose answer was lost, look the same as a stolen
+    // token. `tokenEndedSecondsAgo` tells them apart afterwards.
+    if (sessionsRevoked > 0) {
+      await recordAudit({
+        actorUserId: session.userId,
+        action: 'user.refresh_reuse_detected',
+        entityType: 'User',
+        entityId: session.userId,
+        metadata: { sessionsRevoked, rotated, tokenEndedSecondsAgo: Math.round((now - session.revokedAt) / 1000) },
+        req,
+      });
+    }
     throw new AuthenticationError('Refresh token has already been used — all sessions revoked', 'REFRESH_TOKEN_REUSE_DETECTED');
   }
 
@@ -462,10 +499,49 @@ async function logout(rawRefreshToken) {
   return { success: true };
 }
 
+/**
+ * POST /auth/sessions/revoke-all — "sign out of all devices". Every session
+ * of the account ends, the one asking included, and with them what would let
+ * a device back in without the whole sign-in: the browsers remembered for
+ * the second step are forgotten, and a sign-in that passed the password and
+ * waits for its code is closed. The access tokens already out stop with their
+ * sessions (core/security/sessionGate).
+ */
 async function revokeAllSessions(userId, req) {
-  await db.Session.update({ revokedAt: new Date() }, { where: { userId, revokedAt: null } });
-  await recordAudit({ actorUserId: userId, action: 'user.revoke_all_sessions', entityType: 'User', entityId: userId, req });
+  const now = new Date();
+  await db.sequelize.transaction(async (transaction) => {
+    const [sessionsRevoked] = await db.Session.update({ revokedAt: now }, { where: { userId, revokedAt: null }, transaction });
+    const devicesForgotten = await db.TrustedDevice.destroy({ where: { userId }, transaction });
+    const [challengesClosed] = await db.LoginChallenge.update({ consumedAt: now }, { where: { userId, consumedAt: null }, transaction });
+    await recordAudit({
+      actorUserId: userId,
+      action: 'user.revoke_all_sessions',
+      entityType: 'User',
+      entityId: userId,
+      metadata: { sessionsRevoked, devicesForgotten, challengesClosed },
+      req,
+      transaction,
+    });
+  });
+  // The gate's answers were emptied when the rows changed, before the commit:
+  // one asked for in between would stand for its ten seconds.
+  sessionGate.forgetAll();
   return { success: true };
+}
+
+/**
+ * Ends every session of the account except the one this request came on
+ * (its access token's `sid`, followed through any refresh since). For a
+ * change the person just made themselves on this device: it stays signed in,
+ * every other device signs in again. Returns how many ended.
+ */
+async function endOtherSessions(userId, req) {
+  const sid = req && req.authTokenPayload ? req.authTokenPayload.sid : null;
+  const keep = await sessionGate.currentSessionId(sid);
+  const where = { userId, revokedAt: null };
+  if (keep) where.id = { [Op.ne]: keep };
+  const [ended] = await db.Session.update({ revokedAt: new Date() }, { where });
+  return ended;
 }
 
 async function listSessions(userId) {
@@ -756,6 +832,7 @@ module.exports = {
   refresh,
   logout,
   revokeAllSessions,
+  endOtherSessions,
   listSessions,
   requestPasswordReset,
   settlePasswordResets,
