@@ -37,7 +37,7 @@ const CHAIN_SQL = `
       FROM sessions s JOIN chain c ON s.id = c.rotated_to_session_id
      WHERE c.revoked_at IS NOT NULL AND c.depth < ${MAX_CHAIN}
   )
-  SELECT (revoked_at IS NULL AND expires_at > now()) AS active FROM chain ORDER BY depth DESC LIMIT 1`;
+  SELECT id, (revoked_at IS NULL AND expires_at > now()) AS active FROM chain ORDER BY depth DESC LIMIT 1`;
 
 async function isActive(sid) {
   if (!sid) return true;
@@ -48,6 +48,18 @@ async function isActive(sid) {
   if (cache.size >= CACHE_MAX) cache.delete(cache.keys().next().value);
   cache.set(sid, { active, until: Date.now() + CACHE_MS });
   return active;
+}
+
+/**
+ * The session an access token's `sid` stands for now: the live end of its
+ * refresh chain. Null for a token without one, or whose chain has ended.
+ * Read from the database each time: it decides which session a change spares
+ * (authService.endOtherSessions).
+ */
+async function currentSessionId(sid) {
+  if (!sid) return null;
+  const [row] = await db.sequelize.query(CHAIN_SQL, { bind: { sid }, type: QueryTypes.SELECT });
+  return row && row.active ? row.id : null;
 }
 
 function forgetAll() {
@@ -81,4 +93,4 @@ function closeWhenEnded(req, res, sid) {
   req.on('close', () => clearInterval(timer));
 }
 
-module.exports = { isActive, forgetAll, closeWhenEnded, CACHE_MS };
+module.exports = { isActive, currentSessionId, forgetAll, closeWhenEnded, CACHE_MS };

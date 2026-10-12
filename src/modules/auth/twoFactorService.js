@@ -110,17 +110,40 @@ async function assertPassword(user, password) {
   }
 }
 
+/**
+ * TWO_FACTOR_CHANGE_ENDS_SESSIONS: once the second step has been turned on or
+ * off, the account's other sessions end and sign in again under the new
+ * setting; the device that made the change stays signed in. Off (the
+ * default): sessions are left alone.
+ */
+async function endOtherSessionsAfterChange(user, req) {
+  if (!env.session.endOthersOnTwoFactorChange) return;
+  const sessionsEnded = await require('./authService').endOtherSessions(user.id, req);
+  if (sessionsEnded > 0) {
+    await recordAudit({
+      actorUserId: user.id,
+      action: 'user.other_sessions_ended',
+      entityType: 'User',
+      entityId: user.id,
+      metadata: { reason: 'two_factor_change', sessionsEnded },
+      req,
+    });
+  }
+}
+
 async function enableEmail(user, { password }, req) {
   await assertPassword(user, password);
   const row = await settingsRow(user.id);
   await row.update({ mode: 'email', totpSecretSealed: null, pendingSecretSealed: null, enabledAt: new Date() });
   await recordAudit({ actorUserId: user.id, action: 'user.two_factor_enable', entityType: 'User', entityId: user.id, after: { mode: 'email' }, req });
+  await endOtherSessionsAfterChange(user, req);
   return status(user);
 }
 
 async function enableWhatsapp(user, { password }, req) {
   await assertPassword(user, password);
   await require('./twoFactorWhatsapp').enable(user, await settingsRow(user.id), req);
+  await endOtherSessionsAfterChange(user, req);
   return status(user);
 }
 
@@ -150,6 +173,7 @@ async function confirmTotp(user, { code }, req) {
   if (!totpMatches(secret, code)) throw new ValidationError([{ field: 'code', message: 'That code is not correct. Check the time on your phone and try the newest code.' }]);
   await row.update({ mode: 'totp', totpSecretSealed: row.pendingSecretSealed, pendingSecretSealed: null, enabledAt: new Date() });
   await recordAudit({ actorUserId: user.id, action: 'user.two_factor_enable', entityType: 'User', entityId: user.id, after: { mode: 'totp' }, req });
+  await endOtherSessionsAfterChange(user, req);
   return status(user);
 }
 
@@ -159,6 +183,7 @@ async function disable(user, { password }, req) {
   await row.update({ mode: 'off', totpSecretSealed: null, pendingSecretSealed: null, enabledAt: null, backupCodes: [], backupCodesCreatedAt: null });
   await db.TrustedDevice.destroy({ where: { userId: user.id } });
   await recordAudit({ actorUserId: user.id, action: 'user.two_factor_disable', entityType: 'User', entityId: user.id, req });
+  await endOtherSessionsAfterChange(user, req);
   return status(user);
 }
 

@@ -179,10 +179,40 @@ const env = {
 
   // Refresh tokens are random strings stored hashed (core/security/tokens.js),
   // so nothing signs with a refresh secret: JWT_REFRESH_SECRET is not read.
+  // How long one lasts is session.ttlDays below; JWT_REFRESH_EXPIRES_IN was
+  // never read and is gone.
   jwt: {
     accessSecret: jwtAccessSecret,
     accessExpiresIn: process.env.JWT_ACCESS_EXPIRES_IN || '15m',
-    refreshExpiresIn: process.env.JWT_REFRESH_EXPIRES_IN || '30d',
+  },
+
+  // Sign-in sessions (auth/authService).
+  //   ttlDays             SESSION_TTL_DAYS          how long a device stays
+  //                       signed in, in days, counted from its last refresh
+  //                       (every refresh starts the count again)
+  //   consoleTtlDays      SESSION_TTL_DAYS_CONSOLE  the same for an account
+  //                       with a platform role (the console's users), in the
+  //                       dashboard too: the length goes with the account
+  // Each a whole number from 1 to 365; unset or anything else is 30, as
+  // before. A new value reaches a session at its next refresh; a device left
+  // unused keeps the date it already has.
+  //   reuseRotatedOnly    REFRESH_REUSE_ROTATED_ONLY  exactly "true": only a
+  //                       refresh token that was rotated away counts as
+  //                       replayed and ends every session of the account. One
+  //                       whose session was ended on purpose (signed out, a
+  //                       password reset, the other devices after a second-step
+  //                       change) is refused alone. Off: both end every
+  //                       session, as before.
+  //   endOthersOnTwoFactorChange  TWO_FACTOR_CHANGE_ENDS_SESSIONS  exactly
+  //                       "true": turning the second step on or off ends the
+  //                       account's other sessions and keeps the device that
+  //                       did it. Off: sessions are left alone, as before.
+  // Under NODE_ENV=test the two switches start off; a test sets them.
+  session: {
+    ttlDays: intInRange(process.env.SESSION_TTL_DAYS, 30, 1, 365),
+    consoleTtlDays: intInRange(process.env.SESSION_TTL_DAYS_CONSOLE, 30, 1, 365),
+    reuseRotatedOnly: process.env.NODE_ENV !== 'test' && process.env.REFRESH_REUSE_ROTATED_ONLY === 'true',
+    endOthersOnTwoFactorChange: process.env.NODE_ENV !== 'test' && process.env.TWO_FACTOR_CHANGE_ENDS_SESSIONS === 'true',
   },
 
 
