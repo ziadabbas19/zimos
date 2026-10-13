@@ -1,7 +1,7 @@
 'use strict';
 
 const os = require('os');
-const { QueryTypes } = require('sequelize');
+const { QueryTypes, Sequelize, ConnectionError } = require('sequelize');
 const db = require('../../db/models');
 const logger = require('../utils/logger');
 const { QUEUE_NAMES, policyFor, isPermanent } = require('./queues');
@@ -44,6 +44,41 @@ let onceKeys = [];
 let resumableKeys = [];
 let onInterrupted = null;
 const RESUMES = 2;
+
+/*
+ * The control plane — claiming jobs, renewing their locks, taking back stale
+ * ones — on a connection of its own (QUEUE_CONTROL_CONNECTION). On the shared
+ * pool those statements wait behind the jobs themselves: handlers that hold
+ * every connection keep their own heartbeats from landing, and their locks go
+ * stale under live workers. Open between start() and stop() only; without it,
+ * or when it cannot get a connection, the shared pool is used as before.
+ */
+let control = null;
+
+function openControl() {
+  const { config } = db.sequelize;
+  return new Sequelize(config.database, config.username, config.password, {
+    host: config.host,
+    port: config.port,
+    dialect: 'postgres',
+    logging: false,
+    dialectOptions: config.dialectOptions,
+    // One kept open, a second for a heartbeat that lands during a sweep.
+    pool: { max: 2, min: 1, idle: 10000, acquire: 30000 },
+  });
+}
+
+async function controlQuery(sql, options) {
+  if (!control) return db.sequelize.query(sql, options);
+  try {
+    return await control.query(sql, options);
+  } catch (err) {
+    // No connection to send it on, so nothing ran: the shared pool may run it.
+    if (!(err instanceof ConnectionError)) throw err;
+    logger.warn(`[queue] control connection unavailable, using the shared pool: ${err.message}`);
+    return db.sequelize.query(sql, options);
+  }
+}
 
 function configureInterruptions({ once = [], resumable = [], interrupted = null } = {}) {
   onceKeys = [...once];
@@ -90,7 +125,7 @@ function every(name, everyMs, handle) {
 async function claim(limit) {
   const queues = [...handlers.keys()];
   if (queues.length === 0 || limit <= 0) return [];
-  return db.sequelize.query(
+  return controlQuery(
     `UPDATE queue_jobs j
         SET status = 'active', attempts = j.attempts + 1, locked_at = NOW(), locked_by = :worker, updated_at = NOW()
       WHERE j.id IN (
@@ -141,9 +176,9 @@ async function runJob(job) {
   inFlight += 1;
   // The heartbeat: the lock stays fresh while the handler runs, however long.
   const heartbeat = setInterval(() => {
-    db.sequelize
-      .query(`UPDATE queue_jobs SET locked_at = NOW() WHERE ${HELD}`, { replacements: { id: job.id, worker: WORKER_ID }, logging: false })
-      .catch((err) => logger.warn(`[queue] could not renew the lock of job ${job.id}: ${err.message}`));
+    controlQuery(`UPDATE queue_jobs SET locked_at = NOW() WHERE ${HELD}`, { replacements: { id: job.id, worker: WORKER_ID }, logging: false }).catch(
+      (err) => logger.warn(`[queue] could not renew the lock of job ${job.id}: ${err.message}`)
+    );
   }, heartbeatMs());
   try {
     let failure = null;
@@ -174,7 +209,7 @@ async function releaseStale({ force = false } = {}) {
   // their last attempt (a resumable one: RESUMES more), fail; the rest go back
   // in line. A job never goes back in line because it went stale a moment
   // after its `once` neighbours were failed.
-  const swept = await db.sequelize.query(
+  const swept = await controlQuery(
     `WITH stale AS (
        SELECT id, ((queue || '/' || name) IN (:once)
                    OR attempts >= max_attempts + CASE WHEN (queue || '/' || name) IN (:resumable) THEN :resumes ELSE 0 END) AS fail
@@ -275,6 +310,7 @@ async function start(options = {}) {
   pollMs = options.pollMs || pollMs;
   concurrency = options.concurrency || concurrency;
   staleLockMs = options.staleLockMs || staleLockMs;
+  if (options.controlConnection && !control) control = openControl();
   for (const [name, schedule] of schedules) {
     // First run one interval from now; a changed interval takes effect at once.
     await db.sequelize.query(
@@ -300,6 +336,11 @@ async function stop({ timeoutMs = 8000 } = {}) {
   const deadline = Date.now() + timeoutMs;
   while ((inFlight > 0 || runningSchedules.size > 0) && Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  if (control) {
+    const closing = control;
+    control = null;
+    await closing.close().catch((err) => logger.warn(`[queue] could not close the control connection: ${err.message}`));
   }
 }
 

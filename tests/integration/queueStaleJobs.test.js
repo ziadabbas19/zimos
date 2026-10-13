@@ -95,6 +95,41 @@ describe('a long job keeps its lock', () => {
     await until((row) => row.status === 'completed');
     expect(runs).toBe(1);
   });
+
+  it('does the same with the control connection on (QUEUE_CONTROL_CONNECTION)', async () => {
+    let runs = 0;
+    let release;
+    const held = new Promise((resolve) => {
+      release = resolve;
+    });
+    driver.process('io', async () => {
+      runs += 1;
+      await held;
+    });
+    await driver.start({ pollMs: 100, concurrency: 1, staleLockMs: 4000, controlConnection: true });
+    const { id } = await driver.add('io', 'test.long', {});
+
+    const until = async (check, ms = 5000) => {
+      const end = Date.now() + ms;
+      for (;;) {
+        const row = await db.QueueJob.findByPk(id);
+        if (row && check(row)) return row;
+        if (Date.now() > end) throw new Error('timed out');
+        await new Promise((r) => setTimeout(r, 100));
+      }
+    };
+    // Claimed and renewed over the driver's own connection.
+    const first = await until((row) => row.status === 'active' && row.lockedAt);
+    const renewed = await until((row) => row.lockedAt.getTime() > first.lockedAt.getTime() + 500, 4000);
+    expect(renewed.status).toBe('active');
+
+    release();
+    await until((row) => row.status === 'completed');
+    expect(runs).toBe(1);
+    // stop() (afterEach) closes that connection; a second stop is harmless.
+    await driver.stop();
+    await driver.stop();
+  });
 });
 
 describe('an interrupted automatic booking', () => {

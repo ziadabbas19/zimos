@@ -677,6 +677,12 @@ const env = {
     // A running job renews its lock; one not renewed for this long had its
     // worker stop and is taken back (core/queue/postgresDriver). 10 minutes, as before.
     staleLockMs: Math.max(10000, parseInt(process.env.QUEUE_STALE_LOCK_MS || '600000', 10) || 600000),
+    // QUEUE_CONTROL_CONNECTION=true: the worker claims jobs, renews their
+    // locks and takes back stale ones on a database connection of its own (up
+    // to two, outside DB_POOL_MAX), so jobs holding the whole shared pool
+    // cannot keep their own locks from being renewed. Off (the default): those
+    // statements use the shared pool, as before. Never on under NODE_ENV=test.
+    controlConnection: process.env.NODE_ENV !== 'test' && process.env.QUEUE_CONTROL_CONNECTION === 'true',
   },
 
   // Outbound webhooks to merchants' own systems (modules/webhooks).
