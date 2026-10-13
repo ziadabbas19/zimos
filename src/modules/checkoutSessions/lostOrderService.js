@@ -6,6 +6,7 @@ const db = require('../../db/models');
 const { AppError, NotFoundError, ValidationError } = require('../../core/errors/AppError');
 const { add } = require('../../core/utils/money');
 const { normalizePhone } = require('../../core/utils/phone');
+const { csvCell } = require('../../core/utils/csvCell');
 const { isUuid } = require('../../core/utils/workspaceSlug');
 const logger = require('../../core/utils/logger');
 const outbox = require('../../core/outbox/outbox');
@@ -435,13 +436,6 @@ async function remove(workspaceId, sessionId, req) {
     });
     return { success: true };
   });
-}
-
-function csvCell(value) {
-  const text = value === null || value === undefined ? '' : String(value);
-  // A leading = + - @ would run as a formula in a spreadsheet.
-  const safe = /^[=+\-@]/.test(text) ? `'${text}` : text;
-  return /[",\r\n]/.test(safe) ? `"${safe.replace(/"/g, '""')}"` : safe;
 }
 
 /** POST /checkout-sessions/export — the filtered list as CSV (UTF-8 with BOM, opens in Excel). */
