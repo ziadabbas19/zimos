@@ -484,6 +484,33 @@ describe('online checkout', () => {
     expect((await db.Discount.findOne({ where: { code: 'SAVE10' } })).usageCount).toBe(1);
   });
 
+  it('switching to cash on delivery does not redeem a code that ran out meanwhile', async () => {
+    const ctx = await store();
+    await db.Discount.create({ workspaceId: ctx.wid, code: 'ONCE', type: 'fixed', value: 1000, status: 'active', usageLimit: 1 });
+    // Two unpaid orders hold the same single-use code: nothing is redeemed until one completes.
+    const first = await placeOnline(ctx, { extra: { discountCode: 'ONCE' } });
+    const second = await placeOnline(ctx, { extra: { discountCode: 'ONCE' } });
+    expect(await db.DiscountRedemption.count()).toBe(0);
+
+    expect((await shopper(ctx, first.order.id, first.token).cod()).status).toBe(200);
+    expect((await db.Discount.findOne({ where: { code: 'ONCE' } })).usageCount).toBe(1);
+
+    // The second switch is refused and leaves its order exactly as it was.
+    const refused = await shopper(ctx, second.order.id, second.token).cod();
+    expect(refused.status).toBe(422);
+    expect(refused.body.error.code).toBe('DISCOUNT_USAGE_LIMIT_REACHED');
+    const order = await db.Order.findByPk(second.order.id);
+    expect(order.paymentMethod).not.toBe('cod');
+    expect(order.completedAt).toBeNull();
+    expect(await db.ConfirmationTask.count({ where: { orderId: order.id } })).toBe(0);
+    expect(await db.DiscountRedemption.count()).toBe(1);
+    expect((await db.Discount.findOne({ where: { code: 'ONCE' } })).usageCount).toBe(1);
+
+    // Paying for it online still completes it: the shopper was charged the discounted price.
+    await payViaWebhook(ctx, second);
+    expect(await db.DiscountRedemption.count({ where: { orderId: second.order.id } })).toBe(1);
+  });
+
   it('a gateway that will not start the payment still leaves an order the shopper can switch to COD', async () => {
     const ctx = await store();
     paymob.intentionStatus = 500;
