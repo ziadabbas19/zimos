@@ -79,7 +79,7 @@ router.post(
 router.post('/password-reset/confirm', authLimiter, validate(schemas.resetPassword), controller.resetPassword);
 
 // Phone verification (Bearer — the user is signed in right after registering).
-router.post('/verify-phone/request', authLimiter, validate(schemas.verifyPhoneRequest), ...controller.requestPhoneVerification);
+router.post('/verify-phone/request', authIpLimiter, authLimiter, validate(schemas.verifyPhoneRequest), ...controller.requestPhoneVerification);
 router.post('/verify-phone/confirm', authLimiter, validate(schemas.verifyPhoneConfirm), ...controller.confirmPhoneVerification);
 
 // Password reset by SMS (public, enumeration-safe). Closed unless

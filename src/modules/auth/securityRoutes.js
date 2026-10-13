@@ -6,7 +6,7 @@ const asyncHandler = require('express-async-handler');
 const env = require('../../config/env');
 const validate = require('../../core/middleware/validate');
 const { authenticate } = require('../../core/middleware/authenticate');
-const { authLimiter } = require('../../core/middleware/rateLimiters');
+const { authLimiter, authIpLimiter } = require('../../core/middleware/rateLimiters');
 const { AppError } = require('../../core/errors/AppError');
 const authService = require('./authService');
 const twoFactor = require('./twoFactorService');
@@ -51,6 +51,8 @@ const stepOn = (req, res, next) => (env.twoFactor.enabled || env.newDevice.code 
 router.use('/two-factor/backup-codes', settingsOn);
 router.use(require('./twoFactorRecovery').router);
 
+// The settings below that re-check the password also count per IP alone
+// (authIpLimiter): authLimiter's own bucket follows whatever account the body names.
 const password = Joi.string().max(200).allow('', null).optional();
 const code = Joi.string().trim().min(6).max(10).required();
 
@@ -59,6 +61,7 @@ router.get('/two-factor', settingsOn, authenticate, asyncHandler(async (req, res
 router.post(
   '/two-factor/email/enable',
   settingsOn,
+  authIpLimiter,
   authLimiter,
   authenticate,
   validate({ body: Joi.object({ password }) }),
@@ -69,6 +72,7 @@ router.post(
 router.post(
   '/two-factor/whatsapp/enable',
   settingsOn,
+  authIpLimiter,
   authLimiter,
   authenticate,
   validate({ body: Joi.object({ password }) }),
@@ -78,6 +82,7 @@ router.post(
 router.post(
   '/two-factor/totp/setup',
   settingsOn,
+  authIpLimiter,
   authLimiter,
   authenticate,
   validate({ body: Joi.object({ password }) }),
@@ -96,6 +101,7 @@ router.post(
 router.post(
   '/two-factor/disable',
   settingsOn,
+  authIpLimiter,
   authLimiter,
   authenticate,
   validate({ body: Joi.object({ password }) }),
