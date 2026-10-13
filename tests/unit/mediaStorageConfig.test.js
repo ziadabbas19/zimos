@@ -21,6 +21,7 @@ const R2_OK = {
   secretAccessKey: 'sk-never-printed',
   bucketName: 'zimos-media',
   publicUrl: 'https://media.example.com',
+  privateBucketName: '',
 };
 
 afterEach(() => {
@@ -42,7 +43,25 @@ describe('storage settings check', () => {
     env.isProduction = true;
     expect(storageProblems()).toEqual([]);
     expect(publicBaseUrl()).toBe('https://media.example.com');
-    expect(describeStorage()).toBe('r2 (bucket=zimos-media, public=https://media.example.com)');
+    expect(describeStorage()).toBe(
+      'r2 (bucket=zimos-media, private=zimos-media [R2_PRIVATE_BUCKET_NAME not set: private files share the public bucket], public=https://media.example.com)'
+    );
+  });
+
+  it('names the bucket private files are kept in, and says when it is the public one', () => {
+    useR2({ privateBucketName: 'zimos-private' });
+    expect(describeStorage()).toBe('r2 (bucket=zimos-media, private=zimos-private, public=https://media.example.com)');
+    // Naming the media bucket itself separates nothing.
+    useR2({ privateBucketName: 'zimos-media' });
+    expect(describeStorage()).toBe(
+      'r2 (bucket=zimos-media, private=zimos-media [R2_PRIVATE_BUCKET_NAME names the public bucket: private files share the public bucket], public=https://media.example.com)'
+    );
+  });
+
+  it('does not require the private bucket: unset is the shared bucket, as before', () => {
+    useR2({ privateBucketName: '' });
+    env.isProduction = true;
+    expect(storageProblems()).toEqual([]);
   });
 
   it('never prints a secret', () => {
