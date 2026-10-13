@@ -543,6 +543,12 @@ const env = {
     maxAttemptsPerOrder: Math.max(1, parseInt(process.env.PAYMENT_MAX_ATTEMPTS_PER_ORDER || '5', 10) || 5),
     // POST /webhooks/payments/:code/:token, per token per window.
     webhookRateLimitMax: parseInt(process.env.PAYMENT_WEBHOOK_RATE_LIMIT_MAX || '300', 10),
+    // Failed requests (4xx/5xx) one IP may make to that route per window,
+    // whatever tokens it names; past it the IP is refused until the window
+    // ends. 0 or unset is off (no such limit, as before): a gateway's servers
+    // share their addresses across merchants, so pick it with a disconnected
+    // account's retries in mind.
+    webhookFailuresPerIp: limitOrOff('PAYMENT_WEBHOOK_FAILURES_PER_IP'),
     // Extra hosts (comma-separated) a shopper may be sent back to after
     // paying, besides the platform's own subdomains and the store's verified
     // custom domains — e.g. the storefront app's own host.
@@ -723,6 +729,12 @@ const env = {
     credentialsKey: (process.env.CARRIER_CREDENTIALS_KEY || '').trim(),
     // POST /webhooks/carriers/:code/:token, per token per window.
     webhookRateLimitMax: parseInt(process.env.CARRIER_WEBHOOK_RATE_LIMIT_MAX || '300', 10),
+    // Failed requests (4xx/5xx) one IP may make to that route per window,
+    // whatever tokens it names; past it the IP is refused until the window
+    // ends. 0 or unset is off (no such limit, as before): a courier's servers
+    // share their addresses across merchants, so pick it with a disconnected
+    // account's pushes (404) in mind.
+    webhookFailuresPerIp: limitOrOff('CARRIER_WEBHOOK_FAILURES_PER_IP'),
     // Which adapters exist on this server (modules/shipping/carriers/index.js).
     // CARRIERS_ENABLED: for every store (unset: bosta; set but empty: none).
     // CARRIERS_BETA: only for the stores whose slugs are in

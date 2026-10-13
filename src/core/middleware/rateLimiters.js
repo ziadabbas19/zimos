@@ -571,11 +571,47 @@ function carrierWebhookKey(req) {
   return `carrier-webhook:${code.slice(0, 50)}:${sha256(token).toString('hex').slice(0, 32)}`;
 }
 
+/*
+ * The per-token bucket is named by the path, which the caller writes: a new
+ * token in each request is a new bucket, and the general per-IP limit is
+ * skipped for these routes, so nothing bounded one host sending tokens that
+ * do not exist (each a database lookup and a 404). This bucket counts, per IP,
+ * the requests that FAILED (4xx/5xx) and runs before the per-token one. A
+ * courier or gateway answered with a 2xx is never counted, so the per-token
+ * design above is untouched; a 429 from the token bucket is not this caller's
+ * failure either.
+ *
+ * Off while its limit is 0 (CARRIER_WEBHOOK_FAILURES_PER_IP,
+ * PAYMENT_WEBHOOK_FAILURES_PER_IP): a provider's servers share their
+ * addresses across every merchant, so one disconnected account whose pushes
+ * answer 404 spends a budget all of that provider's merchants share. Once
+ * that many have failed, the address is refused until the window ends.
+ */
+function createWebhookFailureLimiter({ prefix, max, windowMs, skip: skipAll = () => false }) {
+  return rateLimit({
+    windowMs,
+    limit: max > 0 ? max : 1,
+    standardHeaders: false,
+    legacyHeaders: false,
+    skip: () => !(max > 0) || skipAll(),
+    skipSuccessfulRequests: true,
+    requestWasSuccessful: (req, res) => res.statusCode < 400 || res.statusCode === 429,
+    keyGenerator: (req) => `${prefix}:${ipKeyGenerator(parseIp(clientIp(req)) || clientIp(req) || 'unknown')}`,
+    handler,
+  });
+}
+
 const carrierWebhookLimiter = [
   (req, res, next) => {
     req.rateLimitScope = 'carrier_webhook';
     next();
   },
+  createWebhookFailureLimiter({
+    prefix: 'carrier-webhook-failed',
+    max: env.carriers.webhookFailuresPerIp,
+    windowMs: env.rateLimit.windowMs,
+    skip,
+  }),
   rateLimit({
     windowMs: env.rateLimit.windowMs,
     limit: env.carriers.webhookRateLimitMax,
@@ -599,6 +635,12 @@ const paymentWebhookLimiter = [
     req.rateLimitScope = 'payment_webhook';
     next();
   },
+  createWebhookFailureLimiter({
+    prefix: 'payment-webhook-failed',
+    max: env.payments.webhookFailuresPerIp,
+    windowMs: env.rateLimit.windowMs,
+    skip,
+  }),
   rateLimit({
     windowMs: env.rateLimit.windowMs,
     limit: env.payments.webhookRateLimitMax,
@@ -652,6 +694,7 @@ module.exports = {
   paymentWebhookLimiter,
   paymentWebhookKey,
   carrierWebhookKey,
+  createWebhookFailureLimiter,
   authLimiter,
   createAuthLimiter,
   storefrontLimiter,
