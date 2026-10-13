@@ -887,7 +887,9 @@ async function addLineToOpenOrder(workspaceId, order, lineInput, { isUpsell = fa
       totalWeightGrams: shipping.weightGrams,
       weightTierSnapshot: shipping.tier,
       weightEstimated: shipping.weightEstimated,
-      shippingSnapshot: shippingSnapshot(shipping),
+      // Over what the order was placed with: the option, the zone, the delivery
+      // estimate and free shipping a code granted stay for the next change.
+      shippingSnapshot: { ...(order.shippingSnapshot || {}), ...shippingSnapshot(shipping) },
     },
     { transaction }
   );
