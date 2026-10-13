@@ -139,15 +139,19 @@ async function claim(limit) {
   );
 }
 
-// Only while this worker still holds the job: one taken back as stale (its
-// lock not renewed for staleLockMs) belongs to the sweep or another worker.
-const HELD = `id = :id AND locked_by = :worker AND status = 'active'`;
+// Only while this run still holds the job: one taken back as stale (its
+// lock not renewed for staleLockMs) belongs to the sweep or to the next run.
+// The attempt number is part of it: every claim adds one, so a run whose job
+// this same process claimed again cannot record its outcome, or renew the
+// lock, over the run that holds it now.
+const HELD = `id = :id AND locked_by = :worker AND status = 'active' AND attempts = :attempts`;
+const holder = (job) => ({ id: job.id, worker: WORKER_ID, attempts: job.attempts });
 
 async function finish(job, err) {
   if (!err) {
     const [, meta] = await db.sequelize.query(
       `UPDATE queue_jobs SET status = 'completed', finished_at = NOW(), locked_at = NULL, locked_by = NULL, last_error = NULL, updated_at = NOW() WHERE ${HELD}`,
-      { replacements: { id: job.id, worker: WORKER_ID } }
+      { replacements: holder(job) }
     );
     if (meta && meta.rowCount === 0) logger.warn(`[queue] ${job.queue}/${job.name} ${job.id} finished after its lock was taken back`);
     return;
@@ -160,13 +164,13 @@ async function finish(job, err) {
     await db.sequelize.query(
       `UPDATE queue_jobs SET status = 'pending', run_at = NOW() + (:delayMs * INTERVAL '1 millisecond'),
               locked_at = NULL, locked_by = NULL, last_error = :message, updated_at = NOW() WHERE ${HELD}`,
-      { replacements: { id: job.id, worker: WORKER_ID, delayMs, message } }
+      { replacements: { ...holder(job), delayMs, message } }
     );
     logger.warn(`[queue] ${job.queue}/${job.name} attempt ${job.attempts} failed, retrying in ${Math.round(delayMs / 1000)}s: ${message}`);
   } else {
     await db.sequelize.query(
       `UPDATE queue_jobs SET status = 'failed', finished_at = NOW(), locked_at = NULL, locked_by = NULL, last_error = :message, updated_at = NOW() WHERE ${HELD}`,
-      { replacements: { id: job.id, worker: WORKER_ID, message } }
+      { replacements: { ...holder(job), message } }
     );
     logger.error(`[queue] ${job.queue}/${job.name} failed for good after ${job.attempts} attempt(s): ${message}`);
   }
@@ -176,7 +180,7 @@ async function runJob(job) {
   inFlight += 1;
   // The heartbeat: the lock stays fresh while the handler runs, however long.
   const heartbeat = setInterval(() => {
-    controlQuery(`UPDATE queue_jobs SET locked_at = NOW() WHERE ${HELD}`, { replacements: { id: job.id, worker: WORKER_ID }, logging: false }).catch(
+    controlQuery(`UPDATE queue_jobs SET locked_at = NOW() WHERE ${HELD}`, { replacements: holder(job), logging: false }).catch(
       (err) => logger.warn(`[queue] could not renew the lock of job ${job.id}: ${err.message}`)
     );
   }, heartbeatMs());
