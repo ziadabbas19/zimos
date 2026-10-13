@@ -1,5 +1,6 @@
 'use strict';
 
+const crypto = require('crypto');
 const { Router } = require('express');
 const Joi = require('joi');
 const asyncHandler = require('express-async-handler');
@@ -89,6 +90,32 @@ function present(experiment, { withPages = false } = {}) {
     })),
     createdAt: experiment.createdAt,
     updatedAt: experiment.updatedAt,
+  };
+}
+
+/**
+ * A test as the audit trail keeps it. A variant's page is what shoppers of a
+ * live funnel are served, and no funnel revision holds it, so the row that
+ * records the change carries the page itself (`withPages`) and a digest of it.
+ * The digest alone names which page a later row is about.
+ */
+function auditView(experiment, { withPages = false } = {}) {
+  return {
+    name: experiment.name,
+    funnelId: experiment.funnelId,
+    stepKey: experiment.stepKey,
+    status: experiment.status,
+    winnerVariantKey: experiment.winnerVariantKey || null,
+    variants: (experiment.variants || []).map((v) => {
+      const page = v.key !== CONTROL_KEY && v.data ? v.data.builderData : null;
+      return {
+        key: v.key,
+        name: v.name || v.key,
+        weight: v.weight,
+        ...(page ? { pageDigest: crypto.createHash('sha256').update(JSON.stringify(page)).digest('hex') } : {}),
+        ...(page && withPages ? { builderData: page } : {}),
+      };
+    }),
   };
 }
 
@@ -200,7 +227,7 @@ async function create(workspaceId, body, req) {
     action: 'split_test.create',
     entityType: 'Experiment',
     entityId: experiment.id,
-    after: { name: experiment.name, funnelId: body.funnelId, stepKey: body.stepKey },
+    after: auditView(experiment, { withPages: true }),
     req,
   });
   return present(experiment, { withPages: true });
@@ -208,7 +235,7 @@ async function create(workspaceId, body, req) {
 
 async function update(workspaceId, id, body, req) {
   const experiment = await load(workspaceId, id);
-  const before = { name: experiment.name, status: experiment.status, winnerVariantKey: experiment.winnerVariantKey };
+  const before = auditView(experiment);
   const patch = {};
   if (body.name !== undefined) patch.name = body.name;
   if (body.autoWinner !== undefined) patch.autoWinner = body.autoWinner;
@@ -230,7 +257,8 @@ async function update(workspaceId, id, body, req) {
     entityType: 'Experiment',
     entityId: experiment.id,
     before,
-    after: { name: experiment.name, status: experiment.status, winnerVariantKey: experiment.winnerVariantKey },
+    // The pages themselves only when this change replaced them.
+    after: auditView(experiment, { withPages: body.variants !== undefined }),
     req,
   });
   return present(experiment, { withPages: true });
@@ -242,6 +270,7 @@ async function chooseWinner(workspaceId, id, variantKey, req) {
   if (!(experiment.variants || []).some((v) => v.key === variantKey)) {
     throw new ValidationError([{ field: 'variantKey', message: `Unknown variant "${variantKey}"` }]);
   }
+  const before = auditView(experiment);
   await experiment.update({ winnerVariantKey: variantKey, status: 'completed' });
   await recordAudit({
     workspaceId,
@@ -249,7 +278,9 @@ async function chooseWinner(workspaceId, id, variantKey, req) {
     action: 'split_test.winner',
     entityType: 'Experiment',
     entityId: experiment.id,
-    after: { winnerVariantKey: variantKey, by: req ? 'merchant' : 'auto' },
+    before: { status: before.status, winnerVariantKey: before.winnerVariantKey },
+    // From now on every visitor is served this variant's page: its digest says which.
+    after: { ...auditView(experiment), by: req ? 'merchant' : 'auto' },
     req,
   });
   return present(experiment);
@@ -265,7 +296,7 @@ async function remove(workspaceId, id, req) {
     action: 'split_test.delete',
     entityType: 'Experiment',
     entityId: id,
-    before: { name: experiment.name },
+    before: auditView(experiment),
     req,
   });
   return { deleted: true, id };
@@ -401,7 +432,11 @@ const schemas = {
   one: { params },
 };
 
-// Mounted at /api/v1/workspaces/:workspaceId/experiments — funnels.manage.
+// Mounted at /api/v1/workspaces/:workspaceId/experiments — funnels.manage to
+// read. A variant's page is served to the shoppers of a live funnel as soon as
+// it is saved, with no publish in between, so every write also takes
+// funnels.publish: starting a test, changing it, picking its winner, deleting it.
+const PUBLISH = requirePermission(PERMISSIONS.FUNNELS_PUBLISH);
 const router = Router({ mergeParams: true });
 router.use(authenticate, resolveTenant, requirePermission(PERMISSIONS.FUNNELS_MANAGE));
 router.get(
@@ -412,6 +447,7 @@ router.get(
 router.post(
   '/',
   validate(schemas.create),
+  PUBLISH,
   asyncHandler(async (req, res) => res.status(201).json({ experiment: await create(req.tenant.workspaceId, req.body, req) }))
 );
 router.get(
@@ -425,6 +461,7 @@ router.get(
 router.patch(
   '/:experimentId',
   validate(schemas.update),
+  PUBLISH,
   asyncHandler(async (req, res) =>
     res.json({ experiment: await update(req.tenant.workspaceId, req.params.experimentId, req.body, req) })
   )
@@ -432,6 +469,7 @@ router.patch(
 router.post(
   '/:experimentId/winner',
   validate(schemas.winner),
+  PUBLISH,
   asyncHandler(async (req, res) =>
     res.json({ experiment: await chooseWinner(req.tenant.workspaceId, req.params.experimentId, req.body.variantKey, req) })
   )
@@ -439,7 +477,8 @@ router.post(
 router.delete(
   '/:experimentId',
   validate(schemas.one),
+  PUBLISH,
   asyncHandler(async (req, res) => res.json(await remove(req.tenant.workspaceId, req.params.experimentId, req)))
 );
 
-module.exports = { router, applyToPayload, recordOrder, results, confidence, SPLIT_TEST_METRICS: METRICS };
+module.exports = { router, applyToPayload, recordOrder, results, confidence, auditView, SPLIT_TEST_METRICS: METRICS };
