@@ -194,10 +194,17 @@ describe('sign out of all devices', () => {
 });
 
 describe('one refresh token presented twice at the same moment', () => {
+  const { Op } = db.Sequelize;
+  const allSessions = (userId) => db.Session.count({ where: { userId } });
+  const rotatedAway = (userId) => db.Session.findAll({ where: { userId, rotatedToSessionId: { [Op.ne]: null } } });
+
   // A race, so several rounds: any round showing two new sessions is the fault.
   it('makes one new session; the other request is a reuse, and no session is left', async () => {
     for (let round = 0; round < 5; round += 1) {
       const laptop = await registerAndActivate();
+      // The account already has the session its sign-up opened beside the
+      // sign-in's (liveSessions, above), so what is there is counted first.
+      const before = await allSessions(laptop.userId);
       const [a, b] = await Promise.all([refresh(laptop.refreshToken), refresh(laptop.refreshToken)]);
       expect([a.status, b.status].sort()).toEqual([200, 401]);
       const refused = a.status === 401 ? a : b;
@@ -206,19 +213,30 @@ describe('one refresh token presented twice at the same moment', () => {
       expect(await liveSessions(laptop.userId)).toBe(0);
       const accepted = a.status === 200 ? a : b;
       expect((await me(accepted.body.accessToken)).status).toBe(401);
-      // One successor exists, and the old session points at it.
-      expect(await db.Session.count({ where: { userId: laptop.userId } })).toBe(2);
+      // One session was made, not two, and the token's own session points at it.
+      expect(await allSessions(laptop.userId)).toBe(before + 1);
+      const rotated = await rotatedAway(laptop.userId);
+      expect(rotated).toHaveLength(1);
+      expect(rotated[0].rotatedToSessionId).toBe(accepted.body.sessionId);
     }
   });
 
   it('on its own, a refresh still rotates as before', async () => {
     const laptop = await registerAndActivate();
+    const sessionsBefore = await allSessions(laptop.userId);
+    const liveBefore = await liveSessions(laptop.userId);
     const rotated = await refresh(laptop.refreshToken);
     expect(rotated.status).toBe(200);
     expect((await me(rotated.body.accessToken)).status).toBe(200);
-    expect(await liveSessions(laptop.userId)).toBe(1);
-    const old = await db.Session.findOne({ where: { userId: laptop.userId, revokedAt: { [db.Sequelize.Op.ne]: null } } });
-    expect(old.rotatedToSessionId).toBe(rotated.body.sessionId);
+
+    // One session ended and one was made in its place: as many live as before,
+    // and the account's other session is left as it was.
+    expect(await allSessions(laptop.userId)).toBe(sessionsBefore + 1);
+    expect(await liveSessions(laptop.userId)).toBe(liveBefore);
+    const ended = await db.Session.findAll({ where: { userId: laptop.userId, revokedAt: { [Op.ne]: null } } });
+    expect(ended).toHaveLength(1);
+    expect(ended[0].rotatedToSessionId).toBe(rotated.body.sessionId);
+    expect((await db.Session.findByPk(rotated.body.sessionId)).revokedAt).toBeNull();
   });
 });
 
