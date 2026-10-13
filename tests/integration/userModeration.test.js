@@ -43,6 +43,25 @@ describe('console user moderation', () => {
     expect(await db.AuditLog.count({ where: { action: 'user.unsuspend' } })).toBe(1);
   });
 
+  it('suspending spends the links already sent to the account, and a sign-in waiting for its code', async () => {
+    const admin = await makePlatformUser('creator');
+    const user = await registerAndActivate();
+    const inAnHour = new Date(Date.now() + 60 * 60 * 1000);
+    await db.VerificationToken.bulkCreate([
+      { userId: user.userId, type: 'email_verification', tokenHash: 'a'.repeat(64), expiresAt: inAnHour },
+      { userId: user.userId, type: 'password_reset', tokenHash: 'b'.repeat(64), expiresAt: inAnHour },
+    ]);
+    const bystander = await registerAndActivate();
+    await db.VerificationToken.create({ userId: bystander.userId, type: 'password_reset', tokenHash: 'c'.repeat(64), expiresAt: inAnHour });
+
+    expect((await post(admin, user.userId, 'suspend', { reason: 'Fraud reports', confirm: true })).status).toBe(200);
+
+    expect(await db.VerificationToken.count({ where: { userId: user.userId, usedAt: null } })).toBe(0);
+    expect(await db.LoginChallenge.count({ where: { userId: user.userId, consumedAt: null } })).toBe(0);
+    // Nobody else's links are touched.
+    expect(await db.VerificationToken.count({ where: { userId: bystander.userId, usedAt: null } })).toBe(1);
+  });
+
   it('wants the confirmation and a reason', async () => {
     const admin = await makePlatformUser('creator');
     const user = await registerAndActivate();

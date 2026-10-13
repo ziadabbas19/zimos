@@ -177,11 +177,17 @@ async function verifyEmail(rawToken) {
     if (!record || record.usedAt || record.expiresAt < new Date()) {
       throw new AppError('INVALID_VERIFICATION_TOKEN', 'Verification token is invalid or expired', 400);
     }
-    const user = await db.User.findByPk(record.userId, { transaction: t });
-    if (!user) {
+    const user = await db.User.findByPk(record.userId, { transaction: t, lock: t.LOCK.UPDATE });
+    if (!user || user.deletedAt) {
       throw new AppError('INVALID_VERIFICATION_TOKEN', 'Verification token is invalid or expired', 400);
     }
-    await user.update({ status: 'active', emailVerifiedAt: new Date() }, { transaction: t });
+    // The link confirms an address; it activates only an account still waiting
+    // for that. A suspended account stays suspended: a link sent before the
+    // suspension must not undo it (the same rule as resetPassword).
+    await user.update(
+      { emailVerifiedAt: new Date(), ...(user.status === 'pending_verification' ? { status: 'active' } : {}) },
+      { transaction: t }
+    );
     await record.update({ usedAt: new Date() }, { transaction: t });
     return user.toSafeJSON();
   });

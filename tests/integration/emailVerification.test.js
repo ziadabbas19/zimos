@@ -89,6 +89,41 @@ describe('POST /auth/verify-email', () => {
     expect(res.status).toBe(400);
     expect(res.body.error.code).toBe('INVALID_VERIFICATION_TOKEN');
   });
+
+  it('does not lift a suspension: a link sent before it confirms the address and nothing else', async () => {
+    const { email, userId, token } = await registerPending();
+    // What the console's suspend writes on the account (userModerationService).
+    await db.User.update({ status: 'suspended', suspendedAt: new Date(), suspendedReason: 'Fraud reports' }, { where: { id: userId } });
+
+    const res = await request(app).post('/api/v1/auth/verify-email').send({ token });
+    expect(res.status).toBe(200);
+    expect(res.body.user.status).toBe('suspended');
+
+    const row = await db.User.findByPk(userId);
+    expect(row.status).toBe('suspended');
+    expect(row.suspendedAt).toBeInstanceOf(Date);
+    expect(row.emailVerifiedAt).toBeInstanceOf(Date);
+
+    const signIn = await request(app).post('/api/v1/auth/login').send({ email, password: 'Passw0rd!123' });
+    expect(signIn.status).toBe(401);
+    expect(signIn.body.error.code).toBe('ACCOUNT_SUSPENDED');
+
+    // The link is spent all the same.
+    const again = await request(app).post('/api/v1/auth/verify-email').send({ token });
+    expect(again.status).toBe(400);
+  });
+
+  it('refuses the link of a deleted account and changes nothing', async () => {
+    const { userId, token } = await registerPending();
+    await db.User.update({ status: 'suspended', deletedAt: new Date() }, { where: { id: userId } });
+
+    const res = await request(app).post('/api/v1/auth/verify-email').send({ token });
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('INVALID_VERIFICATION_TOKEN');
+    const row = await db.User.findByPk(userId);
+    expect(row.status).toBe('suspended');
+    expect(row.emailVerifiedAt).toBeNull();
+  });
 });
 
 describe('POST /auth/resend-verification', () => {
