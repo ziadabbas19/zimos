@@ -71,6 +71,47 @@ describe('analytics — staff access (analytics.view)', () => {
   });
 });
 
+describe('customer lists — phones for roles without customers.reveal_sensitive', () => {
+  it('masks them in the contacts list, the segment preview and the dashboard search; the owner sees them', async () => {
+    const ctx = await setup();
+    await db.Customer.create({
+      workspaceId: ctx.workspace.id,
+      fullName: 'Mona Ali',
+      phoneNormalized: '201012345665',
+      phoneRaw: '01012345665',
+    });
+    const operator = await addMemberWithRole(ctx.auth.accessToken, ctx.workspace.id, 'order_operator', 'Operator');
+    const base = `/api/v1/workspaces/${ctx.workspace.id}`;
+    const as = (token) => ({
+      contacts: () => request(app).get(`${base}/contacts`).set({ Authorization: `Bearer ${token}` }),
+      search: () => request(app).get(`${base}/search?q=01012345665`).set({ Authorization: `Bearer ${token}` }),
+    });
+
+    const list = await as(operator.accessToken).contacts();
+    expect(list.status).toBe(200);
+    expect(list.body.contacts[0].phoneNormalized).toMatch(/\*/);
+    expect(list.body.contacts[0].phoneRaw).toMatch(/\*/);
+    expect(list.body.contacts[0].fullName).toBe('Mona Ali');
+
+    const found = await as(operator.accessToken).search();
+    expect(found.status).toBe(200);
+    expect(found.body.customers[0].phone).toMatch(/\*/);
+
+    const owner = as(ctx.auth.accessToken);
+    expect((await owner.contacts()).body.contacts[0].phoneNormalized).toBe('201012345665');
+    expect((await owner.search()).body.customers[0].phone).toBe('01012345665');
+
+    // The preview of a segment shows a sample of the same rows.
+    const manager = await addMemberWithRole(ctx.auth.accessToken, ctx.workspace.id, 'workspace_manager', 'Mgr');
+    const preview = await request(app)
+      .post(`${base}/contacts/segments/preview`)
+      .set({ Authorization: `Bearer ${manager.accessToken}` })
+      .send({ rules: {} });
+    expect(preview.status).toBe(200);
+    expect(preview.body.sample[0].phoneNormalized).toMatch(/\*/);
+  });
+});
+
 describe('analytics — public event ingest', () => {
   it(`refuses a body over ${MAX_BODY_BYTES} bytes with 413 and stores nothing`, async () => {
     const ctx = await setup();

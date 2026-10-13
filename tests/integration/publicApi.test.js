@@ -176,6 +176,30 @@ describe('API keys', () => {
 });
 
 describe('public orders', () => {
+  it('masks phones in the list unless the key may see them', async () => {
+    const { auth, workspace, variant } = await setupWorkspaceWithProduct({ price: 12550 });
+    await placeOrder(auth.accessToken, workspace.id, variant.id);
+    const listWith = (secret) => request(app).get('/api/v1/public/orders').set(bearer(secret));
+
+    // A manager is shown masked phones in the dashboard; a key they mint is no wider.
+    const manager = await addMemberWithRole(auth.accessToken, workspace.id, 'workspace_manager', 'Store Manager');
+    const managerKey = await mintKey(manager.accessToken, workspace.id, { scopes: ['orders:read'], name: 'Manager key' });
+    const masked = await listWith(managerKey.secret);
+    expect(masked.status).toBe(200);
+    expect(masked.body.orders[0].contact.phone).toMatch(/\*/);
+    expect(masked.body.orders[0].contact.phone).not.toBe('01000003333');
+    expect(masked.body.orders[0].contact.fullName).toBe('API Buyer');
+
+    // The owner's key without the customers scope is masked too: both must allow it.
+    const ordersOnly = await mintKey(auth.accessToken, workspace.id, { scopes: ['orders:read'], name: 'Orders only' });
+    expect((await listWith(ordersOnly.secret)).body.orders[0].contact.phone).toMatch(/\*/);
+
+    // The owner's key with customers:read gets the number as stored.
+    const withCustomers = await mintKey(auth.accessToken, workspace.id, { scopes: ['orders:read', 'customers:read'], name: 'With customers' });
+    const full = await listWith(withCustomers.secret);
+    expect(full.body.orders[0].contact.phone).not.toMatch(/\*/);
+  });
+
   it('lists and reads orders in the documented shape — by id and by the number printed on them', async () => {
     const { auth, workspace, variant } = await setupWorkspaceWithProduct({ price: 12550 });
     const order = await placeOrder(auth.accessToken, workspace.id, variant.id, { qty: 2 });
