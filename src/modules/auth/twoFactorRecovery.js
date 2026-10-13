@@ -7,7 +7,7 @@ const asyncHandler = require('express-async-handler');
 const db = require('../../db/models');
 const validate = require('../../core/middleware/validate');
 const { authenticate } = require('../../core/middleware/authenticate');
-const { authLimiter } = require('../../core/middleware/rateLimiters');
+const { authLimiter, authIpLimiter } = require('../../core/middleware/rateLimiters');
 const { requirePlatformPermission } = require('../../core/middleware/platformAdminGuard');
 const { PLATFORM_PERMISSIONS } = require('../../core/security/platformPermissions');
 const { verifyPassword } = require('../../core/security/password');
@@ -135,6 +135,7 @@ async function adminReset(userId, req) {
 const router = Router();
 router.post(
   '/two-factor/backup-codes',
+  authIpLimiter,
   authLimiter,
   authenticate,
   validate({ body: Joi.object({ password: Joi.string().max(200).allow('', null).optional() }) }),

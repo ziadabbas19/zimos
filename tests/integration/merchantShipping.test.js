@@ -351,6 +351,46 @@ describe('GET/PATCH /shipping/settings', () => {
       .send({ defaultRateAmount: 1 });
     expect(allowed.status).toBe(200);
   });
+
+  it('the store settings PATCH needs shipping.manage for the same keys', async () => {
+    const ctx = await setup();
+    await saveSettings(ctx, { defaultRateAmount: 6000 });
+    const editor = await addMemberWithRole(ctx.token, ctx.ws, 'editor');
+    const asEditor = (body) => request(app).patch(`/api/v1/workspaces/${ctx.ws}`).set(bearer(editor.accessToken)).send(body);
+
+    // Each of the three keys, a null included, and whatever else the request carries.
+    for (const body of [
+      { settings: { free_shipping_threshold_amount: 0 } },
+      { settings: { default_shipping_rate_amount: 0 } },
+      { settings: { default_item_weight_grams: 1 } },
+      { settings: { free_shipping_threshold_amount: null } },
+      { tagline: 'Slipped in', settings: { default_shipping_rate_amount: 1 } },
+    ]) {
+      const denied = await asEditor(body);
+      expect(denied.status).toBe(403);
+    }
+    const row = await db.Workspace.findByPk(ctx.ws);
+    expect(row.settings.default_shipping_rate_amount).toBe(6000);
+    expect(row.settings).not.toHaveProperty('free_shipping_threshold_amount');
+    // The whole request is refused, not only its shipping part.
+    expect(row.tagline).not.toBe('Slipped in');
+    // The next order is still charged the configured rate.
+    const placed = await checkout(ctx, [{ variantId: ctx.variant.id }], CAIRO);
+    expect(Number(placed.body.order.shippingAmount)).toBe(6000);
+
+    // The rest of that PATCH is still an Editor's.
+    expect((await asEditor({ tagline: 'New tagline' })).status).toBe(200);
+
+    // A role that holds shipping.manage reaches these keys through the endpoint that asks for it.
+    const operator = await addMemberWithRole(ctx.token, ctx.ws, 'order_operator', 'Operator');
+    const viaShipping = await request(app)
+      .patch(`/api/v1/workspaces/${ctx.ws}/shipping/settings`)
+      .set(bearer(operator.accessToken))
+      .send({ defaultRateAmount: 7000 });
+    expect(viaShipping.status).toBe(200);
+    // And the owner through either.
+    expect((await ctx.api('patch', '').send({ settings: { default_shipping_rate_amount: 5000 } })).status).toBe(200);
+  });
 });
 
 describe('carrier at fulfilment', () => {

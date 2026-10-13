@@ -54,18 +54,45 @@ const generalLimiter = rateLimit({
   handler,
 });
 
-// Tighter limit for auth endpoints (brute-force protection), keyed by IP + email
-// where available so one IP hammering many accounts and one attacker hammering
-// one account are both throttled.
-const authLimiter = rateLimit({
-  windowMs: env.rateLimit.windowMs,
-  max: env.rateLimit.authMax,
-  standardHeaders: true,
-  legacyHeaders: false,
-  skip,
-  keyGenerator: (req) => `${ipKeyGenerator(clientIp(req))}:${req.body && req.body.email ? req.body.email : ''}`,
-  handler,
-});
+/*
+ * Tighter limit for auth endpoints (brute-force protection), keyed by IP and,
+ * where the request names an account, by IP + that account, so one attacker
+ * hammering one account is throttled apart from the rest of that IP.
+ *
+ * The account is read from the body before validation has run, so it is
+ * treated as untrusted text: `identifier` first, as the sign-in lookup reads
+ * it, else `email`; a string only; cut to 320 characters; trimmed and
+ * lower-cased, as the account lookup is; then hashed. One account is one
+ * bucket however it is spelled, a value of any size costs a fixed-length key,
+ * and anything that is not a string names no bucket of its own — the request
+ * is counted on the IP's.
+ *
+ * The caller still chooses which account to name, so this limit alone does not
+ * bound one IP naming a new account each time: the routes that need that bound
+ * also mount an IP-only limiter (loginIpLimiter, authIpLimiter, below).
+ */
+const AUTH_ACCOUNT_MAX_LENGTH = 320;
+
+function authAccountKey(req) {
+  const named = req.body && (req.body.identifier || req.body.email);
+  if (typeof named !== 'string') return '';
+  const account = named.slice(0, AUTH_ACCOUNT_MAX_LENGTH).trim().toLowerCase();
+  return account ? sha256(account).toString('hex').slice(0, 32) : '';
+}
+
+function createAuthLimiter({ windowMs, max, skip: skipAll = () => false }) {
+  return rateLimit({
+    windowMs,
+    max,
+    standardHeaders: true,
+    legacyHeaders: false,
+    skip: skipAll,
+    keyGenerator: (req) => `${ipKeyGenerator(clientIp(req))}:${authAccountKey(req)}`,
+    handler,
+  });
+}
+
+const authLimiter = createAuthLimiter({ windowMs: env.rateLimit.windowMs, max: env.rateLimit.authMax, skip });
 
 /*
  * Public storefront API (/api/v1/store/*): who counts as one shopper?
@@ -481,8 +508,9 @@ const passwordResetLimiter = createPasswordResetLimiter({ hourMax: env.rateLimit
  *   loginIpLimiter  POST /auth/login, failed attempts only
  *                   (skipSuccessfulRequests: a sign-in that works, or that
  *                   answers with a code step, isn't counted);
- *   authIpLimiter   sign-up, password-reset request and resend-verification,
- *                   every request.
+ *   authIpLimiter   sign-up, password-reset request, resend-verification, a
+ *                   phone-verification code and the two-step settings that
+ *                   re-check the password, every request.
  * Everyone behind one IP (an office, a mobile carrier's NAT) shares them.
  */
 function createAuthIpLimiter({ windowMs, max, failedOnly = false, prefix, skip: skipAll = () => false }) {
@@ -543,11 +571,47 @@ function carrierWebhookKey(req) {
   return `carrier-webhook:${code.slice(0, 50)}:${sha256(token).toString('hex').slice(0, 32)}`;
 }
 
+/*
+ * The per-token bucket is named by the path, which the caller writes: a new
+ * token in each request is a new bucket, and the general per-IP limit is
+ * skipped for these routes, so nothing bounded one host sending tokens that
+ * do not exist (each a database lookup and a 404). This bucket counts, per IP,
+ * the requests that FAILED (4xx/5xx) and runs before the per-token one. A
+ * courier or gateway answered with a 2xx is never counted, so the per-token
+ * design above is untouched; a 429 from the token bucket is not this caller's
+ * failure either.
+ *
+ * Off while its limit is 0 (CARRIER_WEBHOOK_FAILURES_PER_IP,
+ * PAYMENT_WEBHOOK_FAILURES_PER_IP): a provider's servers share their
+ * addresses across every merchant, so one disconnected account whose pushes
+ * answer 404 spends a budget all of that provider's merchants share. Once
+ * that many have failed, the address is refused until the window ends.
+ */
+function createWebhookFailureLimiter({ prefix, max, windowMs, skip: skipAll = () => false }) {
+  return rateLimit({
+    windowMs,
+    limit: max > 0 ? max : 1,
+    standardHeaders: false,
+    legacyHeaders: false,
+    skip: () => !(max > 0) || skipAll(),
+    skipSuccessfulRequests: true,
+    requestWasSuccessful: (req, res) => res.statusCode < 400 || res.statusCode === 429,
+    keyGenerator: (req) => `${prefix}:${ipKeyGenerator(parseIp(clientIp(req)) || clientIp(req) || 'unknown')}`,
+    handler,
+  });
+}
+
 const carrierWebhookLimiter = [
   (req, res, next) => {
     req.rateLimitScope = 'carrier_webhook';
     next();
   },
+  createWebhookFailureLimiter({
+    prefix: 'carrier-webhook-failed',
+    max: env.carriers.webhookFailuresPerIp,
+    windowMs: env.rateLimit.windowMs,
+    skip,
+  }),
   rateLimit({
     windowMs: env.rateLimit.windowMs,
     limit: env.carriers.webhookRateLimitMax,
@@ -571,6 +635,12 @@ const paymentWebhookLimiter = [
     req.rateLimitScope = 'payment_webhook';
     next();
   },
+  createWebhookFailureLimiter({
+    prefix: 'payment-webhook-failed',
+    max: env.payments.webhookFailuresPerIp,
+    windowMs: env.rateLimit.windowMs,
+    skip,
+  }),
   rateLimit({
     windowMs: env.rateLimit.windowMs,
     limit: env.payments.webhookRateLimitMax,
@@ -624,7 +694,9 @@ module.exports = {
   paymentWebhookLimiter,
   paymentWebhookKey,
   carrierWebhookKey,
+  createWebhookFailureLimiter,
   authLimiter,
+  createAuthLimiter,
   storefrontLimiter,
   createStorefrontLimiter,
   trackingLimiter,

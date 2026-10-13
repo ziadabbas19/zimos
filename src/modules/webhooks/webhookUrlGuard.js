@@ -105,12 +105,33 @@ function checkUrl(value, field = 'url', { allowHttp = false, label = 'webhook UR
   return url.toString();
 }
 
+/*
+ * What a caller is told when a hostname cannot be used, whichever happened: it
+ * resolved to a private address, or it did not resolve. This text ends up in
+ * front of the merchant (a delivery log, an import's answer), and told apart
+ * the two would say which internal names exist without one ever being
+ * reached. What happened is on the error (`reason`, `hostname`, `code`), for
+ * this server's own logs; the message is the same and names neither.
+ */
+const UNUSABLE_HOST_MESSAGE = 'This address cannot be used: its hostname does not resolve to a public address';
+
 class BlockedAddressError extends Error {
   constructor(hostname) {
-    super(`${hostname} resolves to a private address; webhooks are only sent to public addresses`);
+    super(UNUSABLE_HOST_MESSAGE);
     this.name = 'BlockedAddressError';
     this.code = 'EWEBHOOKBLOCKED';
+    this.reason = 'private_address';
+    this.hostname = hostname;
   }
+}
+
+/** A name the resolver gave no address for: the same words, its own code. */
+function unresolvedHostError(hostname, cause) {
+  return Object.assign(new Error(UNUSABLE_HOST_MESSAGE), {
+    code: (cause && cause.code) || 'ENOTFOUND',
+    reason: 'unresolved',
+    hostname,
+  });
 }
 
 /**
@@ -123,9 +144,9 @@ function guardedLookup(hostname, options, callback) {
   const opts = typeof options === 'number' ? { family: options } : { ...(options || {}) };
   const wantsAll = Boolean(opts.all);
   dns.lookup(hostname, { ...opts, all: true }, (err, addresses) => {
-    if (err) return callback(err);
+    if (err) return callback(unresolvedHostError(hostname, err));
     const list = addresses || [];
-    if (list.length === 0) return callback(Object.assign(new Error(`No address for ${hostname}`), { code: 'ENOTFOUND' }));
+    if (list.length === 0) return callback(unresolvedHostError(hostname));
     if (!env.webhooks.allowPrivateUrls && list.some((a) => isPrivateAddress(a.address))) {
       return callback(new BlockedAddressError(hostname));
     }
@@ -134,4 +155,4 @@ function guardedLookup(hostname, options, callback) {
   });
 }
 
-module.exports = { checkUrl, isPrivateAddress, guardedLookup, BlockedAddressError };
+module.exports = { checkUrl, isPrivateAddress, guardedLookup, BlockedAddressError, UNUSABLE_HOST_MESSAGE };

@@ -254,6 +254,40 @@ describe('funnel offer merge', () => {
     expect(stored.shippingSnapshot.rule).toBe('free_threshold');
   });
 
+  it('keeps what the order was placed with in its shipping record', async () => {
+    const ctx = await setup();
+    await ctx.api('patch', '').send({ settings: { default_shipping_rate_amount: 5000, free_shipping_threshold_amount: 25000 } });
+    const order = await checkout(ctx);
+    const placedWith = {
+      option: { key: 'express', name: 'Express', amount: 5000 },
+      zone: { id: 'zone-1', name: 'Nasr City', feeAmount: 0, etaMinutes: 40 },
+      etaMinutes: 40,
+      holiday: { shipsFrom: '2026-11-01T00:00:00.000Z', message: 'Back soon' },
+    };
+    const row = await db.Order.findByPk(order.id);
+    await row.update({ shippingSnapshot: { ...row.shippingSnapshot, ...placedWith } });
+
+    const sid = await session(ctx, order.id);
+    await advance(ctx, sid, 'upsell', { type: 'accepted_offer' });
+    const stored = await db.Order.findByPk(order.id);
+    expect(stored.shippingSnapshot).toMatchObject(placedWith);
+    // What the new line changed is recorded over it.
+    expect(stored.shippingSnapshot.rule).toBe('free_threshold');
+  });
+
+  it('keeps free shipping a code granted on the record, for the change after this one', async () => {
+    const ctx = await setup();
+    await ctx.api('patch', '').send({ settings: { default_shipping_rate_amount: 5000 } });
+    const order = await checkout(ctx);
+    const row = await db.Order.findByPk(order.id);
+    await row.update({ shippingSnapshot: { ...row.shippingSnapshot, freeShippingGranted: true } });
+
+    const sid = await session(ctx, order.id);
+    await advance(ctx, sid, 'upsell', { type: 'accepted_offer' });
+    const stored = await db.Order.findByPk(order.id);
+    expect(stored.shippingSnapshot.freeShippingGranted).toBe(true);
+  });
+
   it('moves the parcel to the next weight tier', async () => {
     const ctx = await setup();
     const tiers = (await ctx.api('put', '/shipping/weight-tiers').send({ tiers: [{ upToGrams: 1000 }, { upToGrams: 3000 }] })).body.tiers;

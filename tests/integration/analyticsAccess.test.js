@@ -13,6 +13,7 @@ const {
   registerAndActivate,
   createWorkspace,
   addMemberWithRole,
+  createProductWithVariant,
 } = require('../helpers/factories');
 const db = require('../../src/db/models');
 const { createStorefrontLimiter } = require('../../src/core/middleware/rateLimiters');
@@ -68,6 +69,94 @@ describe('analytics — staff access (analytics.view)', () => {
     const outsider = await registerAndActivate();
     const res = await ctx.get(outsider.accessToken, 'summary');
     expect([403, 404]).toContain(res.status);
+  });
+});
+
+describe('analytics overview — top funnels', () => {
+  it("never shows a funnel of another store, whatever funnel id an order of this store carries", async () => {
+    const ctx = await setup();
+    const H = { Authorization: `Bearer ${ctx.auth.accessToken}` };
+    const { variant } = await createProductWithVariant(ctx.auth.accessToken, ctx.workspace.id, { price: 5000, stock: 5 });
+
+    // Another store's funnel; this store's staff only learned its id.
+    const other = await setup();
+    const foreign = await request(app)
+      .post(`/api/v1/workspaces/${other.workspace.id}/funnels`)
+      .set({ Authorization: `Bearer ${other.auth.accessToken}` })
+      .send({ name: 'VICTIM-ONLY-NAME' });
+    expect(foreign.status).toBe(201);
+    const own = await request(app).post(`/api/v1/workspaces/${ctx.workspace.id}/funnels`).set(H).send({ name: 'Own Funnel' });
+    expect(own.status).toBe(201);
+
+    const order = (funnelId) =>
+      request(app)
+        .post(`/api/v1/workspaces/${ctx.workspace.id}/orders`)
+        .set(H)
+        .set('Idempotency-Key', `ov-${Math.random().toString(36).slice(2)}`)
+        .send({
+          items: [{ variantId: variant.id, quantity: 1 }],
+          contact: { fullName: 'Overview Buyer', phone: '01055500011' },
+          shippingAddress: { country: 'EG', city: 'Cairo', addressLine: '1 Overview St' },
+          paymentMethod: 'cod',
+          funnelId,
+        });
+    const withForeign = await order(foreign.body.funnel.id);
+    expect(withForeign.status).toBe(201);
+    // Whatever the order row kept of that id, the list is built from this store's funnels.
+    await db.Order.update({ funnelId: foreign.body.funnel.id }, { where: { id: withForeign.body.order.id } });
+
+    const res = await ctx.get(ctx.auth.accessToken, 'overview');
+    expect(res.status).toBe(200);
+    expect(res.body.overview.topFunnels).toEqual([]);
+    expect(JSON.stringify(res.body)).not.toContain('VICTIM-ONLY-NAME');
+
+    // An order of one of its own funnels is listed as before.
+    const withOwn = await order(own.body.funnel.id);
+    expect(withOwn.status).toBe(201);
+    await db.Order.update({ funnelId: own.body.funnel.id }, { where: { id: withOwn.body.order.id } });
+    const again = await ctx.get(ctx.auth.accessToken, 'overview');
+    expect(again.body.overview.topFunnels.map((f) => f.name)).toEqual(['Own Funnel']);
+  });
+});
+
+describe('customer lists — phones for roles without customers.reveal_sensitive', () => {
+  it('masks them in the contacts list, the segment preview and the dashboard search; the owner sees them', async () => {
+    const ctx = await setup();
+    await db.Customer.create({
+      workspaceId: ctx.workspace.id,
+      fullName: 'Mona Ali',
+      phoneNormalized: '201012345665',
+      phoneRaw: '01012345665',
+    });
+    const operator = await addMemberWithRole(ctx.auth.accessToken, ctx.workspace.id, 'order_operator', 'Operator');
+    const base = `/api/v1/workspaces/${ctx.workspace.id}`;
+    const as = (token) => ({
+      contacts: () => request(app).get(`${base}/contacts`).set({ Authorization: `Bearer ${token}` }),
+      search: () => request(app).get(`${base}/search?q=01012345665`).set({ Authorization: `Bearer ${token}` }),
+    });
+
+    const list = await as(operator.accessToken).contacts();
+    expect(list.status).toBe(200);
+    expect(list.body.contacts[0].phoneNormalized).toMatch(/\*/);
+    expect(list.body.contacts[0].phoneRaw).toMatch(/\*/);
+    expect(list.body.contacts[0].fullName).toBe('Mona Ali');
+
+    const found = await as(operator.accessToken).search();
+    expect(found.status).toBe(200);
+    expect(found.body.customers[0].phone).toMatch(/\*/);
+
+    const owner = as(ctx.auth.accessToken);
+    expect((await owner.contacts()).body.contacts[0].phoneNormalized).toBe('201012345665');
+    expect((await owner.search()).body.customers[0].phone).toBe('01012345665');
+
+    // The preview of a segment shows a sample of the same rows.
+    const manager = await addMemberWithRole(ctx.auth.accessToken, ctx.workspace.id, 'workspace_manager', 'Mgr');
+    const preview = await request(app)
+      .post(`${base}/contacts/segments/preview`)
+      .set({ Authorization: `Bearer ${manager.accessToken}` })
+      .send({ rules: {} });
+    expect(preview.status).toBe(200);
+    expect(preview.body.sample[0].phoneNormalized).toMatch(/\*/);
   });
 });
 

@@ -57,10 +57,14 @@ function outcomeTags(step, outcome) {
 /**
  * Adds the outcome's tags to the session's customer, in the advance's own
  * transaction. Returns the tags added (empty when none apply).
+ *
+ * The customer is the one behind the order this session holds, never an order
+ * id read from the request: the route is public, and an id sent with a button
+ * press would tag whoever that order belongs to.
  */
 async function tagFromOutcome(workspaceId, step, outcome, session, transaction) {
   const tags = outcomeTags(step, outcome);
-  const orderId = outcome.orderId || session.orderId;
+  const orderId = session.orderId;
   if (tags.length === 0 || !orderId) return [];
   const order = await db.Order.findOne({ where: { id: orderId, workspaceId }, attributes: ['customerId'], transaction });
   if (!order || !order.customerId) return [];

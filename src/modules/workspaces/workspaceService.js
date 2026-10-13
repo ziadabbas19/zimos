@@ -1,6 +1,7 @@
 'use strict';
 
 const crypto = require('crypto');
+const { Op } = require('sequelize');
 const {
   toWorkspaceSlug,
   suffixSlug,
@@ -201,6 +202,9 @@ const MERCHANT_SETTINGS_KEYS = [
   'store_languages',
 ];
 
+// The keys above that price delivery; changing them takes shipping.manage.
+const SHIPPING_SETTINGS_KEYS = ['free_shipping_threshold_amount', 'default_shipping_rate_amount', 'default_item_weight_grams'];
+
 // Nested settings objects, merged a level deeper so a form that toggles one
 // switch cannot blank out the sibling keys it never loaded.
 const MERCHANT_SETTINGS_OBJECT_KEYS = ['checkout_settings', 'fraud_rules'];
@@ -266,6 +270,14 @@ async function updateWorkspace({ workspaceId, patch }, req) {
     ['funnel_upsell_merge', 'funnel_offer_window_minutes'].some((key) => Object.prototype.hasOwnProperty.call(patch.settings, key));
   if (touchesFunnelMerge && !req.tenant.hasPermission(PERMISSIONS.ORDERS_MANAGE)) {
     throw new AuthorizationError('Changing how funnel upsells join orders requires the orders.manage permission');
+  }
+  // What every order is charged for delivery. The shipping settings endpoint
+  // that writes these same keys takes shipping.manage (shipping/shippingRoutes),
+  // so this second way in does too.
+  const touchesShipping =
+    patch.settings && typeof patch.settings === 'object' && SHIPPING_SETTINGS_KEYS.some((key) => Object.prototype.hasOwnProperty.call(patch.settings, key));
+  if (touchesShipping && !req.tenant.hasPermission(PERMISSIONS.SHIPPING_MANAGE)) {
+    throw new AuthorizationError('Changing shipping settings requires the shipping.manage permission');
   }
 
   const before = {
@@ -436,38 +448,76 @@ function assertCanChangeHolder(rolePermissions, req) {
   if ((rolePermissions || []).includes('*')) assertCanGrant(rolePermissions, req);
 }
 
-async function inviteMember({ workspaceId, email, roleId }, req) {
-  const role = await db.Role.findOne({ where: { id: roleId, workspaceId } });
-  if (!role) throw new NotFoundError('Role');
-  assertCanGrant(role.permissions, req);
-
-  const user = await db.User.findOne({ where: { email } });
-
-  if (user) {
-    // An existing account becomes a member at once, so it must have confirmed
-    // its email: a new account is signed in before it does, and anyone can
-    // sign up with an address they don't own.
-    if (!isVerified(user)) {
-      throw new ConflictError(
-        "That person's account hasn't confirmed its email yet. Ask them to confirm it, then invite them again.",
-        'INVITEE_NOT_CONFIRMED'
-      );
-    }
-    const existing = await db.Membership.findOne({ where: { workspaceId, userId: user.id } });
-    if (existing) throw new ConflictError('User is already a member of this workspace', 'ALREADY_MEMBER');
-  } else {
-    const pending = await db.Membership.findOne({ where: { workspaceId, invitedEmail: email } });
-    if (pending) throw new ConflictError('That email already has a pending invite', 'ALREADY_INVITED');
+/**
+ * The acting member as they are now, read under a row lock in the caller's
+ * transaction, as the request's own `req.tenant` (core/middleware/tenantContext)
+ * was built before it: their active membership and the permissions of the
+ * role it names. Who may invite, re-role or define a role is decided on this,
+ * not on the copy the request arrived with — a member demoted or removed a
+ * moment ago must not finish a change that was already in flight.
+ *
+ * `alsoLock` names more memberships of the workspace to lock in the same
+ * statement. Every row is taken in id order, so two members changing each
+ * other at the same moment wait for one another instead of deadlocking.
+ */
+async function actorUnderLock(workspaceId, req, transaction, permission, alsoLock = []) {
+  const rows = await db.Membership.findAll({
+    where: { workspaceId, [Op.or]: [{ userId: req.user.id, status: 'active' }, ...alsoLock] },
+    order: [['id', 'ASC']],
+    transaction,
+    lock: transaction.LOCK.UPDATE,
+  });
+  const membership = rows.find((m) => m.userId === req.user.id && m.status === 'active');
+  const role = membership ? await db.Role.findOne({ where: { id: membership.roleId, workspaceId }, transaction }) : null;
+  const permissions = (role && role.permissions) || [];
+  const hasPermission = (p) => permissions.includes('*') || permissions.includes(p);
+  if (!membership || !hasPermission(permission)) {
+    throw new AuthorizationError(`Missing required permission: ${permission}`);
   }
+  return { rows, actor: { tenant: { workspaceId, membership, role, hasPermission } } };
+}
 
-  const membership = await db.Membership.create({
-    workspaceId,
-    userId: user ? user.id : null,
-    roleId,
-    status: user ? 'active' : 'invited',
-    invitedEmail: user ? null : email,
+async function inviteMember({ workspaceId, email, roleId }, req) {
+  const { membership, role } = await db.sequelize.transaction(async (transaction) => {
+    const { actor } = await actorUnderLock(workspaceId, req, transaction, PERMISSIONS.USERS_MANAGE);
+    const invitedRole = await db.Role.findOne({ where: { id: roleId, workspaceId }, transaction });
+    if (!invitedRole) throw new NotFoundError('Role');
+    assertCanGrant(invitedRole.permissions, actor);
+
+    const user = await db.User.findOne({ where: { email }, transaction });
+
+    if (user) {
+      // An existing account becomes a member at once, so it must have confirmed
+      // its email: a new account is signed in before it does, and anyone can
+      // sign up with an address they don't own.
+      if (!isVerified(user)) {
+        throw new ConflictError(
+          "That person's account hasn't confirmed its email yet. Ask them to confirm it, then invite them again.",
+          'INVITEE_NOT_CONFIRMED'
+        );
+      }
+      const existing = await db.Membership.findOne({ where: { workspaceId, userId: user.id }, transaction });
+      if (existing) throw new ConflictError('User is already a member of this workspace', 'ALREADY_MEMBER');
+    } else {
+      const pending = await db.Membership.findOne({ where: { workspaceId, invitedEmail: email }, transaction });
+      if (pending) throw new ConflictError('That email already has a pending invite', 'ALREADY_INVITED');
+    }
+
+    const created = await db.Membership.create(
+      {
+        workspaceId,
+        userId: user ? user.id : null,
+        roleId,
+        status: user ? 'active' : 'invited',
+        invitedEmail: user ? null : email,
+      },
+      { transaction }
+    );
+    return { membership: created, role: invitedRole };
   });
 
+  // Once the membership exists: no email for an invite that was refused, and
+  // no row lock held while the email is sent.
   const workspace = await db.Workspace.findByPk(workspaceId);
   await sendInviteEmail(workspace, email, role);
 
@@ -483,7 +533,6 @@ async function inviteMember({ workspaceId, email, roleId }, req) {
 
   return membership;
 }
-
 async function listMembers(workspaceId) {
   return db.Membership.findAll({
     where: { workspaceId },
@@ -530,40 +579,52 @@ async function resendInvite({ workspaceId, membershipId }, req) {
 }
 
 async function updateMemberRole({ workspaceId, membershipId, roleId }, req) {
-  const membership = await db.Membership.findOne({ where: { id: membershipId, workspaceId }, include: [{ model: db.Role, as: 'role' }] });
-  if (!membership) throw new NotFoundError('Membership');
+  return db.sequelize.transaction(async (transaction) => {
+    const ownerRole = await db.Role.findOne({ where: { workspaceId, key: 'owner' }, transaction });
+    // The teammate and every Owner are locked with the requester: the count of
+    // Owners below is of rows nobody else can be changing.
+    const { rows, actor } = await actorUnderLock(workspaceId, req, transaction, PERMISSIONS.USERS_MANAGE, [
+      { id: membershipId },
+      ...(ownerRole ? [{ roleId: ownerRole.id, status: 'active' }] : []),
+    ]);
+    // Postgres matches a uuid in any case; compare the canonical form.
+    const membership = rows.find((m) => m.id === String(membershipId).toLowerCase());
+    if (!membership) throw new NotFoundError('Membership');
+    const currentRole = await db.Role.findOne({ where: { id: membership.roleId, workspaceId }, transaction });
 
-  const role = await db.Role.findOne({ where: { id: roleId, workspaceId } });
-  if (!role) throw new NotFoundError('Role');
-  // Both ends: the teammate's current Owner access and the role they get.
-  assertCanChangeHolder(membership.role && membership.role.permissions, req);
-  assertCanGrant(role.permissions, req);
+    const role = await db.Role.findOne({ where: { id: roleId, workspaceId }, transaction });
+    if (!role) throw new NotFoundError('Role');
+    // Both ends: the teammate's current Owner access and the role they get.
+    assertCanChangeHolder(currentRole && currentRole.permissions, actor);
+    assertCanGrant(role.permissions, actor);
 
-  const targetOwnerRole = await db.Role.findOne({ where: { workspaceId, key: 'owner' } });
-  if (membership.roleId === targetOwnerRole.id && role.id !== targetOwnerRole.id) {
-    const ownerCount = await db.Membership.count({ where: { workspaceId, roleId: targetOwnerRole.id, status: 'active' } });
-    if (ownerCount <= 1) {
-      throw new AppError('LAST_OWNER', 'Cannot remove the last Owner of a workspace', 409);
+    if (ownerRole && membership.roleId === ownerRole.id && role.id !== ownerRole.id) {
+      const ownerCount = rows.filter((m) => m.roleId === ownerRole.id && m.status === 'active').length;
+      if (ownerCount <= 1) {
+        throw new AppError('LAST_OWNER', 'Cannot remove the last Owner of a workspace', 409);
+      }
     }
-  }
 
-  const before = { roleId: membership.roleId };
-  await membership.update({ roleId });
+    const before = { roleId: membership.roleId };
+    await membership.update({ roleId }, { transaction });
 
-  await recordAudit({
-    workspaceId,
-    actorUserId: req.user.id,
-    action: 'membership.role_change',
-    entityType: 'Membership',
-    entityId: membership.id,
-    before,
-    after: { roleId },
-    req,
+    await recordAudit({
+      workspaceId,
+      actorUserId: req.user.id,
+      action: 'membership.role_change',
+      entityType: 'Membership',
+      entityId: membership.id,
+      before,
+      after: { roleId },
+      req,
+      transaction,
+    });
+
+    // With the role it now has, as the member list shows it.
+    membership.setDataValue('role', role);
+    return membership;
   });
-
-  return membership;
 }
-
 async function removeMember({ workspaceId, membershipId }, req) {
   const membership = await db.Membership.findOne({ where: { id: membershipId, workspaceId }, include: [{ model: db.Role, as: 'role' }] });
   if (!membership) throw new NotFoundError('Membership');
@@ -598,18 +659,22 @@ async function listRoles(workspaceId) {
 }
 
 async function createCustomRole({ workspaceId, name, key, permissions }, req) {
-  assertCanGrant(permissions, req);
-  const role = await db.Role.create({ workspaceId, key, name, isSystem: false, permissions });
-  await recordAudit({
-    workspaceId,
-    actorUserId: req.user.id,
-    action: 'role.create',
-    entityType: 'Role',
-    entityId: role.id,
-    after: { name, key, permissions },
-    req,
+  return db.sequelize.transaction(async (transaction) => {
+    const { actor } = await actorUnderLock(workspaceId, req, transaction, PERMISSIONS.ROLES_MANAGE);
+    assertCanGrant(permissions, actor);
+    const role = await db.Role.create({ workspaceId, key, name, isSystem: false, permissions }, { transaction });
+    await recordAudit({
+      workspaceId,
+      actorUserId: req.user.id,
+      action: 'role.create',
+      entityType: 'Role',
+      entityId: role.id,
+      after: { name, key, permissions },
+      req,
+      transaction,
+    });
+    return role;
   });
-  return role;
 }
 
 module.exports = {

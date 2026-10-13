@@ -179,34 +179,80 @@ async function auditRoleChange(action, req, user, before, after, transaction) {
 }
 
 /**
+ * Locks every creator plus the target and the requester, in id order, and
+ * re-checks the requester under that lock: someone whose access was changed
+ * a moment ago must not complete a change that was already in flight.
+ * `permission` is the one the route asked of the requester. `anyTarget` is for
+ * a grant, whose target has no role yet and is read whole.
+ */
+async function lockForRoleChange(userId, req, transaction, { permission = PLATFORM_PERMISSIONS.ADMINS_MANAGE, anyTarget = false } = {}) {
+  const rows = await db.User.findAll({
+    where: {
+      [Op.or]: [{ platformRole: PLATFORM_ROLES.CREATOR }, { id: [userId, req.user.id] }],
+    },
+    ...(anyTarget
+      ? {}
+      : { attributes: ['id', 'email', 'fullName', 'status', 'lastLoginAt', 'createdAt', 'deletedAt', 'platformRole', 'platformPermissions'] }),
+    order: [['id', 'ASC']],
+    transaction,
+    lock: transaction.LOCK.UPDATE,
+  });
+
+  const requester = rows.find((u) => u.id === req.user.id);
+  if (!requester || requester.status !== 'active' || requester.deletedAt || !hasPlatformPermission(requester, permission)) {
+    throw new AuthorizationError(`Missing required platform permission: ${permission}`);
+  }
+  const target = rows.find((u) => u.id === userId);
+  if (!target || (!anyTarget && !target.platformRole)) throw new NotFoundError('Platform user');
+  const creators = rows.filter((u) => u.platformRole === PLATFORM_ROLES.CREATOR);
+  return { requester, target, creators };
+}
+
+/**
  * Gives an existing, active account `roleKey` (and `permissions`, else the
  * role's default). Idempotent for the same role: an account that already has
  * it comes back unchanged with `granted: false` and no audit row. An account
  * holding a different role is refused — changing a role is `updateAdmin`.
  *
  * Runs inside the caller's transaction so agent creation (gated by
- * agents.manage rather than admins.manage) can add the agent's first
- * referral code atomically with the role.
+ * agents.manage rather than admins.manage, hence `permission`) can add the
+ * agent's first referral code atomically with the role.
+ *
+ * Who may grant is decided on the requester's row as it is under the lock,
+ * not on the copy the request was authenticated with: a requester whose own
+ * access was revoked a moment ago must not finish a grant already in flight.
+ * Nobody grants a role to their own account.
  */
-async function grantRoleInTransaction({ email, role: roleKey, permissions }, req, transaction) {
+async function grantRoleInTransaction({ email, role: roleKey, permissions }, req, transaction, { permission = PLATFORM_PERMISSIONS.ADMINS_MANAGE } = {}) {
   const role = await findRole(roleKey, transaction);
+  // Answered before the account is looked up, as it always was; decided again
+  // below on the locked row.
   if (role.key === PLATFORM_ROLES.CREATOR) {
     requireCreator(req.user, 'Only a creator can make someone a creator.');
   }
 
-  // users.email is CITEXT, so this match ignores case.
-  const user = await db.User.findOne({
-    where: { email: email.trim() },
-    transaction,
-    lock: transaction.LOCK.UPDATE,
-  });
-  if (!user) {
-    throw new AppError(
+  const notFound = () =>
+    new AppError(
       'USER_NOT_FOUND',
       'No account uses that email. The person has to sign up before they can be given console access.',
       404
     );
+  // users.email is CITEXT, so this match ignores case. Read without a lock,
+  // only to learn which row to lock: the rows are then locked in id order, as
+  // the demote and revoke paths lock them, so a grant cannot deadlock with one.
+  const found = await db.User.findOne({ where: { email: email.trim() }, attributes: ['id'], transaction });
+  if (!found) throw notFound();
+  if (found.id === req.user.id) {
+    throw new ConflictError('You cannot give your own account a role. Ask another creator to do it.', 'CANNOT_ACT_ON_SELF');
   }
+
+  const { requester, target: user } = await lockForRoleChange(found.id, req, transaction, { permission, anyTarget: true });
+  if (role.key === PLATFORM_ROLES.CREATOR) {
+    requireCreator(requester, 'Only a creator can make someone a creator.');
+  }
+  // The address moved to another account between the two reads.
+  if (String(user.email).toLowerCase() !== email.trim().toLowerCase()) throw notFound();
+
   if (user.platformRole === role.key) {
     return { user, granted: false };
   }
@@ -229,7 +275,7 @@ async function grantRoleInTransaction({ email, role: roleKey, permissions }, req
 
   const before = roleAccessState(user);
   await user.update(
-    { platformRole: role.key, platformPermissions: resolvePermissions(role, permissions, req.user) },
+    { platformRole: role.key, platformPermissions: resolvePermissions(role, permissions, requester) },
     { transaction }
   );
   await auditRoleChange('platform_admin.grant', req, user, before, roleAccessState(user), transaction);
@@ -242,33 +288,6 @@ async function grantAdmin(body, req) {
     return { admin: serializeAdmin(user, req.user.id, await roleNameMap(transaction)), granted };
   });
 }
-
-/**
- * Locks every creator plus the target and the requester, in id order, and
- * re-checks the requester under that lock: someone whose access was changed
- * a moment ago must not complete a change that was already in flight.
- */
-async function lockForRoleChange(userId, req, transaction) {
-  const rows = await db.User.findAll({
-    where: {
-      [Op.or]: [{ platformRole: PLATFORM_ROLES.CREATOR }, { id: [userId, req.user.id] }],
-    },
-    attributes: ['id', 'email', 'fullName', 'status', 'lastLoginAt', 'createdAt', 'platformRole', 'platformPermissions'],
-    order: [['id', 'ASC']],
-    transaction,
-    lock: transaction.LOCK.UPDATE,
-  });
-
-  const requester = rows.find((u) => u.id === req.user.id);
-  if (!requester || !hasPlatformPermission(requester, PLATFORM_PERMISSIONS.ADMINS_MANAGE)) {
-    throw new AuthorizationError(`Missing required platform permission: ${PLATFORM_PERMISSIONS.ADMINS_MANAGE}`);
-  }
-  const target = rows.find((u) => u.id === userId);
-  if (!target || !target.platformRole) throw new NotFoundError('Platform user');
-  const creators = rows.filter((u) => u.platformRole === PLATFORM_ROLES.CREATOR);
-  return { requester, target, creators };
-}
-
 async function updateAdmin(userId, { role: roleKey, permissions }, req) {
   if (userId === req.user.id) {
     throw new ConflictError('You cannot change your own role or permissions. Ask another creator to do it.', 'CANNOT_EDIT_SELF');

@@ -6,6 +6,7 @@ const validate = require('../../core/middleware/validate');
 const { authenticate } = require('../../core/middleware/authenticate');
 const { resolveTenant } = require('../../core/middleware/tenantContext');
 const { recordAudit } = require('../audit/auditService');
+const { forViewer } = require('../../core/utils/phoneMask');
 const searchService = require('./searchService');
 const setupGuideService = require('./setupGuideService');
 
@@ -30,7 +31,8 @@ router.get(
   '/search',
   ...member,
   validate({ params, query: Joi.object({ q: Joi.string().trim().max(100).allow('').default('') }) }),
-  asyncHandler(async (req, res) => res.json(await searchService.search(req.tenant, req.query.q)))
+  // Customers' phones are masked for roles without customers.reveal_sensitive, as in the orders list.
+  asyncHandler(async (req, res) => res.json(forViewer(req, await searchService.search(req.tenant, req.query.q))))
 );
 
 router.get(

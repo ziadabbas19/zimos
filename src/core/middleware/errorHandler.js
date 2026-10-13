@@ -2,6 +2,7 @@
 
 const { AppError } = require('../errors/AppError');
 const logger = require('../utils/logger');
+const { redactUrl } = require('../utils/redactUrl');
 const env = require('../../config/env');
 
 const BODY_ERROR_CODES = {
@@ -11,8 +12,10 @@ const BODY_ERROR_CODES = {
   'encoding.unsupported': 'UNSUPPORTED_MEDIA_TYPE',
 };
 
+// The message is logged and answered, so a token in the path or the query
+// (webhook tokens, signed links) is masked the way the request log masks it.
 function notFoundHandler(req, res, next) {
-  next(new AppError('ROUTE_NOT_FOUND', `Cannot ${req.method} ${req.originalUrl}`, 404));
+  next(new AppError('ROUTE_NOT_FOUND', `Cannot ${req.method} ${redactUrl(req.originalUrl)}`, 404));
 }
 
 // eslint-disable-next-line no-unused-vars

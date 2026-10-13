@@ -543,6 +543,12 @@ const env = {
     maxAttemptsPerOrder: Math.max(1, parseInt(process.env.PAYMENT_MAX_ATTEMPTS_PER_ORDER || '5', 10) || 5),
     // POST /webhooks/payments/:code/:token, per token per window.
     webhookRateLimitMax: parseInt(process.env.PAYMENT_WEBHOOK_RATE_LIMIT_MAX || '300', 10),
+    // Failed requests (4xx/5xx) one IP may make to that route per window,
+    // whatever tokens it names; past it the IP is refused until the window
+    // ends. 0 or unset is off (no such limit, as before): a gateway's servers
+    // share their addresses across merchants, so pick it with a disconnected
+    // account's retries in mind.
+    webhookFailuresPerIp: limitOrOff('PAYMENT_WEBHOOK_FAILURES_PER_IP'),
     // Extra hosts (comma-separated) a shopper may be sent back to after
     // paying, besides the platform's own subdomains and the store's verified
     // custom domains — e.g. the storefront app's own host.
@@ -677,6 +683,31 @@ const env = {
     // A running job renews its lock; one not renewed for this long had its
     // worker stop and is taken back (core/queue/postgresDriver). 10 minutes, as before.
     staleLockMs: Math.max(10000, parseInt(process.env.QUEUE_STALE_LOCK_MS || '600000', 10) || 600000),
+    // QUEUE_CONTROL_CONNECTION=true: the worker claims jobs, renews their
+    // locks and takes back stale ones on a database connection of its own (up
+    // to two, outside DB_POOL_MAX), so jobs holding the whole shared pool
+    // cannot keep their own locks from being renewed. Off (the default): those
+    // statements use the shared pool, as before. Never on under NODE_ENV=test.
+    controlConnection: process.env.NODE_ENV !== 'test' && process.env.QUEUE_CONTROL_CONNECTION === 'true',
+  },
+
+  // ALLOW_DEMO_SEED_IN_PRODUCTION=true lets the demo seeder run under
+  // NODE_ENV=production. Off (the default) it refuses there: it creates an
+  // owner account with a public password, and its `down` empties whole tables.
+  // Declared here for the record; the seeder runs under sequelize-cli, outside
+  // this file's boot path, and reads the variable itself (db/seedGuards.js).
+  seed: {
+    allowDemoInProduction: process.env.ALLOW_DEMO_SEED_IN_PRODUCTION === 'true',
+  },
+
+  // PAGE_TREE_STRICT_PROPS=true: a page or funnel-step element whose type has
+  // a rule set (pages/pageTree.js) is refused when it carries a prop the rules
+  // do not name. Off (the default): such a prop is stored unchecked, as
+  // before. The rule sets do not yet list every prop the editor sends, so
+  // turning this on before they do refuses pages the editor saves today.
+  // Under NODE_ENV=test it starts off; a test sets it.
+  pages: {
+    strictProps: process.env.NODE_ENV !== 'test' && process.env.PAGE_TREE_STRICT_PROPS === 'true',
   },
 
   // Outbound webhooks to merchants' own systems (modules/webhooks).
@@ -708,6 +739,12 @@ const env = {
     credentialsKey: (process.env.CARRIER_CREDENTIALS_KEY || '').trim(),
     // POST /webhooks/carriers/:code/:token, per token per window.
     webhookRateLimitMax: parseInt(process.env.CARRIER_WEBHOOK_RATE_LIMIT_MAX || '300', 10),
+    // Failed requests (4xx/5xx) one IP may make to that route per window,
+    // whatever tokens it names; past it the IP is refused until the window
+    // ends. 0 or unset is off (no such limit, as before): a courier's servers
+    // share their addresses across merchants, so pick it with a disconnected
+    // account's pushes (404) in mind.
+    webhookFailuresPerIp: limitOrOff('CARRIER_WEBHOOK_FAILURES_PER_IP'),
     // Which adapters exist on this server (modules/shipping/carriers/index.js).
     // CARRIERS_ENABLED: for every store (unset: bosta; set but empty: none).
     // CARRIERS_BETA: only for the stores whose slugs are in

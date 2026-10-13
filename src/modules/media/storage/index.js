@@ -12,7 +12,11 @@ const R2_VARS = {
   secretAccessKey: 'R2_SECRET_ACCESS_KEY',
   bucketName: 'R2_BUCKET_NAME',
   publicUrl: 'R2_PUBLIC_URL',
+  privateBucketName: 'R2_PRIVATE_BUCKET_NAME',
 };
+// Unset, private objects go to the media bucket (r2Storage.privateBucket), so
+// it is not required: describeStorage() says which of the two is in effect.
+const R2_OPTIONAL = new Set(['privateBucketName']);
 
 // Picks the backend from STORAGE_PROVIDER (already trimmed/lower-cased in
 // env.js). Read here rather than captured once so a runtime override in tests
@@ -61,7 +65,7 @@ function storageProblems() {
 
   if (name === 'r2') {
     const r2 = env.storage.r2;
-    const missing = Object.keys(R2_VARS).filter((k) => !r2[k]);
+    const missing = Object.keys(R2_VARS).filter((k) => !R2_OPTIONAL.has(k) && !r2[k]);
     if (missing.length) problems.push(`STORAGE_PROVIDER=r2 but missing: ${missing.map((k) => R2_VARS[k]).join(', ')}`);
     if (r2.publicUrl) {
       const parsed = parseHttpUrl(r2.publicUrl);
@@ -95,12 +99,19 @@ function storageProblems() {
 }
 
 // One-line summary for the boot log and the admin storage tile: the driver
-// that actually resolved and the public base URL its links use. No secrets.
+// that actually resolved and the public base URL its links use, and for R2
+// the bucket private files are kept in — the media bucket itself, which is
+// public, while R2_PRIVATE_BUCKET_NAME is unset or names it. No secrets.
 function describeStorage() {
   const name = env.storage.provider;
   const base = publicBaseUrl() || '?';
   if (name !== 'r2') return `local (serving /uploads from disk, public=${base})`;
-  return `r2 (bucket=${env.storage.r2.bucketName || '?'}, public=${base})`;
+  const { bucketName, privateBucketName } = env.storage.r2;
+  const separate = Boolean(privateBucketName) && privateBucketName !== bucketName;
+  const privateFiles = separate
+    ? `private=${privateBucketName}`
+    : `private=${bucketName || '?'} [${privateBucketName ? `${R2_VARS.privateBucketName} names the public bucket` : `${R2_VARS.privateBucketName} not set`}: private files share the public bucket]`;
+  return `r2 (bucket=${bucketName || '?'}, ${privateFiles}, public=${base})`;
 }
 
 // Health probe for the ACTIVE backend, for /admin/system/services. Each

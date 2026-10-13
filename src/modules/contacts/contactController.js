@@ -2,10 +2,12 @@
 const asyncHandler = require('express-async-handler');
 const service = require('./contactService');
 const forms = require('./formService');
+const { forViewer } = require('../../core/utils/phoneMask');
 
 const wsId = (req) => req.tenant.workspaceId;
 
-const list = asyncHandler(async (req, res) => res.json(await service.listContacts(wsId(req), req.query)));
+// Phones in a list are masked for roles without customers.reveal_sensitive, as in the orders list.
+const list = asyncHandler(async (req, res) => res.json(forViewer(req, await service.listContacts(wsId(req), req.query))));
 const exportCsv = asyncHandler(async (req, res) => {
   const csv = await service.exportContacts(wsId(req), req.query, req);
   res.set('Content-Type', 'text/csv; charset=utf-8');
@@ -25,7 +27,7 @@ const deleteSegment = asyncHandler(async (req, res) => {
   await service.deleteSegment(wsId(req), req.params.segmentId, req);
   res.status(204).end();
 });
-const previewSegment = asyncHandler(async (req, res) => res.json(await service.previewSegment(wsId(req), req.body.rules)));
+const previewSegment = asyncHandler(async (req, res) => res.json(forViewer(req, await service.previewSegment(wsId(req), req.body.rules))));
 
 const listForms = asyncHandler(async (req, res) => res.json(await forms.listSubmissions(wsId(req), req.query)));
 const markForm = asyncHandler(async (req, res) => res.json({ submission: await forms.markRead(wsId(req), req.params.submissionId, req.body.isRead) }));

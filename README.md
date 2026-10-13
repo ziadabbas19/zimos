@@ -118,8 +118,22 @@ cp .env.example .env        # then set JWT_ACCESS_SECRET and DB_PASSWORD: no def
 createdb zimos_dev
 createdb zimos_test  # only needed to run the test suite
 npm run migrate
-npx sequelize-cli db:seed:all   # optional demo data (demo@zimos.test / DemoPassw0rd!123)
+npx sequelize-cli db:seed:all   # optional, LOCAL DATABASE ONLY — see the warning below
 npm run dev                 # local development — nodemon restarts on any change under src/
+```
+
+**`db:seed:all` is for your own machine. Never run it against a live
+database.** Its first seeder (`20260101000000-demo-data.js`) creates an active,
+verified store owner, `demo@zimos.test`, whose password is written in that
+file — in a public repository, so anyone can sign in as it — and its `down`
+(`db:seed:undo`) empties whole tables, every store's rows included. Under
+`NODE_ENV=production` that seeder refuses to run in either direction unless
+`ALLOW_DEMO_SEED_IN_PRODUCTION=true` is set for the command. A live database
+that needs the default plans or the starter templates gets them by name:
+
+```bash
+npx sequelize-cli db:seed --seed 20260102000000-billing-plans.js
+npx sequelize-cli db:seed --seed 20260103000000-website-templates.js
 ```
 
 For local development use `npm run dev`: it runs the server under **nodemon**
@@ -181,8 +195,12 @@ yet" page rather than a broken store.
 docker compose up --build
 ```
 Runs Postgres + the API, running migrations automatically on boot. Seed data
-is not applied automatically — run
-`docker compose exec api npx sequelize-cli db:seed:all` if you want it.
+is not applied automatically. The container runs with `NODE_ENV=production`,
+where the demo seeder refuses to run (see "Running locally"): load the plans
+and templates by name, e.g.
+`docker compose exec api npx sequelize-cli db:seed --seed 20260102000000-billing-plans.js`.
+For the demo account on this throwaway local database only:
+`docker compose exec -e ALLOW_DEMO_SEED_IN_PRODUCTION=true api npx sequelize-cli db:seed:all`.
 `DB_PASSWORD` and `JWT_ACCESS_SECRET` come from your shell or from `.env`
 next to `docker-compose.yml`; compose refuses to start while either is
 missing, and the API (run with `NODE_ENV=production`) also refuses a

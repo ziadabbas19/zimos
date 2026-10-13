@@ -116,7 +116,12 @@ async function start() {
     driver.every(name, schedule.everyMs, (...args) => requestContext.run({ jobId: `schedule/${name}` }, () => schedule.handle(...args)));
   }
   if (driver.configureInterruptions) driver.configureInterruptions(interruptionSettings());
-  await driver.start({ pollMs: env.queue.pollMs, concurrency: env.queue.concurrency, staleLockMs: env.queue.staleLockMs });
+  await driver.start({
+    pollMs: env.queue.pollMs,
+    concurrency: env.queue.concurrency,
+    staleLockMs: env.queue.staleLockMs,
+    controlConnection: env.queue.controlConnection,
+  });
   logger.info(`Queue worker running on the ${driver.name} driver`, {
     queues: [...used],
     schedules: [...scheduleHandlers.keys()],

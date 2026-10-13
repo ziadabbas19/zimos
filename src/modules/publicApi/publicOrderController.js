@@ -2,6 +2,7 @@
 
 const asyncHandler = require('express-async-handler');
 const service = require('./publicOrderService');
+const { forViewer } = require('../../core/utils/phoneMask');
 
 const wid = (req) => req.tenant.workspaceId;
 
@@ -31,7 +32,9 @@ function listAliases(req, res, next) {
   next();
 }
 
-const list = asyncHandler(async (req, res) => res.json(await service.listOrders(wid(req), req.query)));
+// Phones in the list are masked unless the key may see them: its creator holds
+// customers.reveal_sensitive and the key carries customers:read (as the dashboard list).
+const list = asyncHandler(async (req, res) => res.json(forViewer(req, await service.listOrders(wid(req), req.query))));
 
 const get = asyncHandler(async (req, res) => res.json({ order: await service.getOrder(wid(req), req.params.orderId) }));
 

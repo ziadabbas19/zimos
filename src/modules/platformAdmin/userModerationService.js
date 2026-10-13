@@ -78,6 +78,9 @@ async function revokeSessions(userId, transaction) {
   const [revoked] = await db.Session.update({ revokedAt: now }, { where: { userId, revokedAt: null }, transaction });
   // A sign-in that passed the password and waits for its second step ends too.
   await db.LoginChallenge.update({ consumedAt: now }, { where: { userId, consumedAt: null }, transaction });
+  // So do the links already in the account's inbox: an email-verification or
+  // password-reset link from before must not act on the account afterwards.
+  await db.VerificationToken.update({ usedAt: now }, { where: { userId, usedAt: null }, transaction });
   return revoked;
 }
 

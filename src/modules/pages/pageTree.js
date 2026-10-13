@@ -1,5 +1,6 @@
 'use strict';
 
+const env = require('../../config/env');
 const { ValidationError } = require('../../core/errors/AppError');
 const { validateElementStyle, namedStyleProblems } = require('./elementStyle');
 const showcase = require('./showcaseElements');
@@ -185,9 +186,29 @@ function applyRule(rule, value, field, errors) {
   if (message) errors.push({ field, message: `"${field.split('.').pop()}" ${message}` });
 }
 
+// Props every element may carry, checked elsewhere: `bindings` just below in
+// validateElement, `contactTags` when a funnel reads them (funnels/funnelTags).
+const COMMON_PROPS = new Set(['bindings', 'contactTags']);
+
+/*
+ * The rules name the props a type is known to take, and each named prop is
+ * checked. A prop the rules do not name is left alone, as it always was,
+ * unless PAGE_TREE_STRICT_PROPS is on: then it is refused, the way
+ * elementStyle.js refuses a style key it does not know, so nothing reaches the
+ * storefront that no rule has looked at. That holds for a type with a rule
+ * set, and inside its nested objects; a type with none is still not checked.
+ * The rule sets were written while unknown props passed, so they list what
+ * needed a check, not everything the editor sends: complete them before
+ * turning the switch on.
+ */
 function validateProps(props, rules, field, errors) {
   for (const [key, rule] of Object.entries(rules)) {
     applyRule(rule, props[key], `${field}.${key}`, errors);
+  }
+  if (!env.pages.strictProps) return;
+  for (const key of Object.keys(props)) {
+    if (Object.prototype.hasOwnProperty.call(rules, key) || COMMON_PROPS.has(key)) continue;
+    errors.push({ field: `${field}.${key}`, message: `Unknown prop "${key}"` });
   }
 }
 
@@ -201,6 +222,9 @@ const ELEMENT_PROP_RULES = {
     limit: check.intRange(1, 24),
     productId: check.uuid,
   },
+  // A button's link is an href like any other: no javascript: or data: in it.
+  // Its action, product and variant are added below (builderExtras.extraRules).
+  button: { href: check.url },
   // --- SPEC §9.3 builder elements ---------------------------------------
   text_link: { text: check.string(300), href: check.url, newTab: check.bool },
   tabs: {

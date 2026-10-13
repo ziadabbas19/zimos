@@ -811,7 +811,10 @@ async function switchToCod(workspaceId, orderId, token, req) {
     await db.ConfirmationTask.create({ workspaceId, orderId: locked.id, status: 'queued' }, { transaction });
 
     const context = locked.completionContext || {};
-    await completeOrderInTransaction(locked, { discount: context.discount || null, lateRedemption: true }, transaction);
+    // Nothing was paid, so the code's limit holds here as it does for any COD
+    // order: one that ran out since is a 422 that rolls this switch back and
+    // leaves the order awaiting its online payment.
+    await completeOrderInTransaction(locked, { discount: context.discount || null, lateRedemption: false }, transaction);
 
     await recordAudit({
       workspaceId,
