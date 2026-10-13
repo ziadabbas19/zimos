@@ -201,6 +201,9 @@ const ELEMENT_PROP_RULES = {
     limit: check.intRange(1, 24),
     productId: check.uuid,
   },
+  // A button's link is an href like any other: no javascript: or data: in it.
+  // Its action, product and variant are added below (builderExtras.extraRules).
+  button: { href: check.url },
   // --- SPEC §9.3 builder elements ---------------------------------------
   text_link: { text: check.string(300), href: check.url, newTab: check.bool },
   tabs: {
