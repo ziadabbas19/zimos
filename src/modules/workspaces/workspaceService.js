@@ -201,6 +201,9 @@ const MERCHANT_SETTINGS_KEYS = [
   'store_languages',
 ];
 
+// The keys above that price delivery; changing them takes shipping.manage.
+const SHIPPING_SETTINGS_KEYS = ['free_shipping_threshold_amount', 'default_shipping_rate_amount', 'default_item_weight_grams'];
+
 // Nested settings objects, merged a level deeper so a form that toggles one
 // switch cannot blank out the sibling keys it never loaded.
 const MERCHANT_SETTINGS_OBJECT_KEYS = ['checkout_settings', 'fraud_rules'];
@@ -266,6 +269,14 @@ async function updateWorkspace({ workspaceId, patch }, req) {
     ['funnel_upsell_merge', 'funnel_offer_window_minutes'].some((key) => Object.prototype.hasOwnProperty.call(patch.settings, key));
   if (touchesFunnelMerge && !req.tenant.hasPermission(PERMISSIONS.ORDERS_MANAGE)) {
     throw new AuthorizationError('Changing how funnel upsells join orders requires the orders.manage permission');
+  }
+  // What every order is charged for delivery. The shipping settings endpoint
+  // that writes these same keys takes shipping.manage (shipping/shippingRoutes),
+  // so this second way in does too.
+  const touchesShipping =
+    patch.settings && typeof patch.settings === 'object' && SHIPPING_SETTINGS_KEYS.some((key) => Object.prototype.hasOwnProperty.call(patch.settings, key));
+  if (touchesShipping && !req.tenant.hasPermission(PERMISSIONS.SHIPPING_MANAGE)) {
+    throw new AuthorizationError('Changing shipping settings requires the shipping.manage permission');
   }
 
   const before = {
