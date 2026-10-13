@@ -2,6 +2,7 @@
 
 const crypto = require('crypto');
 const { Op } = require('sequelize');
+const { ipKeyGenerator } = require('express-rate-limit');
 const db = require('../../db/models');
 const env = require('../../config/env');
 const logger = require('../../core/utils/logger');
@@ -776,8 +777,11 @@ async function confirmAccountCode(user, code, req) {
 
 // --- Phone verification (during/after registration) ----------------------
 
-async function requestPhoneVerification(userId, phone) {
-  await otpService.generateAndSendOtp(phone, 'phone_verification');
+// How many codes one account may ask for is counted per account on the route
+// (accountLimiter.phoneVerificationLimiter); the row keeps the asking client.
+async function requestPhoneVerification(userId, phone, req) {
+  const ip = req ? clientIp(req) : null;
+  await otpService.generateAndSendOtp(phone, 'phone_verification', { requestIp: ip ? ipKeyGenerator(ip) : null });
   return { sent: true };
 }
 
@@ -791,6 +795,10 @@ async function confirmPhoneVerification(user, phone, code, req) {
 // --- Password reset by SMS ------------------------------------------------
 
 async function requestPasswordResetSms(phone) {
+  // Before the lookup, so this answer too is the same for every phone.
+  if (!verificationCodes.smsReady()) {
+    throw new AppError('SMS_UNAVAILABLE', 'Codes cannot be sent by SMS right now. Try again later.', 503);
+  }
   const normalized = normalizePhone(phone);
   const user = normalized ? await db.User.findOne({ where: { phone: normalized } }) : null;
   // Enumeration-safe: same response whether or not a verified phone matches.

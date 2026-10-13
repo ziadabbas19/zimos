@@ -9,7 +9,7 @@ const usernameService = require('../users/usernameService');
 const signupPolicy = require('./signupPolicy');
 const accountService = require('./accountService');
 const uiPreferencesService = require('./uiPreferencesService');
-const { accountLimiter, uiPreferencesLimiter } = require('../../core/middleware/accountLimiter');
+const { accountLimiter, uiPreferencesLimiter, phoneVerificationLimiter } = require('../../core/middleware/accountLimiter');
 
 const register = asyncHandler(async (req, res) => {
   const result = await authService.register(req.body, req);
@@ -257,8 +257,10 @@ const resetPassword = asyncHandler(async (req, res) => {
 
 const requestPhoneVerification = [
   authenticateAllowPending,
+  // After authenticate: the budget is the account's, whatever number it names.
+  phoneVerificationLimiter,
   asyncHandler(async (req, res) => {
-    const result = await authService.requestPhoneVerification(req.user.id, req.body.phone);
+    const result = await authService.requestPhoneVerification(req.user.id, req.body.phone, req);
     res.json(result);
   }),
 ];

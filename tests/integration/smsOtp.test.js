@@ -186,4 +186,66 @@ describe('password reset by SMS', () => {
     const newLogin = await request(app).post('/api/v1/auth/login').send({ email, password: 'BrandNewPass!99' });
     expect(newLogin.status).toBe(200);
   });
+
+  it('answers 503 for every phone, known or not, when SMS cannot leave', async () => {
+    const { userId } = await registerAndActivate();
+    await db.User.update({ phone: '201010101010', phoneVerifiedAt: new Date() }, { where: { id: userId } });
+    // A provider with no credentials sends nothing.
+    env.notifications.smsProvider = 'twilio';
+    const twilio = { ...env.notifications.twilio };
+    env.notifications.twilio.accountSid = '';
+    try {
+      const known = await request(app).post('/api/v1/auth/password-reset/sms/request').send({ phone: PHONE });
+      const unknown = await request(app).post('/api/v1/auth/password-reset/sms/request').send({ phone: '01111111111' });
+      expect([known.status, unknown.status]).toEqual([503, 503]);
+      expect(known.body.error.code).toBe('SMS_UNAVAILABLE');
+      expect(unknown.body.error.code).toBe('SMS_UNAVAILABLE');
+      expect(await db.OtpCode.count()).toBe(0);
+    } finally {
+      Object.assign(env.notifications.twilio, twilio);
+    }
+  });
+});
+
+describe('who asked for a phone verification code', () => {
+  async function signedUp() {
+    const reg = await request(app)
+      .post('/api/v1/auth/register')
+      .send({ phone: '01012345678', email: uniqueEmail('otp-ip'), password: 'Passw0rd!123', fullName: 'OTP User' });
+    expect(reg.status).toBe(201);
+    return reg.body.accessToken;
+  }
+
+  it('the code row keeps the client that asked', async () => {
+    const token = await signedUp();
+    const res = await request(app).post('/api/v1/auth/verify-phone/request').set('Authorization', `Bearer ${token}`).send({ phone: PHONE });
+    expect(res.status).toBe(200);
+    const row = await db.OtpCode.findOne({ where: { purpose: 'phone_verification' }, order: [['createdAt', 'DESC']] });
+    expect(row.requestIp).toEqual(expect.any(String));
+    expect(row.requestIp.length).toBeGreaterThan(0);
+  });
+
+  it('answers 503 and stores no code when SMS cannot leave', async () => {
+    const token = await signedUp();
+    env.notifications.smsProvider = 'twilio';
+    const twilio = { ...env.notifications.twilio };
+    env.notifications.twilio.accountSid = '';
+    try {
+      const res = await request(app).post('/api/v1/auth/verify-phone/request').set('Authorization', `Bearer ${token}`).send({ phone: PHONE });
+      expect(res.status).toBe(503);
+      expect(res.body.error.code).toBe('SMS_UNAVAILABLE');
+      expect(await db.OtpCode.count({ where: { purpose: 'phone_verification' } })).toBe(0);
+      expect(smsSpy).not.toHaveBeenCalled();
+    } finally {
+      Object.assign(env.notifications.twilio, twilio);
+    }
+  });
+
+  it('the route counts codes per account, after the account is known', () => {
+    const { phoneVerificationLimiter } = require('../../src/core/middleware/accountLimiter');
+    const { authenticateAllowPending } = require('../../src/core/middleware/authenticate');
+    const controller = require('../../src/modules/auth/authController');
+    const handlers = controller.requestPhoneVerification;
+    expect(handlers.indexOf(phoneVerificationLimiter)).toBeGreaterThan(handlers.indexOf(authenticateAllowPending));
+  });
 });

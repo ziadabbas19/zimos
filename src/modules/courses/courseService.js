@@ -341,6 +341,10 @@ async function studentCustomer(workspaceId, phone) {
 
 /** The answer is the same whether or not the phone has a course. */
 async function portalRequestCode(workspaceId, phone) {
+  // Before the lookup, so this answer too is the same for every phone.
+  if (!require('../otp/verificationCodeService').smsReady()) {
+    throw new AppError('SMS_UNAVAILABLE', 'Codes cannot be sent by SMS right now. Try again later.', 503);
+  }
   const customer = await studentCustomer(workspaceId, phone);
   if (customer) await otpService.generateAndSendOtp(customer.phoneNormalized, OTP_PURPOSE);
   return { sent: true };

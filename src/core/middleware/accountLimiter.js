@@ -41,4 +41,36 @@ const uiPreferencesLimiter = rateLimit({
   handler: (req, res, next) => next(new RateLimitError()),
 });
 
-module.exports = { ACCOUNT_CHANGES_PER_HOUR, accountLimiter, UI_PREFERENCE_SAVES_PER_HOUR, uiPreferencesLimiter };
+/*
+ * Phone-verification codes (POST /auth/verify-phone/request). Each one is an
+ * SMS the platform pays for, to a number the caller types: the per-phone limit
+ * in otp/otpService is spent on that number, so naming a new one each time got
+ * a new allowance. Per account a day, on a counter of its own, whatever
+ * numbers are named; a request that sent nothing (4xx, 5xx) is not counted.
+ */
+const PHONE_VERIFICATION_CODES_PER_DAY = 5;
+
+function createPhoneVerificationLimiter({ max = PHONE_VERIFICATION_CODES_PER_DAY, skip = () => env.isTest } = {}) {
+  return rateLimit({
+    windowMs: 24 * 60 * 60 * 1000,
+    limit: max,
+    standardHeaders: true,
+    legacyHeaders: false,
+    skipFailedRequests: true,
+    skip,
+    keyGenerator: (req) => `phone-verification:${req.user.id}`,
+    handler: (req, res, next) => next(new RateLimitError()),
+  });
+}
+
+const phoneVerificationLimiter = createPhoneVerificationLimiter();
+
+module.exports = {
+  ACCOUNT_CHANGES_PER_HOUR,
+  accountLimiter,
+  UI_PREFERENCE_SAVES_PER_HOUR,
+  uiPreferencesLimiter,
+  PHONE_VERIFICATION_CODES_PER_DAY,
+  phoneVerificationLimiter,
+  createPhoneVerificationLimiter,
+};

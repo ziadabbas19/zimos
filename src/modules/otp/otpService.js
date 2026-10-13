@@ -25,13 +25,22 @@ function sameDigest(a, b) {
   return x.length > 0 && x.length === y.length && crypto.timingSafeEqual(x, y);
 }
 
+// Required when called: verificationCodeService itself requires this module.
+const smsReady = () => require('./verificationCodeService').smsReady();
+
 /**
  * `channel`: 'sms' (default) or 'whatsapp' — the authentication template,
  * with SMS as the fallback when WhatsApp cannot deliver it (as checkoutOtp).
+ * `requestIp`: the client the code was asked for by, kept on the row (as
+ * checkoutOtp keeps it) so these sends show up in per-IP accounting.
  */
-async function generateAndSendOtp(rawPhone, purpose, { channel = 'sms' } = {}) {
+async function generateAndSendOtp(rawPhone, purpose, { channel = 'sms', requestIp = null } = {}) {
   const phone = normalizePhone(rawPhone);
   if (!phone) throw new AppError('INVALID_PHONE', 'A valid phone number is required', 422);
+  // A code that cannot leave is not "sent": the answer the account's other SMS codes give.
+  if (channel === 'sms' && !smsReady()) {
+    throw new AppError('SMS_UNAVAILABLE', 'Codes cannot be sent by SMS right now. Try again later.', 503);
+  }
 
   const recentSends = await db.OtpCode.count({
     where: { phone, createdAt: { [Op.gt]: new Date(Date.now() - SEND_WINDOW_MS) } },
@@ -45,6 +54,7 @@ async function generateAndSendOtp(rawPhone, purpose, { channel = 'sms' } = {}) {
     phone,
     purpose,
     codeHash: hashCode(code),
+    requestIp: requestIp || null,
     expiresAt: new Date(Date.now() + CODE_TTL_MS),
   });
 
