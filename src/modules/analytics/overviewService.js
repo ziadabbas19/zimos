@@ -266,7 +266,9 @@ async function collectBreakdowns({ ORDERS, EVENTS, run }) {
     run(`
       WITH ord AS (${ORDERS})
       SELECT f.id, f.name, count(*) AS orders, coalesce(sum(ord.total_amount), 0) AS sales
-        FROM ord JOIN funnels f ON f.id = ord.funnel_id
+        -- This store's funnels only: an order naming a funnel id of another
+        -- store shows no funnel row (it still counts in the totals above).
+        FROM ord JOIN funnels f ON f.id = ord.funnel_id AND f.workspace_id = :workspaceId
        WHERE ord.live
        GROUP BY f.id, f.name
        ORDER BY sales DESC, orders DESC
@@ -359,4 +361,4 @@ async function getOverview(workspaceId, query = {}) {
   };
 }
 
-module.exports = { getOverview, resolveWindow, collectWindow };
+module.exports = { getOverview, resolveWindow, collectWindow, collectBreakdowns };
