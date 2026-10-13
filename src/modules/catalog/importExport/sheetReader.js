@@ -11,8 +11,15 @@ const zlib = require('zlib');
  */
 
 const MAX_ROWS = 5000;
+// A product sheet has a few dozen columns. Without a bound, what a file costs
+// is not its size: one .xlsx cell placed in a far column makes its row that
+// wide, and every row is then read against every column of the header. A file
+// of a few hundred bytes could take all the memory the process has.
+const MAX_COLUMNS = 500;
 
 class SheetError extends Error {}
+
+const tooManyColumns = () => new SheetError(`The file has more than ${MAX_COLUMNS} columns`);
 
 // ------------------------------------------------------------------- CSV --
 
@@ -48,6 +55,8 @@ function parseCsv(buffer) {
     else if (ch === delimiter) {
       row.push(cell);
       cell = '';
+      // Another cell follows this delimiter.
+      if (row.length >= MAX_COLUMNS) throw tooManyColumns();
     } else if (ch === '\n' || ch === '\r') {
       if (ch === '\r' && text[i + 1] === '\n') i += 1;
       row.push(cell);
@@ -166,11 +175,11 @@ function textOf(xml) {
   return text;
 }
 
-/** "BC12" → zero-based column index. */
+/** "BC12" → zero-based column index. Stops counting once it is past MAX_COLUMNS. */
 function columnIndex(ref) {
   let n = 0;
   for (const ch of ref) {
-    if (ch < 'A' || ch > 'Z') break;
+    if (ch < 'A' || ch > 'Z' || n > MAX_COLUMNS) break;
     n = n * 26 + (ch.charCodeAt(0) - 64);
   }
   return n - 1;
@@ -205,6 +214,8 @@ function parseXlsx(buffer) {
       else if (type === 'inlineStr') value = textOf(body);
       else if (raw !== undefined) value = decodeXml(raw);
       const index = ref ? columnIndex(ref) : row.length;
+      // Before the row is padded out to it.
+      if (index >= MAX_COLUMNS) throw tooManyColumns();
       while (row.length < index) row.push('');
       row[index] = value;
     }
@@ -236,4 +247,4 @@ function readSheet(buffer, filename = '') {
   return { header, rows: out };
 }
 
-module.exports = { readSheet, parseCsv, parseXlsx, SheetError, MAX_ROWS };
+module.exports = { readSheet, parseCsv, parseXlsx, SheetError, MAX_ROWS, MAX_COLUMNS };
