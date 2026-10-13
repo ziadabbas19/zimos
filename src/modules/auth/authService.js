@@ -54,15 +54,21 @@ function sessionTtlMs(user) {
   return (user.platformRole ? env.session.consoleTtlDays : env.session.ttlDays) * DAY_MS;
 }
 
-async function createSession(user, req) {
+// `id` and `transaction` are for a rotation (refresh): the session that
+// replaces another is named before it exists and written with the other's end.
+async function createSession(user, req, { id = null, transaction = null } = {}) {
   const { raw, hash } = generateRefreshToken();
-  const session = await db.Session.create({
-    userId: user.id,
-    refreshTokenHash: hash,
-    userAgent: req ? req.headers['user-agent'] : null,
-    ipAddress: req ? clientIp(req) : null,
-    expiresAt: new Date(Date.now() + sessionTtlMs(user)),
-  });
+  const session = await db.Session.create(
+    {
+      ...(id ? { id } : {}),
+      userId: user.id,
+      refreshTokenHash: hash,
+      userAgent: req ? req.headers['user-agent'] : null,
+      ipAddress: req ? clientIp(req) : null,
+      expiresAt: new Date(Date.now() + sessionTtlMs(user)),
+    },
+    transaction ? { transaction } : {}
+  );
   return { raw, session };
 }
 
@@ -429,6 +435,35 @@ async function loginWithGoogle(code, req) {
   return { user: user.toSafeJSON(), ...tokens };
 }
 
+/** The token of a session that has already ended: always throws. */
+async function refreshTokenReused(session, req) {
+  const rotated = Boolean(session.rotatedToSessionId);
+  if (!rotated && env.session.reuseRotatedOnly) {
+    throw new AuthenticationError('This session has ended. Sign in again.', 'SESSION_ENDED');
+  }
+  // Reuse of a rotated-away token: revoke every session for this user as a
+  // precaution against a stolen refresh token being replayed.
+  const now = new Date();
+  const [sessionsRevoked] = await db.Session.update(
+    { revokedAt: now },
+    { where: { userId: session.userId, revokedAt: null } }
+  );
+  // Recorded when it ended something: two tabs refreshing at the same
+  // moment, or a refresh whose answer was lost, look the same as a stolen
+  // token. `tokenEndedSecondsAgo` tells them apart afterwards.
+  if (sessionsRevoked > 0) {
+    await recordAudit({
+      actorUserId: session.userId,
+      action: 'user.refresh_reuse_detected',
+      entityType: 'User',
+      entityId: session.userId,
+      metadata: { sessionsRevoked, rotated, tokenEndedSecondsAgo: Math.round((now - session.revokedAt) / 1000) },
+      req,
+    });
+  }
+  throw new AuthenticationError('Refresh token has already been used — all sessions revoked', 'REFRESH_TOKEN_REUSE_DETECTED');
+}
+
 /**
  * Refresh-token rotation: the presented raw token must hash-match an active,
  * non-revoked, non-expired Session. On success, that session is revoked and
@@ -453,33 +488,7 @@ async function refresh(rawRefreshToken, req) {
     throw new AuthenticationError('Invalid refresh token', 'INVALID_REFRESH_TOKEN');
   }
 
-  if (session.revokedAt) {
-    const rotated = Boolean(session.rotatedToSessionId);
-    if (!rotated && env.session.reuseRotatedOnly) {
-      throw new AuthenticationError('This session has ended. Sign in again.', 'SESSION_ENDED');
-    }
-    // Reuse of a rotated-away token: revoke every session for this user as a
-    // precaution against a stolen refresh token being replayed.
-    const now = new Date();
-    const [sessionsRevoked] = await db.Session.update(
-      { revokedAt: now },
-      { where: { userId: session.userId, revokedAt: null } }
-    );
-    // Recorded when it ended something: two tabs refreshing at the same
-    // moment, or a refresh whose answer was lost, look the same as a stolen
-    // token. `tokenEndedSecondsAgo` tells them apart afterwards.
-    if (sessionsRevoked > 0) {
-      await recordAudit({
-        actorUserId: session.userId,
-        action: 'user.refresh_reuse_detected',
-        entityType: 'User',
-        entityId: session.userId,
-        metadata: { sessionsRevoked, rotated, tokenEndedSecondsAgo: Math.round((now - session.revokedAt) / 1000) },
-        req,
-      });
-    }
-    throw new AuthenticationError('Refresh token has already been used — all sessions revoked', 'REFRESH_TOKEN_REUSE_DETECTED');
-  }
+  if (session.revokedAt) return refreshTokenReused(session, req);
 
   if (session.expiresAt < new Date()) {
     throw new AuthenticationError('Refresh token has expired', 'REFRESH_TOKEN_EXPIRED');
@@ -490,8 +499,29 @@ async function refresh(rawRefreshToken, req) {
     throw new AuthenticationError('Account is not active', 'ACCOUNT_INACTIVE');
   }
 
-  const { raw, session: newSession } = await createSession(user, req);
-  await session.update({ revokedAt: new Date(), rotatedToSessionId: newSession.id });
+  // One token makes one new session. The old session is ended by a write that
+  // lands only while it is still live, and the new one is written with it or
+  // not at all: of two requests presenting the same token together, the
+  // second waits for the first, finds the session already ended and is a
+  // token presented a second time. Its handling writes and then throws, so it
+  // runs after this transaction, not inside it.
+  const rotation = await db.sequelize.transaction(async (transaction) => {
+    const successorId = crypto.randomUUID();
+    const [ended] = await db.Session.update(
+      { revokedAt: new Date(), rotatedToSessionId: successorId },
+      { where: { id: session.id, revokedAt: null }, transaction }
+    );
+    if (ended !== 1) return null;
+    return createSession(user, req, { id: successorId, transaction });
+  });
+  if (!rotation) {
+    const ended = await db.Session.findByPk(session.id);
+    if (!ended) throw new AuthenticationError('Invalid refresh token', 'INVALID_REFRESH_TOKEN');
+    return refreshTokenReused(ended, req);
+  }
+  // The gate's answers were emptied when the row changed, before the commit.
+  sessionGate.forgetAll();
+  const { raw, session: newSession } = rotation;
 
   const accessToken = signAccessToken({ sub: user.id, sid: newSession.id });
   return { accessToken, refreshToken: raw, sessionId: newSession.id, expiresAt: newSession.expiresAt };

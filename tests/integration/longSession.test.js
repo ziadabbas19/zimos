@@ -193,6 +193,35 @@ describe('sign out of all devices', () => {
   });
 });
 
+describe('one refresh token presented twice at the same moment', () => {
+  // A race, so several rounds: any round showing two new sessions is the fault.
+  it('makes one new session; the other request is a reuse, and no session is left', async () => {
+    for (let round = 0; round < 5; round += 1) {
+      const laptop = await registerAndActivate();
+      const [a, b] = await Promise.all([refresh(laptop.refreshToken), refresh(laptop.refreshToken)]);
+      expect([a.status, b.status].sort()).toEqual([200, 401]);
+      const refused = a.status === 401 ? a : b;
+      expect(refused.body.error.code).toBe('REFRESH_TOKEN_REUSE_DETECTED');
+      // The reuse ended every session, the one just made included.
+      expect(await liveSessions(laptop.userId)).toBe(0);
+      const accepted = a.status === 200 ? a : b;
+      expect((await me(accepted.body.accessToken)).status).toBe(401);
+      // One successor exists, and the old session points at it.
+      expect(await db.Session.count({ where: { userId: laptop.userId } })).toBe(2);
+    }
+  });
+
+  it('on its own, a refresh still rotates as before', async () => {
+    const laptop = await registerAndActivate();
+    const rotated = await refresh(laptop.refreshToken);
+    expect(rotated.status).toBe(200);
+    expect((await me(rotated.body.accessToken)).status).toBe(200);
+    expect(await liveSessions(laptop.userId)).toBe(1);
+    const old = await db.Session.findOne({ where: { userId: laptop.userId, revokedAt: { [db.Sequelize.Op.ne]: null } } });
+    expect(old.rotatedToSessionId).toBe(rotated.body.sessionId);
+  });
+});
+
 describe('a refresh token presented a second time', () => {
   it('rotated away: every session ends and it is recorded once, with what it ended', async () => {
     const laptop = await registerAndActivate();
