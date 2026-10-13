@@ -174,10 +174,26 @@ async function getSettings(workspaceId, funnelId) {
   return resolveSettings(funnel);
 }
 
-async function saveSettings(workspaceId, funnelId, body, req) {
+// The two settings that are scripts. They are not part of what a publish
+// freezes: the public funnel reads them off the funnel row, so a new value is
+// in front of the shoppers of a live funnel, checkout steps included, as soon
+// as it is saved.
+const CODE_SETTINGS = ['headCode', 'bodyCode'];
+
+/**
+ * `codeRefusal`: why this request may not change the funnel's scripts (the
+ * first of funnels.publish, a confirmed account, a store out of draft that it
+ * does not meet), or null when it may. Thrown only if the request does change
+ * one of them, so the other settings stay where they were: funnels.manage.
+ */
+async function saveSettings(workspaceId, funnelId, body, req, { codeRefusal = null } = {}) {
   const funnel = await db.Funnel.findOne({ where: { id: funnelId, workspaceId } });
   if (!funnel) throw new NotFoundError('Funnel');
   const before = resolveSettings(funnel);
+  // Sent back as it is stored, a script is not a change: a form that saves
+  // every field at once still saves the others.
+  const changesCode = CODE_SETTINGS.some((key) => body[key] !== undefined && text(body[key]) !== before[key]);
+  if (changesCode && codeRefusal) throw codeRefusal;
   if (body.shippingProfileId) {
     const profile = await db.ShippingProfile.findOne({ where: { id: body.shippingProfileId, workspaceId }, attributes: ['id'] });
     if (!profile) throw new NotFoundError('Shipping group');
@@ -231,8 +247,22 @@ const schemas = {
   },
 };
 
-/** Adds the routes to the staff funnels router (see funnelExtras.mount). */
-function mount(router, { MANAGE }) {
+/** The first refusal among `guards` for this request, or null when it passes them all. */
+async function firstRefusal(guards, req, res) {
+  for (const guard of guards) {
+    const refusal = await new Promise((resolve) => guard(req, res, (err) => resolve(err || null)));
+    if (refusal) return refusal;
+  }
+  return null;
+}
+
+/**
+ * Adds the routes to the staff funnels router (see funnelExtras.mount).
+ * `LIVE_CONTENT` is what putting a funnel live takes (funnelsRoutes: the
+ * publish permission, a confirmed account, a store out of draft); a change to
+ * the funnel's scripts takes it too.
+ */
+function mount(router, { MANAGE, LIVE_CONTENT = [] }) {
   router.get(
     '/:funnelId/geo-redirects',
     validate(schemas.one),
@@ -271,10 +301,11 @@ function mount(router, { MANAGE }) {
     '/:funnelId/settings',
     validate(schemas.settings),
     MANAGE,
-    asyncHandler(async (req, res) =>
-      res.json({ settings: await saveSettings(req.tenant.workspaceId, req.params.funnelId, req.body, req) })
-    )
+    asyncHandler(async (req, res) => {
+      const codeRefusal = await firstRefusal(LIVE_CONTENT, req, res);
+      res.json({ settings: await saveSettings(req.tenant.workspaceId, req.params.funnelId, req.body, req, { codeRefusal }) });
+    })
   );
 }
 
-module.exports = { mount, redirectTarget, countryOf, resolveSettings };
+module.exports = { mount, redirectTarget, countryOf, resolveSettings, saveSettings, CODE_SETTINGS };
