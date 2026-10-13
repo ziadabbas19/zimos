@@ -685,6 +685,15 @@ const env = {
     controlConnection: process.env.NODE_ENV !== 'test' && process.env.QUEUE_CONTROL_CONNECTION === 'true',
   },
 
+  // ALLOW_DEMO_SEED_IN_PRODUCTION=true lets the demo seeder run under
+  // NODE_ENV=production. Off (the default) it refuses there: it creates an
+  // owner account with a public password, and its `down` empties whole tables.
+  // Declared here for the record; the seeder runs under sequelize-cli, outside
+  // this file's boot path, and reads the variable itself (db/seedGuards.js).
+  seed: {
+    allowDemoInProduction: process.env.ALLOW_DEMO_SEED_IN_PRODUCTION === 'true',
+  },
+
   // Outbound webhooks to merchants' own systems (modules/webhooks).
   webhooks: {
     signingAlgo: process.env.WEBHOOK_SIGNING_ALGO || 'sha256',

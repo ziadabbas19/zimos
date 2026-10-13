@@ -1,7 +1,13 @@
 'use strict';
 
+const { assertDemoSeedAllowed } = require('../seedGuards');
+
+// Demo data for a developer's own database. The owner account below signs in
+// with a password that is printed here and in the README, so this seeder
+// refuses to run under NODE_ENV=production (db/seedGuards.js).
 module.exports = {
   up: async (queryInterface, Sequelize) => {
+    assertDemoSeedAllowed('up');
     const { v4: uuidv4 } = require('uuid');
     const bcrypt = require('bcryptjs');
     const now = new Date();
@@ -207,7 +213,9 @@ module.exports = {
     ]);
   },
 
+  // Empties these tables whole — every store's rows, not only the demo one's.
   down: async (queryInterface) => {
+    assertDemoSeedAllowed('down');
     await queryInterface.bulkDelete('template_versions', null, {});
     await queryInterface.bulkDelete('templates', null, {});
     await queryInterface.bulkDelete('subscriptions', null, {});
