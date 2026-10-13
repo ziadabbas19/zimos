@@ -89,6 +89,11 @@ async function loadPage(workspaceId, websiteId, pageId, transaction) {
 // --- websites -----------------------------------------------------------
 
 async function createWebsite(workspaceId, data, req) {
+  // Named styles feed the storefront's stylesheet: checked here as on update.
+  if (data.globalStyles !== undefined) {
+    const problems = require('./elementStyle').namedStyleProblems(data.globalStyles);
+    if (problems.length) throw new ValidationError(problems, 'Invalid global styles');
+  }
   return db.sequelize.transaction(async (t) => {
     // Optionally seed the site from a ready-made template.
     let templateVersion = null;

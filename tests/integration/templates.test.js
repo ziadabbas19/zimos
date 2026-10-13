@@ -194,6 +194,35 @@ describe('POST /websites with templateVersionId', () => {
     expect(res.body.website.globalStyles).toEqual({ primaryColor: '#ff0000', fontFamily: 'Cairo', mode: 'light' });
   });
 
+  it('checks named styles when a website is created, as when it is updated', async () => {
+    const auth = await registerAndActivate();
+    const ws = await createWorkspace(auth.accessToken, 'Named Styles WS');
+    const websites = `/api/v1/workspaces/${ws.id}/websites`;
+    const named = (color) => ({ named: [{ id: 'primary', name: 'Primary', style: { base: { color } } }] });
+
+    // A value that is not a hex colour would reach the stylesheet as typed.
+    const refused = await request(app).post(websites).set(bearer(auth.accessToken)).send({ name: 'Bad Styles', globalStyles: named('red;}/*') });
+    expect(refused.status).toBe(422);
+    expect(refused.body.error.details[0].field).toBe('globalStyles.named[0].style.base.color');
+    expect(await db.Website.count({ where: { workspaceId: ws.id } })).toBe(0);
+
+    const unknownKey = await request(app)
+      .post(websites)
+      .set(bearer(auth.accessToken))
+      .send({ name: 'Bad Key', globalStyles: { named: [{ id: 'primary', name: 'Primary', style: { base: { content: 'x' } } }] } });
+    expect(unknownKey.status).toBe(422);
+
+    // A valid named style is accepted, and the same bad value is refused on update too.
+    const created = await request(app).post(websites).set(bearer(auth.accessToken)).send({ name: 'Good Styles', globalStyles: named('#1a2b3c') });
+    expect(created.status).toBe(201);
+    expect(created.body.website.globalStyles).toEqual(named('#1a2b3c'));
+    const updated = await request(app)
+      .patch(`${websites}/${created.body.website.id}`)
+      .set(bearer(auth.accessToken))
+      .send({ globalStyles: named('red;}/*') });
+    expect(updated.status).toBe(422);
+  });
+
   it('later edits to the template version do NOT affect a website already created from it', async () => {
     const auth = await registerAndActivate();
     const ws = await createWorkspace(auth.accessToken, 'Isolation WS');
