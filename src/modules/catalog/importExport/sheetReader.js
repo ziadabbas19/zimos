@@ -120,8 +120,51 @@ const decodeXml = (s) =>
     .replace(/&#(\d+);/g, (_, dec) => String.fromCodePoint(Number(dec)))
     .replace(/&amp;/g, '&');
 
+/*
+ * Every <name …>…</name> (or <name …/>) of `xml` in order, as { attrs, body },
+ * walked forward once. A regular expression with a lazy "anything up to the
+ * closing tag" starts that search again at every opening tag: on XML that has
+ * the opening tags and no closing tag it reads the rest of the file once per
+ * tag, which for a sheet of a few megabytes is hours on the one thread every
+ * request shares. Here each character is looked at a fixed number of times,
+ * and an opening tag with nothing to close it ends the walk: nothing after it
+ * can be an element either.
+ */
+const TAG_NAME_END = new Set([' ', '\t', '\r', '\n', '/', '>']);
+
+function* elements(xml, name) {
+  const open = `<${name}`;
+  const close = `</${name}>`;
+  let at = 0;
+  for (;;) {
+    const start = xml.indexOf(open, at);
+    if (start === -1) return;
+    const afterName = start + open.length;
+    // <c, not <col or <cfRule.
+    if (!TAG_NAME_END.has(xml[afterName])) {
+      at = afterName;
+      continue;
+    }
+    const tagEnd = xml.indexOf('>', afterName);
+    if (tagEnd === -1) return;
+    if (xml[tagEnd - 1] === '/') {
+      yield { attrs: xml.slice(afterName, tagEnd - 1), body: null };
+      at = tagEnd + 1;
+      continue;
+    }
+    const end = xml.indexOf(close, tagEnd + 1);
+    if (end === -1) return;
+    yield { attrs: xml.slice(afterName, tagEnd), body: xml.slice(tagEnd + 1, end) };
+    at = end + close.length;
+  }
+}
+
 /** The text of every <t> inside a fragment (a shared string or an inline string). */
-const textOf = (xml) => [...xml.matchAll(/<t(?:\s[^>]*)?>([\s\S]*?)<\/t>/g)].map((m) => decodeXml(m[1])).join('');
+function textOf(xml) {
+  let text = '';
+  for (const t of elements(xml, 't')) if (t.body !== null) text += decodeXml(t.body);
+  return text;
+}
 
 /** "BC12" → zero-based column index. */
 function columnIndex(ref) {
@@ -138,7 +181,7 @@ function parseXlsx(buffer) {
   const shared = [];
   const sharedXml = zip.read('xl/sharedStrings.xml');
   if (sharedXml) {
-    for (const m of sharedXml.matchAll(/<si>([\s\S]*?)<\/si>/g)) shared.push(textOf(m[1]));
+    for (const si of elements(sharedXml, 'si')) shared.push(si.body === null ? '' : textOf(si.body));
   }
   const sheetName =
     (zip.has('xl/worksheets/sheet1.xml') && 'xl/worksheets/sheet1.xml') ||
@@ -147,14 +190,16 @@ function parseXlsx(buffer) {
   if (!sheet) throw new SheetError('The spreadsheet has no sheet');
 
   const rows = [];
-  for (const rowMatch of sheet.matchAll(/<row[^>]*>([\s\S]*?)<\/row>/g)) {
+  // A row with no cells (<row …/>) is a blank line of the file.
+  for (const rowElement of elements(sheet, 'row')) {
     const row = [];
-    for (const c of rowMatch[1].matchAll(/<c\s([^>]*?)(?:\/>|>([\s\S]*?)<\/c>)/g)) {
-      const attrs = c[1];
-      const body = c[2] || '';
+    for (const c of elements(rowElement.body || '', 'c')) {
+      const attrs = c.attrs;
+      const body = c.body || '';
       const ref = (attrs.match(/r="([A-Z]+)\d+"/) || [])[1];
       const type = (attrs.match(/t="([^"]+)"/) || [])[1];
-      const raw = (body.match(/<v>([\s\S]*?)<\/v>/) || [])[1];
+      const v = elements(body, 'v').next().value;
+      const raw = v && v.body !== null ? v.body : undefined;
       let value = '';
       if (type === 's') value = shared[Number(raw)] ?? '';
       else if (type === 'inlineStr') value = textOf(body);
