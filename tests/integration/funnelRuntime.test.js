@@ -207,6 +207,51 @@ describe('funnel runtime — a republish that removes the visitor’s step', () 
   });
 });
 
+describe('funnel runtime — tags from a button', () => {
+  /** landing (a button that tags) --always--> thanks. */
+  async function taggingFunnel(ctx) {
+    const landing = tree('l');
+    landing.sections[0].rows[0].columns[0].elements.push({ id: 'btn', type: 'button', props: { text: 'Yes', contactTags: ['interested'] } });
+    const funnel = (await ctx.createFunnel({ name: 'Tagging' })).body.funnel;
+    await ctx.createStep(funnel.id, { key: 'landing', stepType: 'landing', name: 'L', builderData: landing });
+    await ctx.createStep(funnel.id, { key: 'thanks', stepType: 'thank_you', name: 'T', builderData: tree('t') });
+    await ctx.createEdge(funnel.id, { fromStepKey: 'landing', toStepKey: 'thanks', condition: { type: 'always' } });
+    const pub = await ctx.publish(funnel.id);
+    if (pub.status !== 201) throw new Error(`publish failed: ${pub.status} ${JSON.stringify(pub.body)}`);
+    return funnel;
+  }
+
+  it('an order id sent with a button press tags nobody and binds nothing', async () => {
+    const ctx = await setup();
+    const { variant } = await createProductWithVariant(ctx.auth.accessToken, ctx.workspace.id, { price: 1000, stock: 5 });
+    const funnel = await taggingFunnel(ctx);
+    // Another shopper's order in the same store; this visitor only knows its id.
+    const victim = await ctx.placeOrder(variant.id);
+    const before = (await db.Customer.findByPk(victim.customerId)).tags || [];
+
+    const sid = (await ctx.startSession(funnel.id, { visitorId: 'tagger-1' })).body.session.id;
+    const res = await ctx.advance(funnel.id, sid, { outcome: { type: 'clicked_through', sourceElementId: 'btn', orderId: victim.id } });
+    expect(res.status).toBe(200);
+
+    expect((await db.Customer.findByPk(victim.customerId)).tags || []).toEqual(before);
+    expect((await db.FunnelSession.findByPk(sid)).orderId).toBeNull();
+    expect((await db.Order.findByPk(victim.id)).funnelId).toBeNull();
+  });
+
+  it('the customer who ordered in the session is tagged by the next button', async () => {
+    const ctx = await setup();
+    const { variant } = await createProductWithVariant(ctx.auth.accessToken, ctx.workspace.id, { price: 1000, stock: 5 });
+    const funnel = await taggingFunnel(ctx);
+    const own = await ctx.placeOrder(variant.id);
+    const sid = (await ctx.startSession(funnel.id, { visitorId: 'tagger-2' })).body.session.id;
+    await db.FunnelSession.update({ orderId: own.id }, { where: { id: sid } });
+
+    const res = await ctx.advance(funnel.id, sid, { outcome: { type: 'clicked_through', sourceElementId: 'btn' } });
+    expect(res.status).toBe(200);
+    expect((await db.Customer.findByPk(own.customerId)).tags).toContain('interested');
+  });
+});
+
 describe('funnel runtime — upsell atomicity', () => {
   async function upsellFunnel(ctx) {
     const { product, variant } = await createProductWithVariant(ctx.auth.accessToken, ctx.workspace.id, {
