@@ -365,4 +365,56 @@ describe('platform users: roles and permissions', () => {
     expect(await db.User.count({ where: { platformRole: 'creator' } })).toBe(1);
     expect(await audits('platform_admin.revoke')).toHaveLength(1);
   });
+
+  it('a requester revoked a moment ago cannot finish a grant with the access they had', async () => {
+    const adminUsers = require('../../src/modules/platformAdmin/adminUsersService');
+    const stale = await makePlatformUser('creator');
+    const other = await makePlatformUser('creator');
+    const target = await makeUser();
+    // The request was authenticated while this creator still held the role.
+    const staleReq = { user: await reload(stale.userId), headers: {} };
+    expect((await revoke(other, stale.userId)).status).toBe(200);
+
+    // Granting to someone else: refused on the row as it is now.
+    await expect(adminUsers.grantAdmin({ email: target.email, role: 'creator' }, staleReq)).rejects.toMatchObject({ statusCode: 403 });
+    expect((await reload(target.userId)).platformRole).toBeNull();
+    // Granting their own role back: refused before anything is read.
+    await expect(adminUsers.grantAdmin({ email: stale.email, role: 'creator' }, staleReq)).rejects.toMatchObject({ code: 'CANNOT_ACT_ON_SELF' });
+    expect((await reload(stale.userId)).platformRole).toBeNull();
+    expect((await reload(stale.userId)).platformPermissions).toEqual([]);
+    expect(await audits('platform_admin.grant')).toHaveLength(0);
+  });
+
+  it('nobody grants a role to their own account', async () => {
+    const creator = await makePlatformUser('creator');
+    const res = await grant(creator, { email: creator.email, role: 'creator' });
+    expect(res.status).toBe(409);
+    expect(res.body.error.code).toBe('CANNOT_ACT_ON_SELF');
+    expect(await audits('platform_admin.grant')).toHaveLength(0);
+  });
+
+  it('a grant and a revoke of the requester at the same moment never leave both done', async () => {
+    for (let round = 0; round < 3; round += 1) {
+      const a = await makePlatformUser('creator');
+      const b = await makePlatformUser('creator');
+      const target = await makeUser();
+      const [granted, revoked] = await Promise.all([grant(a, { email: target.email, role: 'admin' }), revoke(b, a.userId)]);
+      expect(revoked.status).toBe(200);
+      // Either the grant ran first (201) or it found its requester revoked (403): never a deadlock (500).
+      expect([201, 403]).toContain(granted.status);
+    }
+  });
+
+  it('creating an agent re-reads the requester for agents.manage', async () => {
+    const adminUsers = require('../../src/modules/platformAdmin/adminUsersService');
+    const agentService = require('../../src/modules/referrals/agentService');
+    const creator = await makePlatformUser('creator');
+    const manager = await makePlatformUser('admin');
+    const target = await makeUser();
+    const staleReq = { user: await reload(manager.userId), headers: {} };
+    expect((await revoke(creator, manager.userId)).status).toBe(200);
+    await expect(agentService.createAgent({ email: target.email }, staleReq)).rejects.toMatchObject({ statusCode: 403 });
+    expect((await reload(target.userId)).platformRole).toBeNull();
+    expect(typeof adminUsers.grantRoleInTransaction).toBe('function');
+  });
 });

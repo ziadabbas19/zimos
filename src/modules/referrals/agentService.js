@@ -3,7 +3,7 @@
 const { Op, QueryTypes } = require('sequelize');
 const db = require('../../db/models');
 const { ConflictError, NotFoundError } = require('../../core/errors/AppError');
-const { PLATFORM_ROLES } = require('../../core/security/platformPermissions');
+const { PLATFORM_ROLES, PLATFORM_PERMISSIONS } = require('../../core/security/platformPermissions');
 const adminUsers = require('../platformAdmin/adminUsersService');
 const { DEFAULT_COMMISSION_RATE_BP } = require('./commissionPolicy');
 const referralCodes = require('./referralCodeService');
@@ -199,7 +199,9 @@ async function createAgent({ email, firstCode }, req) {
     const { user, granted } = await adminUsers.grantRoleInTransaction(
       { email, role: PLATFORM_ROLES.AGENT },
       req,
-      transaction
+      transaction,
+      // What this route asks of the requester, read again under the lock.
+      { permission: PLATFORM_PERMISSIONS.AGENTS_MANAGE }
     );
     if (!granted) {
       throw new ConflictError('That account is already an agent. Add a code from their page instead.', 'ALREADY_AGENT');
