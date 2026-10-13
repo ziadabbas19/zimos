@@ -700,6 +700,16 @@ const env = {
     allowDemoInProduction: process.env.ALLOW_DEMO_SEED_IN_PRODUCTION === 'true',
   },
 
+  // PAGE_TREE_STRICT_PROPS=true: a page or funnel-step element whose type has
+  // a rule set (pages/pageTree.js) is refused when it carries a prop the rules
+  // do not name. Off (the default): such a prop is stored unchecked, as
+  // before. The rule sets do not yet list every prop the editor sends, so
+  // turning this on before they do refuses pages the editor saves today.
+  // Under NODE_ENV=test it starts off; a test sets it.
+  pages: {
+    strictProps: process.env.NODE_ENV !== 'test' && process.env.PAGE_TREE_STRICT_PROPS === 'true',
+  },
+
   // Outbound webhooks to merchants' own systems (modules/webhooks).
   webhooks: {
     signingAlgo: process.env.WEBHOOK_SIGNING_ALGO || 'sha256',
