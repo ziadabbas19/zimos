@@ -5,7 +5,7 @@ const db = require('../../../db/models');
 const queue = require('../../../core/queue');
 const logger = require('../../../core/utils/logger');
 const { AppError, ValidationError, NotFoundError } = require('../../../core/errors/AppError');
-const { guardedLookup } = require('../../webhooks/webhookUrlGuard');
+const { checkUrl, guardedLookup } = require('../../webhooks/webhookUrlGuard');
 const inventoryService = require('../../inventory/inventoryService');
 const catalogService = require('../catalogService');
 const schemas = require('../catalogValidation');
@@ -326,7 +326,9 @@ function shopifyJsonUrl(link) {
   if (url.username || url.password) throw invalid('The link must not contain a username or password');
   const match = url.pathname.match(/\/products\/([^/?#]+?)(?:\.json)?\/?$/);
   if (!match) throw invalid('This is not a Shopify product link: it must contain /products/<name>');
-  return `${url.origin}/products/${match[1]}.json`;
+  // Checked like any URL this server fetches for a merchant: no private
+  // address, no internal hostname.
+  return checkUrl(`${url.origin}/products/${match[1]}.json`, 'url', { label: 'product link' });
 }
 
 async function fromShopifyLink(link) {
