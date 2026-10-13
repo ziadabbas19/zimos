@@ -42,6 +42,48 @@ const merchantAccess = async (wid, H) => (await request(app).get(`/api/v1/worksp
 const createProduct = (wid, H) =>
   request(app).post(`/api/v1/workspaces/${wid}/catalog/products`).set(H).send({ name: 'New', status: 'active' });
 
+describe('the ad product feed of a suspended store', () => {
+  it('stops with the storefront, the copy kept from before included, and comes back with it', async () => {
+    const { wid, H } = await setup();
+    const admin = await makePlatformUser('admin');
+    const slug = (await db.Workspace.findByPk(wid)).slug;
+    const product = await request(app)
+      .post(`/api/v1/workspaces/${wid}/catalog/products`)
+      .set(H)
+      .send({ name: 'Feed Lamp', status: 'active' });
+    expect(product.status).toBe(201);
+    const saved = await request(app).put(`/api/v1/workspaces/${wid}/offers/feed`).set(H).send({ enabled: true, excludeOutOfStock: false });
+    expect(saved.status).toBe(200);
+
+    const feed = () => request(app).get(`/api/v1/feeds/${slug}/meta.xml`);
+    // Open: served, and kept for the feed's ten minutes.
+    const before = await feed();
+    expect(before.status).toBe(200);
+    expect(before.headers['content-type']).toMatch(/application\/xml/);
+    // The store's id works where its slug does, as on the other public routes.
+    expect((await request(app).get(`/api/v1/feeds/${wid}/meta.csv`)).status).toBe(200);
+
+    expect((await suspend(admin, wid)).status).toBe(200);
+    const during = await feed();
+    expect(during.status).toBe(423);
+    expect(during.body.error.code).toBe('STORE_UNAVAILABLE');
+    expect(during.text).not.toContain('Feed Lamp');
+    expect((await request(app).get(`/api/v1/feeds/${wid}/meta.csv`)).status).toBe(423);
+
+    expect((await reactivate(admin, wid)).status).toBe(200);
+    expect((await feed()).status).toBe(200);
+  });
+
+  it('answers 404 for a store that does not exist, a feed that is off and a channel that is not one', async () => {
+    const { wid, H } = await setup();
+    const slug = (await db.Workspace.findByPk(wid)).slug;
+    expect((await request(app).get('/api/v1/feeds/no-such-store/meta.xml')).status).toBe(404);
+    expect((await request(app).get(`/api/v1/feeds/${slug}/meta.xml`)).status).toBe(404);
+    await request(app).put(`/api/v1/workspaces/${wid}/offers/feed`).set(H).send({ enabled: true }).expect(200);
+    expect((await request(app).get(`/api/v1/feeds/${slug}/nope.xml`)).status).toBe(404);
+  });
+});
+
 describe('manual store suspension', () => {
   it('is kept to workspaces.manage and needs a reason', async () => {
     const { wid } = await setup();

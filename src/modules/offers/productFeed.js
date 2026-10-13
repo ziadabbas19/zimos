@@ -5,6 +5,7 @@ const Joi = require('joi');
 const asyncHandler = require('express-async-handler');
 const db = require('../../db/models');
 const { NotFoundError } = require('../../core/errors/AppError');
+const { resolvePublicWorkspace } = require('../../core/middleware/publicWorkspace');
 const { recordAudit } = require('../audit/auditService');
 const { effectiveVariantPrice } = require('../catalog/productPage');
 const { resolveStoreInfo, publicLegalIndex } = require('../storefront/storeInfo');
@@ -285,16 +286,19 @@ async function offersSummary(workspaceId, days = 30) {
 
 const publicRouter = Router();
 
+// The store is resolved like every other public route (resolvePublicWorkspace,
+// on the route because the mount path carries no parameter): a closed or draft
+// store answers 404 and a suspended or unpaid one 423, before the feed — or
+// the copy of it kept for CACHE_MS — is looked at. It takes the slug the
+// links are minted with, and the store's id.
 publicRouter.get(
-  '/:workspaceSlug/:file',
+  '/:workspaceId/:file',
+  resolvePublicWorkspace,
   asyncHandler(async (req, res) => {
     const match = /^([a-z]+)\.(xml|csv)$/.exec(String(req.params.file).toLowerCase());
     if (!match || !CHANNELS.includes(match[1])) throw new NotFoundError('Feed');
-    const workspace = await db.Workspace.findOne({
-      where: { slug: String(req.params.workspaceSlug).toLowerCase() },
-      attributes: ['id', 'name', 'slug', 'settings'],
-    });
-    if (!workspace || !readFeedSettings(workspace.settings).enabled) throw new NotFoundError('Feed');
+    const workspace = req.publicWorkspace;
+    if (!readFeedSettings(workspace.settings).enabled) throw new NotFoundError('Feed');
     const feed = await renderFeed(workspace, match[2]);
     res.set('Content-Type', match[2] === 'csv' ? 'text/csv; charset=utf-8' : 'application/xml; charset=utf-8');
     res.set('Cache-Control', 'public, max-age=600');
