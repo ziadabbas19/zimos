@@ -73,6 +73,54 @@ describe('checkUrl in production (no private URLs)', () => {
       done();
     });
   });
+
+  describe('what the caller is told when a hostname cannot be used', () => {
+    const dns = require('dns');
+    const { UNUSABLE_HOST_MESSAGE } = require('../../src/modules/webhooks/webhookUrlGuard');
+    const lookupError = (hostname) => new Promise((resolve) => guardedLookup(hostname, {}, (err) => resolve(err)));
+    // The resolver's answer, without asking one.
+    const resolverSays = (answer) =>
+      jest.spyOn(dns, 'lookup').mockImplementation((hostname, options, callback) => {
+        if (answer instanceof Error) callback(answer);
+        else callback(null, answer);
+      });
+    afterEach(() => jest.restoreAllMocks());
+
+    it('is the same for a name that resolves privately and one that does not resolve', async () => {
+      resolverSays([{ address: '10.0.0.5', family: 4 }]);
+      const privately = await lookupError('db.corp.example');
+      jest.restoreAllMocks();
+      resolverSays(Object.assign(new Error('getaddrinfo ENOTFOUND db-2.corp.example'), { code: 'ENOTFOUND' }));
+      const notAtAll = await lookupError('db-2.corp.example');
+      jest.restoreAllMocks();
+      resolverSays([]);
+      const noAddress = await lookupError('db-3.corp.example');
+
+      expect(privately.message).toBe(UNUSABLE_HOST_MESSAGE);
+      expect(notAtAll.message).toBe(privately.message);
+      expect(noAddress.message).toBe(privately.message);
+      for (const err of [privately, notAtAll, noAddress]) {
+        expect(err.message).not.toMatch(/corp\.example|private|ENOTFOUND|getaddrinfo/i);
+      }
+    });
+
+    it('keeps what happened on the error, for the server log', async () => {
+      resolverSays([{ address: '169.254.169.254', family: 4 }]);
+      expect(await lookupError('metadata.example')).toMatchObject({ code: 'EWEBHOOKBLOCKED', reason: 'private_address', hostname: 'metadata.example' });
+      jest.restoreAllMocks();
+      resolverSays(Object.assign(new Error('getaddrinfo EAI_AGAIN slow.example'), { code: 'EAI_AGAIN' }));
+      expect(await lookupError('slow.example')).toMatchObject({ code: 'EAI_AGAIN', reason: 'unresolved', hostname: 'slow.example' });
+    });
+
+    it('still hands back a public address', (done) => {
+      resolverSays([{ address: '93.184.216.34', family: 4 }]);
+      guardedLookup('hooks.example.com', {}, (err, address, family) => {
+        expect(err).toBeNull();
+        expect([address, family]).toEqual(['93.184.216.34', 4]);
+        done();
+      });
+    });
+  });
 });
 
 describe('signatures', () => {
