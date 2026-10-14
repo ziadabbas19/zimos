@@ -51,7 +51,9 @@ const merchantPlans = () => require('./merchantPlansService');
  * One switch waits at a time. A new request replaces the one waiting (and a
  * renewal charge priced for the plan being left), except while a transfer's
  * proof for that charge is with the console (409 PROOF_UNDER_REVIEW). The
- * same request again gets the same charge back. A pending charge is locked
+ * same request again gets the same charge back. A downgrade whose next
+ * period is already paid at its price stays (409 PLAN_SWITCH_ALREADY_BILLED):
+ * the merchant changes plan again once it has taken effect. A pending charge is locked
  * before the subscription, the order every payment takes; a charge that
  * appears between the two is 409 PLAN_SWITCH_BUSY (asked twice at once:
  * ask again). An upgrade's charge left unpaid PLAN_SWITCH_CHARGE_EXPIRY_HOURS
@@ -81,6 +83,24 @@ const noPaymentMethod = (currency) =>
   new AppError('NO_PAYMENT_METHOD', `There is no way to pay a charge in ${currency} online or by transfer right now. Contact support.`, 409, { currency });
 const amountChanged = (amountDue, currency) =>
   new AppError('SWITCH_AMOUNT_CHANGED', 'The amount due has changed since it was shown. Check the new amount before going on.', 409, { amountDue, currency });
+const alreadyBilled = (invoiceId, effectiveAt) =>
+  new AppError(
+    'PLAN_SWITCH_ALREADY_BILLED',
+    'The period after this change is already paid at the new plan’s price, so the change stays. Choose another plan once it has taken effect.',
+    409,
+    { invoiceId, effectiveAt }
+  );
+
+/** A renewal already paid at a scheduled switch's price (its period starts at the switch's moment), or null. */
+async function billedOnSchedule(sw, transaction) {
+  if (!sw || sw.status !== 'scheduled') return null;
+  const renewals = await db.BillingInvoice.findAll({
+    where: { subscriptionId: sw.subscriptionId, status: 'paid', targetPlanId: null },
+    attributes: ['id', 'periodStart'],
+    transaction,
+  });
+  return renewals.find((invoice) => rules.scheduleCovers(sw.effectiveAt, invoice.periodStart)) || null;
+}
 
 async function loadSubscription(workspaceId, transaction, { lock = false } = {}) {
   const subscription = await db.Subscription.findOne({
@@ -187,7 +207,7 @@ function serialize(sw, { fromPlan = null, toPlan = null, invoice = null } = {}) 
 const EFFECTIVE = { upgrade: 'on_payment', move: 'on_payment', pay_per_order: 'on_payment', scheduled: 'period_end', immediate: 'now', trial_change: 'now', none: null };
 
 /** The preview's body for a decision. */
-async function describe({ subscription, current, target, cycle, decision, price, now, pending, open, proof }) {
+async function describe({ subscription, current, target, cycle, decision, price, now, pending, open, proof, billed = null }) {
   const kind = decision.kind === 'pay_per_order' ? 'move' : decision.kind;
   const amountDue = await amountDueFor(decision, subscription, target, cycle);
   const charged = amountDue > 0;
@@ -200,8 +220,10 @@ async function describe({ subscription, current, target, cycle, decision, price,
   else if (decision.kind === 'immediate' && !decision.free) renewalAt = periodEnd > now ? periodEnd : now;
   else if (decision.kind === 'trial_change') renewalAt = subscription.trialEndsAt || periodEnd;
 
+  const sameScheduled = Boolean(open && open.status === 'scheduled' && decision.kind === 'scheduled' && open.toPlanId === target.id && open.toBillingCycle === cycle);
   let blockedBy = null;
   if (decision.kind !== 'none' && decision.kind !== 'trial_change' && proof) blockedBy = 'PROOF_UNDER_REVIEW';
+  else if (billed && !sameScheduled && decision.kind !== 'trial_change') blockedBy = 'PLAN_SWITCH_ALREADY_BILLED';
   else if (charged && !(await paymentMethods.anyOffered(target.currency))) blockedBy = 'NO_PAYMENT_METHOD';
 
   return {
@@ -245,7 +267,8 @@ async function preview(workspaceId, { planId, billingCycle } = {}) {
     db.PlanSwitch.findOne({ where: { subscriptionId: subscription.id, status: OPEN } }),
   ]);
   const proof = pending ? await proofWaiting(pending.id) : false;
-  return { preview: await describe({ subscription, current, target, cycle, decision, price, now, pending, open, proof }) };
+  const billed = await billedOnSchedule(open);
+  return { preview: await describe({ subscription, current, target, cycle, decision, price, now, pending, open, proof, billed }) };
 }
 
 // ------------------------------------------------------------------ start
@@ -261,8 +284,21 @@ async function applyTo(subscription, plan, cycle, { free }, transaction, now = n
   await subscription.update(patch, { transaction });
 }
 
-/** Closes the switch waiting (and voids its charge) as `status`: cancelled by the merchant, or replaced by a new one. */
+/**
+ * Closes the switch waiting (and voids its charge) as `status`: cancelled by
+ * the merchant, or replaced by a new one. A scheduled one whose next period
+ * is already paid at its price stays (409 PLAN_SWITCH_ALREADY_BILLED); a
+ * renewal still waiting that it priced goes with it.
+ */
 async function closeOpen(open, locked, status, req, transaction) {
+  if (open.status === 'scheduled') {
+    const billed = await billedOnSchedule(open, transaction);
+    if (billed) throw alreadyBilled(billed.id, open.effectiveAt);
+    if (locked && locked.status === 'pending' && !locked.targetPlanId && rules.scheduleCovers(open.effectiveAt, locked.periodStart)) {
+      if (await proofWaiting(locked.id, transaction)) throw proofUnderReview(locked.id);
+      await charges.voidRenewalCharge(locked, { actorUserId: req.user.id, req }, transaction);
+    }
+  }
   if (open.status === 'pending' && open.billingInvoiceId) {
     const invoice = await db.BillingInvoice.findByPk(open.billingInvoiceId, { transaction });
     if (invoice && invoice.status === 'pending') {

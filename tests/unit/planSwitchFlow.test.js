@@ -204,6 +204,29 @@ describe('a downgrade', () => {
     expect(await openOf()).toHaveLength(0);
   });
 
+  it('once the next period is paid at its price it stays; a renewal waiting on it goes with a cancel', async () => {
+    const sub = await store({ planId: pro.id });
+    const scheduled = await switches.start(WID, { planId: basic.id }, req);
+    // A renewal for the period after it, priced on it, waiting (an online checkout left open).
+    const renewal = await db.BillingInvoice.create({
+      workspaceId: WID, subscriptionId: sub.id, grossAmount: 30000, amount: 30000, currency: 'EGP', periodStart: sub.currentPeriodEnd, periodEnd: new Date(sub.currentPeriodEnd.getTime() + 30 * DAY),
+    });
+    expect(await switches.cancel(WID, req)).toMatchObject({ cancelled: true });
+    expect(renewal).toMatchObject({ status: 'void', voidReason: 'replaced' });
+
+    await switches.start(WID, { planId: basic.id }, req);
+    await db.BillingInvoice.create({
+      workspaceId: WID, subscriptionId: sub.id, grossAmount: 30000, amount: 30000, amountPaid: 30000, currency: 'EGP', status: 'paid', periodStart: sub.currentPeriodEnd, periodEnd: new Date(sub.currentPeriodEnd.getTime() + 30 * DAY),
+    });
+    await expect(switches.cancel(WID, req)).rejects.toMatchObject({ code: 'PLAN_SWITCH_ALREADY_BILLED' });
+    await expect(switches.start(WID, { planId: free.id }, req)).rejects.toMatchObject({ code: 'PLAN_SWITCH_ALREADY_BILLED' });
+    expect((await switches.preview(WID, { planId: pro.id, billingCycle: 'monthly' })).preview.blockedBy).toBe('PLAN_SWITCH_ALREADY_BILLED');
+    // Asking for the same downgrade again is fine: it is what waits.
+    expect((await switches.start(WID, { planId: basic.id }, req)).created).toBe(false);
+    expect(scheduled.switch.status).toBe('scheduled');
+    expect((await openOf())[0]).toMatchObject({ kind: 'scheduled', toPlanId: basic.id });
+  });
+
   it('a cycle change alone, or another currency, also waits for the period end', async () => {
     await store();
     expect((await switches.start(WID, { planId: basic.id, billingCycle: 'yearly' }, req)).switch).toMatchObject({ kind: 'scheduled', to: { billingCycle: 'yearly' } });

@@ -243,6 +243,26 @@ describe('a downgrade', () => {
     expect(await openOf(s)).toHaveLength(1);
   });
 
+  it('once the renewal is paid early at its price, it can no longer be cancelled, and still applies', async () => {
+    const s = await paidStore(pro);
+    await start(s, { planId: basic.id });
+    const sent = await proof(s, 'next');
+    expect(sent.status).toBe(201);
+    expect(sent.body.proof).toMatchObject({ amount: BASIC });
+    expect((await approve(sent.body.proof.id, BASIC)).status).toBe(200);
+    // Paid ahead: the period runs on, still on Pro until the change.
+    expect((await subscriptionOf(s)).planId).toBe(pro.id);
+
+    const refused = await cancel(s);
+    expect(refused.status).toBe(409);
+    expect(refused.body.error.code).toBe('PLAN_SWITCH_ALREADY_BILLED');
+    expect((await start(s, { planId: business.id })).body.error.code).toBe('PLAN_SWITCH_ALREADY_BILLED');
+
+    await db.PlanSwitch.update({ effectiveAt: new Date(Date.now() - 60000) }, { where: { workspaceId: s.wid } });
+    expect(await switches.runDue()).toMatchObject({ applied: 1 });
+    expect((await subscriptionOf(s)).planId).toBe(basic.id);
+  });
+
   it('the billing cycle cannot be changed beside it', async () => {
     const s = await paidStore(pro);
     await start(s, { planId: basic.id });
