@@ -604,6 +604,21 @@ const env = {
       enabled: process.env.NODE_ENV !== 'test' && process.env.ONLINE_BILLING_ENABLED === 'true',
     },
 
+    // A merchant changing plan by themselves (billing/planSwitchService).
+    // PLAN_SWITCH_ENABLED lets them preview and start a switch; it is off
+    // unless set to exactly "true", and off the Plans tab is as before (a
+    // paid subscription changes plan through support). A switch already made
+    // still finishes either way: its charge settles when paid and expires
+    // when not, and a scheduled downgrade still takes effect at its moment.
+    // PLAN_SWITCH_CHARGE_EXPIRY_HOURS: an upgrade's charge left unpaid this
+    // long is voided by the hourly billing job (it was priced for the days
+    // that were left when it was asked). Under NODE_ENV=test the switch
+    // starts off; a test that needs it sets it here.
+    planSwitch: {
+      enabled: process.env.NODE_ENV !== 'test' && process.env.PLAN_SWITCH_ENABLED === 'true',
+      chargeExpiryHours: intInRange(process.env.PLAN_SWITCH_CHARGE_EXPIRY_HOURS, 48, 1, 24 * 30),
+    },
+
     // Zimos's own Fawaterak account (billing/fawaterak). All secrets except
     // `env`, `baseUrl` and `tokenUrl`, none with a fallback. Under
     // NODE_ENV=test nothing here is read from the environment: a test sets

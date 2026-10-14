@@ -100,6 +100,7 @@ const TABLES = {
   payment_gateway_accounts: wipe("a store's payment gateway connection; the gateway list itself is in code and the environment"),
   payment_proofs: wipe('transfer proofs sent by stores'),
   payments: wipe(STORE),
+  plan_switches: wipe('plan changes stores asked for (migration 702)'),
   plan_trials: wipe('which plan trials each account has used, the creator\'s included (decided: wipe)'),
   platform_blocklist_entries: wipe('the platform-wide risk blocklist from before launch (decided: wipe)'),
   platform_notification_prefs: wipe("console admins' notification settings (accounts that go; the creator starts from the defaults)"),

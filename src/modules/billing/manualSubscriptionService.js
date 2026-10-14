@@ -54,6 +54,8 @@ const logger = require('../../core/utils/logger');
 const DAY_MS = 24 * 60 * 60 * 1000;
 const MAX_DAYS = 1826; // five years
 const ACTIONS = ['activate', 'change_plan', 'extend', 'end_now'];
+// The actions after which a merchant's waiting plan switch is dropped (billing/planSwitchService).
+const DROPS_PLAN_SWITCH = ['activate', 'change_plan', 'end_now'];
 
 const addDays = (date, days) => new Date(new Date(date).getTime() + days * DAY_MS);
 
@@ -227,6 +229,12 @@ async function runAction(workspaceId, action, body, req, mutate) {
     const before = auditState(subscription);
     const patch = await mutate(subscription, transaction);
     await subscription.update(patch, { transaction });
+    // A plan switch the merchant left waiting no longer fits a period or a
+    // plan set here: dropped, its charge voided. Extending keeps it.
+    if (DROPS_PLAN_SWITCH.includes(action)) {
+      // eslint-disable-next-line global-require
+      await require('./planSwitchService').dropOpen(subscription, `admin_${action}`, { actorUserId: req.user.id, req }, transaction);
+    }
 
     const change = await db.SubscriptionManualChange.create(
       {

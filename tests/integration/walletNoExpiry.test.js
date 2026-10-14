@@ -58,7 +58,9 @@ describe('the prepaid balance never expires', () => {
       }
       // eslint-disable-next-line global-require, import/no-dynamic-require
       const names = require(file).schedules.map((schedule) => schedule.name);
-      const walletOnes = names.filter((name) => !['billing.manual_pricing_sweep'].includes(name));
+      // Neither looks at the wallet: manual pricing, and plan switches
+      // (voiding unpaid switch charges, applying scheduled downgrades).
+      const walletOnes = names.filter((name) => !['billing.manual_pricing_sweep', 'billing.plan_switches'].includes(name));
       expect(walletOnes.every((name) => allowed[rel].includes(name))).toBe(true);
     }
   });

@@ -9,6 +9,7 @@ const commissions = require('../referrals/commissionService');
 const { planPrice, addBillingPeriod } = require('./planPricing');
 const specialTerms = require('./specialTermsService');
 const manualPricing = require('./manualPricing');
+const planSwitches = require('./planSwitchSettlement');
 
 /**
  * Subscription charges: one billing_invoices row per charge, the first and
@@ -117,14 +118,14 @@ async function frozenPayable(frozen, transaction) {
  * The next charge of a subscription with no pending one: its plan, period
  * and price, as createCharge writes it and quoteCharge shows it. 409 NO_PLAN
  * or PLAN_IS_FREE. The special-terms price override is locked only with
- * `lock` (createCharge, which uses one of its charges).
+ * `lock` (createCharge, which uses one of its charges). A downgrade (or a
+ * cycle change) the merchant scheduled for the end of the paid period prices
+ * the period that starts then (billing/planSwitchSettlement.scheduledFor);
+ * the plan itself changes at that moment (the hourly billing job).
  */
 async function nextChargeTerms(subscription, transaction, { now, lock = false }) {
-  const plan = subscription.planId ? await db.Plan.findByPk(subscription.planId, { transaction }) : null;
-  if (!plan) throw new ConflictError('This subscription has no plan to charge for.', 'NO_PLAN');
-  if (planPrice(plan, subscription.billingCycle) <= 0) {
-    throw new ConflictError('This plan is free, so there is nothing to charge.', 'PLAN_IS_FREE');
-  }
+  const current = subscription.planId ? await db.Plan.findByPk(subscription.planId, { transaction }) : null;
+  if (!current) throw new ConflictError('This subscription has no plan to charge for.', 'NO_PLAN');
 
   const lastPaid = await db.BillingInvoice.findOne({
     where: { subscriptionId: subscription.id, status: 'paid' },
@@ -134,9 +135,21 @@ async function nextChargeTerms(subscription, transaction, { now, lock = false })
   const compEnd = await specialTerms.compCoveredUntil(subscription.id, transaction);
   const coveredUntil = Math.max(lastPaid ? new Date(lastPaid.periodEnd).getTime() : 0, compEnd ? compEnd.getTime() : 0);
   const periodStart = coveredUntil > now.getTime() ? new Date(coveredUntil) : now;
+
+  const scheduled = await planSwitches.scheduledFor(subscription, periodStart, transaction);
+  const plan = scheduled ? scheduled.plan : current;
+  const billingCycle = scheduled ? scheduled.billingCycle : subscription.billingCycle;
+  if (planPrice(plan, billingCycle) <= 0) {
+    throw new ConflictError('This plan is free, so there is nothing to charge.', 'PLAN_IS_FREE');
+  }
   const override = await specialTerms.activePriceOverride(subscription.id, { transaction, lock });
-  const pricing = await priceCharge(subscription, plan, transaction, { override });
-  return { pricing, override, periodStart, periodEnd: addBillingPeriod(periodStart, subscription.billingCycle) };
+  const pricing = await priceCharge(
+    scheduled ? { id: subscription.id, billingCycle, referralCodeId: subscription.referralCodeId } : subscription,
+    plan,
+    transaction,
+    { override }
+  );
+  return { pricing, override, periodStart, periodEnd: addBillingPeriod(periodStart, billingCycle) };
 }
 
 /**
@@ -319,6 +332,17 @@ async function settlePaid(
   if (invoice.status === 'void') {
     return settleLateMovePayment(invoice, { paidAt, amountPaid, externalReference, note, recordedByUserId, source, frozen }, transaction);
   }
+  // A plan switch's charge paid after the store changed under it (the
+  // console changed its plan, say): the switch is dropped, the charge voided,
+  // and the money credited instead (billing/planSwitchSettlement).
+  if (invoice.targetPlanId) {
+    const fit = await planSwitches.paymentFit(invoice, transaction);
+    if (!fit.applies) {
+      await planSwitches.drop(fit.sw, fit.reason, transaction);
+      await voidMoveCharge(invoice, 'replaced', {}, transaction);
+      return settleLateMovePayment(invoice, { paidAt, amountPaid, externalReference, note, recordedByUserId, source, frozen }, transaction);
+    }
+  }
   const earlierPaid = await db.BillingInvoice.count({
     where: { subscriptionId: invoice.subscriptionId, status: 'paid' },
     transaction,
@@ -362,7 +386,12 @@ async function settlePaid(
     { transaction }
   );
   if (invoice.targetPlanId) {
-    await switchPlanForMove(invoice, subscription, transaction);
+    // An upgrade keeps the paid period; a move (pay per order, or from a free
+    // plan) starts a full period of the new plan from now.
+    const sw = await planSwitches.switchOfCharge(invoice, transaction);
+    if (sw && sw.kind === 'upgrade') await planSwitches.applyUpgrade(invoice, subscription, sw, transaction);
+    else await switchPlanForMove(invoice, subscription, transaction);
+    if (sw) await planSwitches.markApplied(sw, transaction);
   } else {
     // A late payment for an earlier period never moves the period backwards.
     const extendsPeriod = new Date(invoice.periodEnd) > new Date(subscription.currentPeriodEnd);
@@ -398,6 +427,8 @@ async function voidMoveCharge(invoice, reason, { actorUserId = null, req = null 
     { status: 'superseded' },
     { where: { billingInvoiceId: invoice.id, status: db.BillingPaymentAttempt.IN_PROGRESS }, transaction }
   );
+  // A plan switch waiting for this charge ends the same way.
+  const switchClosed = await planSwitches.closeForVoidedCharge(invoice, reason, transaction);
   await recordAudit({
     workspaceId: invoice.workspaceId,
     actorUserId,
@@ -406,11 +437,96 @@ async function voidMoveCharge(invoice, reason, { actorUserId = null, req = null 
     entityId: invoice.id,
     before: { status: 'pending' },
     after: { status: 'void', reason },
-    metadata: { targetPlanId: invoice.targetPlanId, targetBillingCycle: invoice.targetBillingCycle, amount: Number(invoice.amount), checkoutsSuperseded },
+    metadata: {
+      targetPlanId: invoice.targetPlanId,
+      targetBillingCycle: invoice.targetBillingCycle,
+      amount: Number(invoice.amount),
+      checkoutsSuperseded,
+      ...(switchClosed ? { planSwitchClosed: true } : {}),
+    },
     req,
     transaction,
   });
   return true;
+}
+
+/**
+ * A pending renewal that gives way to a plan switch (billing/planSwitchService):
+ * it was priced for the plan the store is leaving. Only one nobody is paying
+ * by transfer (the caller checks no proof waits for it): void (replaced),
+ * any online checkout for it superseded, and a special-terms charge it used
+ * given back. Money that still arrives for it is credited
+ * (settleLateMovePayment). The caller holds the charge locked. Resolves
+ * false when it was no longer a pending renewal.
+ */
+async function voidRenewalCharge(invoice, { actorUserId = null, req = null } = {}, transaction) {
+  if (!invoice || invoice.status !== 'pending' || invoice.targetPlanId) return false;
+  await invoice.update({ status: 'void', voidedAt: new Date(), voidReason: 'replaced' }, { transaction });
+  const [checkoutsSuperseded] = await db.BillingPaymentAttempt.update(
+    { status: 'superseded' },
+    { where: { billingInvoiceId: invoice.id, status: db.BillingPaymentAttempt.IN_PROGRESS }, transaction }
+  );
+  if (invoice.specialTermsId) {
+    await db.SubscriptionTerm.decrement('chargesUsed', { by: 1, where: { id: invoice.specialTermsId, chargesUsed: { [db.Sequelize.Op.gt]: 0 } }, transaction });
+  }
+  await recordAudit({
+    workspaceId: invoice.workspaceId,
+    actorUserId,
+    action: 'billing_invoice.void',
+    entityType: 'BillingInvoice',
+    entityId: invoice.id,
+    before: { status: 'pending' },
+    after: { status: 'void', reason: 'replaced' },
+    metadata: { amount: Number(invoice.amount), currency: invoice.currency, periodStart: invoice.periodStart, checkoutsSuperseded, by: 'plan_switch' },
+    req,
+    transaction,
+  });
+  return true;
+}
+
+/**
+ * An upgrade's charge (billing/planSwitchService, which holds the
+ * subscription locked and has made room for it): the difference for the
+ * days left, already priced (`amount`, after the store's referral code), so
+ * the charge carries no code and is never re-priced: what the merchant was
+ * shown is what every way to pay asks. Its period is the days it pays for,
+ * up to the end of the paid period. The plan changes when it is paid
+ * (settlePaid), never before.
+ */
+async function createUpgradeChargeInTransaction(subscription, plan, billingCycle, { amount, periodEnd, now = new Date(), req = null }, transaction) {
+  if (!Number.isSafeInteger(amount) || amount <= 0) throw new ConflictError('Nothing is due for this change.', 'NOTHING_TO_PAY');
+  const invoice = await db.BillingInvoice.create(
+    {
+      workspaceId: subscription.workspaceId,
+      subscriptionId: subscription.id,
+      grossAmount: amount,
+      discountAmount: 0,
+      amount,
+      currency: plan.currency,
+      referralCodeId: null,
+      specialTermsId: null,
+      status: 'pending',
+      periodStart: now,
+      periodEnd,
+      targetPlanId: plan.id,
+      targetBillingCycle: billingCycle,
+    },
+    { transaction }
+  );
+  if (req) {
+    await recordAudit({
+      workspaceId: subscription.workspaceId,
+      actorUserId: req.user.id,
+      action: 'billing_invoice.create',
+      entityType: 'BillingInvoice',
+      entityId: invoice.id,
+      after: chargeAuditState(invoice),
+      metadata: { workspaceId: subscription.workspaceId, targetPlanId: plan.id, targetBillingCycle: billingCycle, planSwitch: 'upgrade' },
+      req,
+      transaction,
+    });
+  }
+  return invoice;
 }
 
 /**
@@ -426,20 +542,28 @@ async function voidMoveCharge(invoice, reason, { actorUserId = null, req = null 
  */
 async function settleLateMovePayment(invoice, args, transaction) {
   const subscription = await db.Subscription.findByPk(invoice.subscriptionId, { transaction, lock: transaction.LOCK.UPDATE });
-  const [current, target, otherPending] = await Promise.all([
-    subscription && subscription.planId ? db.Plan.findByPk(subscription.planId, { transaction }) : null,
-    invoice.targetPlanId ? db.Plan.findByPk(invoice.targetPlanId, { transaction }) : null,
-    db.BillingInvoice.findOne({ where: { subscriptionId: invoice.subscriptionId, status: 'pending' }, attributes: ['id'], transaction }),
-  ]);
-  const applicable = Boolean(
-    current &&
-      Number(current.perOrderFeeAmount) > 0 &&
-      target &&
-      target.isActive &&
-      target.isPublic &&
-      !(Number(target.perOrderFeeAmount) > 0) &&
-      !otherPending
-  );
+  // A plan switch's charge (billing/planSwitchSettlement) has its own test:
+  // the store still as it was priced, the plan on offer, nothing else waiting.
+  const sw = await planSwitches.switchOfCharge(invoice, transaction);
+  let applicable;
+  if (sw) {
+    applicable = subscription ? (await planSwitches.lateFit(invoice, sw, subscription, transaction)).applies : false;
+  } else {
+    const [current, target, otherPending] = await Promise.all([
+      subscription && subscription.planId ? db.Plan.findByPk(subscription.planId, { transaction }) : null,
+      invoice.targetPlanId ? db.Plan.findByPk(invoice.targetPlanId, { transaction }) : null,
+      db.BillingInvoice.findOne({ where: { subscriptionId: invoice.subscriptionId, status: 'pending' }, attributes: ['id'], transaction }),
+    ]);
+    applicable = Boolean(
+      current &&
+        Number(current.perOrderFeeAmount) > 0 &&
+        target &&
+        target.isActive &&
+        target.isPublic &&
+        !(Number(target.perOrderFeeAmount) > 0) &&
+        !otherPending
+    );
+  }
   const wasVoided = { reason: invoice.voidReason, at: invoice.voidedAt };
   if (applicable) {
     await invoice.update({ status: 'pending', voidedAt: null, voidReason: null }, { transaction });
@@ -460,6 +584,33 @@ async function settleLateMovePayment(invoice, args, transaction) {
   const amount = Number(args.amountPaid == null ? (args.frozen ? args.frozen.amount : invoice.amount) : args.amountPaid);
   const key = `move_payment_credit:${args.externalReference || `manual:${invoice.id}`}`.slice(0, 120);
   const wallet = require('./walletService');
+  // A plan switch's charge in another currency than the balance's is never
+  // credited to it: kept on the charge, to refund by hand.
+  if (sw && invoice.currency !== wallet.WALLET_CURRENCY) {
+    if (invoice.amountPaid == null) {
+      await invoice.update(
+        {
+          amountPaid: amount,
+          paidAt: args.paidAt || new Date(),
+          ...(args.externalReference ? { externalReference: args.externalReference } : {}),
+          paymentNote: `Paid for a plan change that could no longer be applied; not credited (${invoice.currency}): refund by hand.`,
+        },
+        { transaction }
+      );
+      await recordAudit({
+        workspaceId: invoice.workspaceId,
+        actorUserId: args.recordedByUserId || null,
+        action: 'subscription.plan_switch_payment_unapplied',
+        entityType: 'BillingInvoice',
+        entityId: invoice.id,
+        after: { status: 'void', amountPaid: amount },
+        metadata: { wasVoided, source: args.source, externalReference: args.externalReference || null, currency: invoice.currency, planSwitchId: sw.id },
+        transaction,
+      });
+      logger.error(`billing invoice ${invoice.id}: ${amount} ${invoice.currency} paid for a plan change that could no longer be applied. Refund it by hand.`);
+    }
+    return { commission: null, codeLapsed: false, lateMove: 'unapplied' };
+  }
   const walletRow = await wallet.lockWallet(invoice.workspaceId, transaction);
   let entry = await db.WalletLedgerEntry.findOne({ where: { idempotencyKey: key }, transaction });
   if (!entry && amount > 0) {
@@ -689,6 +840,9 @@ async function reverseManualPayment(invoiceId, { reason }, req) {
       );
       subscriptionStatus.to = snapshot.status;
       subscriptionStatus.planRestored = snapshot.planId;
+      // A plan switch this payment applied waits for its charge again.
+      const reopened = await planSwitches.reopenAfterReversal(invoice, transaction);
+      if (reopened) subscriptionStatus.planSwitchReopened = reopened.id;
     } else if (madeActiveByThisPayment && !invoice.targetPlanId) {
       await subscription.update({ status: 'past_due' }, { transaction });
       subscriptionStatus.to = 'past_due';
@@ -744,6 +898,10 @@ async function markChargeFailed(invoiceId, { reason } = {}) {
     const invoice = await db.BillingInvoice.findByPk(invoiceId, { transaction, lock: transaction.LOCK.UPDATE });
     if (!invoice) throw new NotFoundError('Billing invoice');
     if (invoice.status !== 'pending') return { invoice, changed: false };
+    // A plan switch's charge stays payable and the subscription is left
+    // alone, as an online payment that fails leaves them: the merchant pays
+    // again, cancels the switch, or it expires.
+    if (await planSwitches.switchOfCharge(invoice, transaction)) return { invoice, changed: false };
 
     await invoice.update({ status: 'failed', failureReason: reason ? String(reason).slice(0, 300) : null }, { transaction });
     const subscription = await db.Subscription.findByPk(invoice.subscriptionId, { transaction });
@@ -890,10 +1048,23 @@ async function listCharges(workspaceId) {
   const targetNames = new Map(
     targetIds.length ? (await db.Plan.findAll({ where: { id: targetIds }, attributes: ['id', 'name'] })).map((p) => [p.id, p.name]) : []
   );
+  // A charge a merchant's plan switch made (an upgrade, or a move from a free
+  // plan) says so: it is not a pay-per-order move.
+  const switchIds = invoices.filter((i) => i.targetPlanId).map((i) => i.id);
+  const switches = new Map(
+    switchIds.length
+      ? (await db.PlanSwitch.findAll({ where: { billingInvoiceId: switchIds }, attributes: ['id', 'billingInvoiceId', 'kind', 'status', 'fromPlanId'] })).map((s) => [
+          s.billingInvoiceId,
+          s,
+        ])
+      : []
+  );
   const charges = [];
   for (const invoice of invoices) {
     const row = serializeCharge(invoice, invoice.status === 'paid' ? null : await payableNow(invoice));
     if (invoice.targetPlanId) row.targetPlanName = targetNames.get(invoice.targetPlanId) || null;
+    const sw = switches.get(invoice.id);
+    if (sw) row.planSwitch = { id: sw.id, kind: sw.kind, status: sw.status, fromPlanId: sw.fromPlanId };
     charges.push(row);
   }
 
@@ -946,7 +1117,9 @@ module.exports = {
   createCharge,
   createChargeInTransaction,
   createMoveChargeInTransaction,
+  createUpgradeChargeInTransaction,
   voidMoveCharge,
+  voidRenewalCharge,
   settleLateMovePayment,
   quoteCharge,
   settlePaid,

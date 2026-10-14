@@ -54,6 +54,23 @@ module.exports = {
       billingCycle: Joi.string().valid(...BILLING_CYCLES).optional(),
     }),
   },
+  // A merchant changing plan by themselves (planSwitchService). Without
+  // `billingCycle`, the subscription's. `expectedAmount` (start only) is what
+  // the preview showed as due now, in minor units, only compared with the
+  // server's (409 SWITCH_AMOUNT_CHANGED).
+  previewPlanSwitch: {
+    body: Joi.object({
+      planId: Joi.string().guid().required(),
+      billingCycle: Joi.string().valid(...BILLING_CYCLES).optional(),
+    }),
+  },
+  startPlanSwitch: {
+    body: Joi.object({
+      planId: Joi.string().guid().required(),
+      billingCycle: Joi.string().valid(...BILLING_CYCLES).optional(),
+      expectedAmount: Joi.number().integer().min(0).max(1e12).optional(),
+    }),
+  },
   // A pay-per-order store moving to a plan on offer (merchantPlansService.requestPlanMove).
   requestPlanMove: {
     body: Joi.object({

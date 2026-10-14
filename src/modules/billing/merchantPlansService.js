@@ -10,6 +10,7 @@ const goLive = require('./goLiveService');
 const charges = require('./subscriptionChargeService');
 const publicPlans = require('./publicPlansService');
 const wallet = require('./walletService');
+const planSwitches = require('./planSwitchService');
 const { planPrice, BILLING_CYCLES } = require('./planPricing');
 
 /**
@@ -167,6 +168,10 @@ async function listPlans(workspaceId) {
     payPerOrder: await payPerOrderFor(subscription),
     // A store on pay per order moving to one of `plans` by itself (requestPlanMove).
     move: await moveFor(workspaceId, subscription, plans),
+    // Changing plan by itself (planSwitchService, PLAN_SWITCH_ENABLED):
+    // { enabled, mode: switch | immediate | move | support | null, reason, open }.
+    // `planChange` above keeps its old values for dashboards that predate it.
+    planSwitch: await planSwitches.summaryFor(subscription),
   };
 }
 
@@ -393,8 +398,15 @@ async function cancelPlanMove(workspaceId, req) {
 async function expirePendingMoves({ now = new Date(), limit = 200 } = {}) {
   if (!wallet.enabled()) return { expired: 0 };
   const cutoff = new Date(now.getTime() - env.wallet.moveExpiryHours * 60 * 60 * 1000);
+  const { Op } = db.Sequelize;
   const stale = await db.BillingInvoice.findAll({
-    where: { status: 'pending', targetPlanId: { [db.Sequelize.Op.ne]: null }, createdAt: { [db.Sequelize.Op.lt]: cutoff } },
+    where: {
+      status: 'pending',
+      targetPlanId: { [Op.ne]: null },
+      createdAt: { [Op.lt]: cutoff },
+      // A plan switch's charge expires by its own rule (planSwitchService.expireUnpaid).
+      [Op.and]: [db.sequelize.literal('NOT EXISTS (SELECT 1 FROM plan_switches ps WHERE ps.billing_invoice_id = "BillingInvoice"."id")')],
+    },
     attributes: ['id'],
     order: [['createdAt', 'ASC']],
     limit,
@@ -419,6 +431,7 @@ module.exports = {
   requestPlanMove,
   cancelPlanMove,
   expirePendingMoves,
+  lockPendingCharge,
   serializeInvoice,
   MAX_PAGE_SIZE,
 };

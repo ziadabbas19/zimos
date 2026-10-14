@@ -6,6 +6,7 @@ const service = require('./billingService');
 const { verifyGatewaySignature } = require('./gatewaySignature');
 const onlineBilling = require('./onlineBillingService');
 const merchantPlans = require('./merchantPlansService');
+const planSwitches = require('./planSwitchService');
 
 // POST /api/v1/billing/webhook  — no auth; identity comes from the signature.
 // Verified against req.rawBody (the exact bytes the gateway signed), never the
@@ -110,7 +111,26 @@ const requestPlanMove = asyncHandler(async (req, res) => {
   res.status(result.created ? 201 : 200).json(result);
 });
 
+// POST /api/v1/workspaces/:workspaceId/billing/plan-switch/preview — what changing to a plan would do; writes nothing.
+const previewPlanSwitch = asyncHandler(async (req, res) => {
+  res.json(await planSwitches.preview(req.tenant.workspaceId, req.body));
+});
+
+// POST /api/v1/workspaces/:workspaceId/billing/plan-switch — 201 with a new switch, 200 otherwise.
+const startPlanSwitch = asyncHandler(async (req, res) => {
+  const result = await planSwitches.start(req.tenant.workspaceId, req.body, req);
+  res.status(result.created ? 201 : 200).json(result);
+});
+
+// POST /api/v1/workspaces/:workspaceId/billing/plan-switch/cancel — the switch waiting is dropped.
+const cancelPlanSwitch = asyncHandler(async (req, res) => {
+  res.json(await planSwitches.cancel(req.tenant.workspaceId, req));
+});
+
 module.exports = {
+  previewPlanSwitch,
+  startPlanSwitch,
+  cancelPlanSwitch,
   requestPlanMove,
   cancelPlanMove,
   listPlans,
