@@ -307,6 +307,33 @@ describe('not paid, or cancelled', () => {
     expect((await start(s, { planId: business.id })).status).toBe(201);
   });
 
+  it('the switch waiting says when a transfer for its charge is under review, until the console decides', async () => {
+    const s = await paidStore();
+    const started = await start(s, { planId: pro.id });
+    expect(started.body.switch.proofUnderReview).toBe(false);
+    expect((await plansOf(s)).body.planSwitch.open).toMatchObject({ status: 'pending', proofUnderReview: false });
+
+    const sent = await proof(s, started.body.invoice.id);
+    expect(sent.status).toBe(201);
+    const open = (await plansOf(s)).body.planSwitch.open;
+    expect(open).toMatchObject({ id: started.body.switch.id, proofUnderReview: true });
+    // Every field it had is still there.
+    for (const field of ['kind', 'status', 'from', 'to', 'effectiveAt', 'invoiceId', 'amountDue', 'currency', 'expiresAt', 'proration', 'createdAt']) {
+      expect(open).toHaveProperty(field);
+    }
+    expect((await cancel(s)).body.error.code).toBe('PROOF_UNDER_REVIEW');
+
+    const rejected = await request(app).post(`/api/v1/admin/payment-proofs/${sent.body.proof.id}/reject`).set(admin.H).send({ note: 'No transfer arrived' });
+    expect(rejected.status).toBe(200);
+    expect((await plansOf(s)).body.planSwitch.open.proofUnderReview).toBe(false);
+    expect((await cancel(s)).body).toMatchObject({ cancelled: true, switch: { status: 'cancelled', proofUnderReview: false } });
+
+    // A scheduled switch has no charge to pay: never under review.
+    const down = await paidStore(pro);
+    await start(down, { planId: basic.id });
+    expect((await plansOf(down)).body.planSwitch.open).toMatchObject({ status: 'scheduled', proofUnderReview: false });
+  });
+
   it('left unpaid, the job voids it, unless a transfer for it is with the console', async () => {
     const a = await paidStore();
     const b = await paidStore();

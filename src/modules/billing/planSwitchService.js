@@ -160,16 +160,19 @@ async function amountDueFor(decision, subscription, target, cycle, transaction) 
 // --------------------------------------------------------------- serialize
 
 async function withPlans(sw, transaction) {
-  const [fromPlan, toPlan, invoice] = await Promise.all([
+  const [fromPlan, toPlan, invoice, waitingProofs] = await Promise.all([
     sw.fromPlanId ? db.Plan.findByPk(sw.fromPlanId, { attributes: ['id', 'name'], transaction }) : null,
     sw.toPlanId ? db.Plan.findByPk(sw.toPlanId, { attributes: ['id', 'name'], transaction }) : null,
     sw.billingInvoiceId ? db.BillingInvoice.findByPk(sw.billingInvoiceId, { transaction }) : null,
+    sw.status === 'pending' && sw.billingInvoiceId
+      ? db.PaymentProof.count({ where: { billingInvoiceId: sw.billingInvoiceId, status: 'pending' }, transaction })
+      : 0,
   ]);
-  return serialize(sw, { fromPlan, toPlan, invoice });
+  return serialize(sw, { fromPlan, toPlan, invoice, proofUnderReview: rules.proofUnderReview({ status: sw.status, waitingProofs }) });
 }
 
 /** What the merchant sees of a switch. */
-function serialize(sw, { fromPlan = null, toPlan = null, invoice = null } = {}) {
+function serialize(sw, { fromPlan = null, toPlan = null, invoice = null, proofUnderReview = false } = {}) {
   const quote = sw.quote || null;
   return {
     id: sw.id,
@@ -189,6 +192,9 @@ function serialize(sw, { fromPlan = null, toPlan = null, invoice = null } = {}) 
     currency: invoice ? invoice.currency : quote ? quote.currency || null : null,
     // When its charge is voided if still unpaid.
     expiresAt: sw.status === 'pending' ? rules.expiresAt(sw.createdAt, env.billing.planSwitch.chargeExpiryHours) : null,
+    // A transfer's proof for its charge is with the console: cancelling or
+    // replacing it is refused (409 PROOF_UNDER_REVIEW) until it is reviewed.
+    proofUnderReview: Boolean(proofUnderReview),
     proration:
       sw.kind === 'upgrade' && quote
         ? {

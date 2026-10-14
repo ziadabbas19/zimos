@@ -165,6 +165,24 @@ describe('an upgrade', () => {
     expect(charge.status).toBe('pending');
   });
 
+  it('the switch waiting says when a transfer for its charge is under review, and stops saying so once reviewed', async () => {
+    const sub = await store();
+    await switches.start(WID, { planId: pro.id }, req);
+    expect((await switches.summaryFor(sub)).open).toMatchObject({ status: 'pending', proofUnderReview: false });
+    const [charge] = await pendingOf();
+    const proof = await db.PaymentProof.create({ billingInvoiceId: charge.id, status: 'pending' });
+    expect((await switches.summaryFor(sub)).open).toMatchObject({ proofUnderReview: true, amountDue: 20000 });
+    await proof.update({ status: 'rejected' });
+    expect((await switches.summaryFor(sub)).open.proofUnderReview).toBe(false);
+    // A scheduled switch has no charge: never.
+    db.reset();
+    basic = await db.Plan.create({ key: 'basic', name: 'Basic', monthlyPriceAmount: 30000, yearlyPriceAmount: 300000 });
+    pro = await db.Plan.create({ key: 'pro', name: 'Pro', monthlyPriceAmount: 60000, yearlyPriceAmount: 600000 });
+    const down = await store({ planId: pro.id });
+    await switches.start(WID, { planId: basic.id }, req);
+    expect((await switches.summaryFor(down)).open).toMatchObject({ status: 'scheduled', proofUnderReview: false });
+  });
+
   it('two at once: a charge that appeared after the first lock is PLAN_SWITCH_BUSY', async () => {
     await store();
     await switches.start(WID, { planId: pro.id }, req);

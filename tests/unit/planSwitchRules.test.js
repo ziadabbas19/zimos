@@ -308,6 +308,17 @@ describe('scheduleStillApplies and scheduleCovers', () => {
   });
 });
 
+describe('proofUnderReview', () => {
+  it('only a pending switch with a proof still waiting', () => {
+    expect(rules.proofUnderReview({ status: 'pending', waitingProofs: 1 })).toBe(true);
+    expect(rules.proofUnderReview({ status: 'pending', waitingProofs: 0 })).toBe(false);
+    expect(rules.proofUnderReview({ status: 'scheduled', waitingProofs: 1 })).toBe(false);
+    for (const status of ['applied', 'cancelled', 'replaced', 'expired', 'dropped']) {
+      expect(rules.proofUnderReview({ status, waitingProofs: 2 })).toBe(false);
+    }
+  });
+});
+
 describe('chargeExpiry', () => {
   const now = at('2026-03-17T12:00:00Z');
   const base = { now, switchHours: 48, moveHours: 72, walletEnabled: true };

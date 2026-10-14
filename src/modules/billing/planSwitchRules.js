@@ -229,6 +229,17 @@ function expiresAt(createdAt, hours) {
 }
 
 /**
+ * Whether a transfer's proof for the charge a switch waits on is under
+ * review: only a pending switch (a scheduled one has no charge), with at
+ * least one proof still waiting for the console. While true, cancelling or
+ * replacing the switch is refused (409 PROOF_UNDER_REVIEW) and it does not
+ * expire.
+ */
+function proofUnderReview({ status, waitingProofs }) {
+  return status === 'pending' && Number(waitingProofs) > 0;
+}
+
+/**
  * How long the charge a switch would write lives unpaid if it were started
  * at `now`: { hours, expiresAt } for an upgrade or a move (from a free plan),
  * after PLAN_SWITCH_CHARGE_EXPIRY_HOURS (`switchHours`); null for a switch
@@ -263,4 +274,5 @@ module.exports = {
   scheduleCovers,
   expiresAt,
   chargeExpiry,
+  proofUnderReview,
 };
