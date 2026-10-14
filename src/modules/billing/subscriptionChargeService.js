@@ -393,7 +393,24 @@ async function settlePaid(
     // old prorated kind kept the paid period.
     const sw = await planSwitches.switchOfCharge(invoice, transaction);
     if (sw && sw.kind === 'upgrade' && !switchRules.fullPeriodUpgrade(sw)) await planSwitches.applyUpgrade(invoice, subscription, sw, transaction);
-    else await switchPlanForMove(invoice, subscription, transaction);
+    else {
+      const before = { planId: subscription.planId, billingCycle: subscription.billingCycle, status: subscription.status };
+      await switchPlanForMove(invoice, subscription, transaction);
+      // A plan switch's charge: the switch's own audit entry too, as for the old prorated kind.
+      if (sw) {
+        await planSwitches.audit(
+          sw,
+          'subscription.plan_switch_applied',
+          {
+            before,
+            after: { planId: subscription.planId, billingCycle: subscription.billingCycle, status: subscription.status },
+            metadata: { paymentSource: invoice.paymentSource, amountPaid: Number(invoice.amountPaid), currency: invoice.currency, currentPeriodStart: subscription.currentPeriodStart, currentPeriodEnd: subscription.currentPeriodEnd },
+            actorUserId: invoice.recordedByUserId || null,
+          },
+          transaction
+        );
+      }
+    }
     if (sw) await planSwitches.markApplied(sw, transaction);
   } else {
     // A late payment for an earlier period never moves the period backwards.
