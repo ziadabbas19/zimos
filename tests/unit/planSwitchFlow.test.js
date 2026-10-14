@@ -107,6 +107,22 @@ describe('an upgrade', () => {
     expect(await db.BillingInvoice.count()).toBe(0);
   });
 
+  it('the next renewal has a date for every kind but a move', async () => {
+    const sub = await store();
+    const up = (await switches.preview(WID, { planId: pro.id })).preview;
+    expect(up.nextRenewal).toMatchObject({ at: sub.currentPeriodEnd, amount: 60000, currency: 'EGP', billingCycle: 'monthly' });
+    // The plan the store is on: its renewal as it stands.
+    expect((await switches.preview(WID, { planId: basic.id })).preview).toMatchObject({ kind: 'none', nextRenewal: { at: sub.currentPeriodEnd, amount: 30000 } });
+    // A free plan has no renewal.
+    expect((await switches.preview(WID, { planId: free.id })).preview).toMatchObject({ kind: 'scheduled', nextRenewal: null });
+    // From a free plan: a move, whose period starts when it is paid.
+    db.reset();
+    free = await db.Plan.create({ key: 'free', name: 'Free', monthlyPriceAmount: 0, yearlyPriceAmount: 0 });
+    pro = await db.Plan.create({ key: 'pro', name: 'Pro', monthlyPriceAmount: 60000, yearlyPriceAmount: 600000 });
+    await store({ planId: free.id });
+    expect((await switches.preview(WID, { planId: pro.id })).preview).toMatchObject({ kind: 'move', nextRenewal: { at: null, amount: 60000, billingCycle: 'monthly' } });
+  });
+
   it('the preview says how long the charge would live; a downgrade writes none', async () => {
     await store();
     const before = Date.now();

@@ -229,6 +229,33 @@ function expiresAt(createdAt, hours) {
 }
 
 /**
+ * When the next renewal falls after a switch of this `kind` (decide()'s):
+ *   upgrade              the end of the paid period, which it keeps;
+ *   scheduled            its moment (`effectiveAt`), when the new plan starts;
+ *   immediate, none      the end of the period, or now once it has ended;
+ *   trial_change         the trial's end (or the period's);
+ *   move, pay_per_order  null: its period starts when its charge is paid,
+ *                        so the renewal (one period later) has no date yet.
+ * A free plan has no renewal at all; the caller leaves `nextRenewal` out then.
+ */
+function renewalAt({ kind, periodEnd, effectiveAt = null, trialEndsAt = null, now }) {
+  const end = new Date(periodEnd);
+  switch (kind) {
+    case 'upgrade':
+      return end;
+    case 'scheduled':
+      return new Date(effectiveAt);
+    case 'immediate':
+    case 'none':
+      return end.getTime() > time(now) ? end : new Date(now);
+    case 'trial_change':
+      return new Date(trialEndsAt || periodEnd);
+    default:
+      return null;
+  }
+}
+
+/**
  * Whether a transfer's proof for the charge a switch waits on is under
  * review: only a pending switch (a scheduled one has no charge), with at
  * least one proof still waiting for the console. While true, cancelling or
@@ -275,4 +302,5 @@ module.exports = {
   expiresAt,
   chargeExpiry,
   proofUnderReview,
+  renewalAt,
 };

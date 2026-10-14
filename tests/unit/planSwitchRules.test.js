@@ -308,6 +308,31 @@ describe('scheduleStillApplies and scheduleCovers', () => {
   });
 });
 
+describe('renewalAt', () => {
+  const periodEnd = at('2026-04-01T00:00:00Z');
+  const now = at('2026-03-17T12:00:00Z');
+
+  it('has a date for every kind but a move', () => {
+    expect(rules.renewalAt({ kind: 'upgrade', periodEnd, now })).toEqual(periodEnd);
+    expect(rules.renewalAt({ kind: 'scheduled', periodEnd, effectiveAt: at('2026-04-01T00:00:00Z'), now })).toEqual(at('2026-04-01T00:00:00Z'));
+    expect(rules.renewalAt({ kind: 'immediate', periodEnd, now })).toEqual(periodEnd);
+    expect(rules.renewalAt({ kind: 'none', periodEnd, now })).toEqual(periodEnd);
+    expect(rules.renewalAt({ kind: 'trial_change', periodEnd, trialEndsAt: at('2026-03-20T00:00:00Z'), now })).toEqual(at('2026-03-20T00:00:00Z'));
+    expect(rules.renewalAt({ kind: 'trial_change', periodEnd, now })).toEqual(periodEnd);
+  });
+
+  it('a period that has ended renews now', () => {
+    const later = at('2026-04-05T00:00:00Z');
+    expect(rules.renewalAt({ kind: 'immediate', periodEnd, now: later })).toEqual(later);
+    expect(rules.renewalAt({ kind: 'none', periodEnd, now: later })).toEqual(later);
+  });
+
+  it('a move has none yet: its period starts when it is paid', () => {
+    expect(rules.renewalAt({ kind: 'move', periodEnd, now })).toBeNull();
+    expect(rules.renewalAt({ kind: 'pay_per_order', periodEnd, now })).toBeNull();
+  });
+});
+
 describe('proofUnderReview', () => {
   it('only a pending switch with a proof still waiting', () => {
     expect(rules.proofUnderReview({ status: 'pending', waitingProofs: 1 })).toBe(true);

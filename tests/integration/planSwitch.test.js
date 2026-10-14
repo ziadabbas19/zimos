@@ -437,6 +437,26 @@ describe('an ended or restricted period, manual and special cases', () => {
   });
 });
 
+describe('the next renewal in the preview', () => {
+  it('has a date for every kind but a move, and is left out for a free plan', async () => {
+    const s = await paidStore();
+    const at = (body) => body.preview.nextRenewal && body.preview.nextRenewal.at;
+    expect(new Date(at((await preview(s, { planId: pro.id })).body)).getTime()).toBe(s.end.getTime());
+    const same = (await preview(s, { planId: basic.id })).body;
+    expect(same.preview.kind).toBe('none');
+    expect(new Date(at(same)).getTime()).toBe(s.end.getTime());
+    const down = (await preview(s, { planId: free.id })).body;
+    expect(down.preview).toMatchObject({ kind: 'scheduled', nextRenewal: null });
+
+    // A move's period starts when it is paid: from a free plan, and from pay per order.
+    const fromFree = await paidStore(free, { daysLeft: 36500 });
+    expect((await preview(fromFree, { planId: pro.id })).body.preview).toMatchObject({ kind: 'move', nextRenewal: { at: null, amount: PRO, billingCycle: 'monthly' } });
+    const fee = await db.Plan.create({ key: 'ppo', name: 'Pay per order', monthlyPriceAmount: 0, yearlyPriceAmount: 0, currency: 'EGP', isPublic: true, isActive: true, perOrderFeeAmount: 400 });
+    const ppo = await paidStore(fee, { daysLeft: 36500 });
+    expect((await preview(ppo, { planId: pro.id })).body.preview).toMatchObject({ kind: 'move', reason: 'pay_per_order', nextRenewal: { at: null } });
+  });
+});
+
 describe('the paths that stay as they were', () => {
   it('a trial changes plan at once; pay per order moves with no trial', async () => {
     const trial = await paidStore(basic, { status: 'trialing' });

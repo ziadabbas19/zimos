@@ -219,12 +219,14 @@ async function describe({ subscription, current, target, cycle, decision, price,
   const charged = amountDue > 0;
   const toFree = planPrice(target, cycle) === 0;
   const renewalAmount = toFree ? 0 : price(target, cycle);
-  const periodEnd = new Date(subscription.currentPeriodEnd);
-  let renewalAt = null;
-  if (decision.kind === 'upgrade') renewalAt = periodEnd;
-  else if (decision.kind === 'scheduled') renewalAt = decision.effectiveAt;
-  else if (decision.kind === 'immediate' && !decision.free) renewalAt = periodEnd > now ? periodEnd : now;
-  else if (decision.kind === 'trial_change') renewalAt = subscription.trialEndsAt || periodEnd;
+  // null only for a move: its period starts when its charge is paid.
+  const renewalAt = rules.renewalAt({
+    kind: decision.kind,
+    periodEnd: subscription.currentPeriodEnd,
+    effectiveAt: decision.effectiveAt || null,
+    trialEndsAt: subscription.trialEndsAt,
+    now,
+  });
 
   const sameScheduled = Boolean(open && open.status === 'scheduled' && decision.kind === 'scheduled' && open.toPlanId === target.id && open.toBillingCycle === cycle);
   let blockedBy = null;
@@ -252,6 +254,7 @@ async function describe({ subscription, current, target, cycle, decision, price,
       moveHours: env.wallet.moveExpiryHours,
       walletEnabled: env.wallet.enabled === true,
     }),
+    // null when the new plan is free; `at` null only for a move (see planSwitchRules.renewalAt).
     nextRenewal: toFree ? null : { at: renewalAt, amount: renewalAmount, currency: target.currency, billingCycle: cycle },
     // Whether the amount can be paid by the store itself (a gateway or a transfer is offered for its currency).
     payable: charged ? blockedBy !== 'NO_PAYMENT_METHOD' : null,
