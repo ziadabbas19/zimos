@@ -10,6 +10,7 @@ const goLive = require('./goLiveService');
 const charges = require('./subscriptionChargeService');
 const publicPlans = require('./publicPlansService');
 const wallet = require('./walletService');
+const planSwitches = require('./planSwitchService');
 const { planPrice, BILLING_CYCLES } = require('./planPricing');
 
 /**
@@ -167,6 +168,10 @@ async function listPlans(workspaceId) {
     payPerOrder: await payPerOrderFor(subscription),
     // A store on pay per order moving to one of `plans` by itself (requestPlanMove).
     move: await moveFor(workspaceId, subscription, plans),
+    // Changing plan by itself (planSwitchService, PLAN_SWITCH_ENABLED):
+    // { enabled, mode: switch | immediate | move | support | null, reason, open }.
+    // `planChange` above keeps its old values for dashboards that predate it.
+    planSwitch: await planSwitches.summaryFor(subscription),
   };
 }
 
@@ -426,6 +431,7 @@ module.exports = {
   requestPlanMove,
   cancelPlanMove,
   expirePendingMoves,
+  lockPendingCharge,
   serializeInvoice,
   MAX_PAGE_SIZE,
 };

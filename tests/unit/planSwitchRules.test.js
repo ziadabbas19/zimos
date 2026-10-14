@@ -237,6 +237,20 @@ describe('decide', () => {
   });
 });
 
+describe('selfServeMode', () => {
+  it('names the way each subscription changes plan', () => {
+    expect(rules.selfServeMode({ subscription: paid({ status: 'trialing' }), current: BASIC })).toEqual({ mode: 'immediate', reason: null });
+    expect(rules.selfServeMode({ subscription: paid({ status: 'draft' }), current: BASIC })).toEqual({ mode: 'immediate', reason: null });
+    expect(rules.selfServeMode({ subscription: paid(), current: FEE })).toEqual({ mode: 'move', reason: null });
+    expect(rules.selfServeMode({ subscription: paid(), current: BASIC })).toEqual({ mode: 'switch', reason: null });
+    // An ended period is still self-serve: the plan then changes at once.
+    expect(rules.selfServeMode({ subscription: paid({ status: 'past_due' }), current: BASIC })).toEqual({ mode: 'switch', reason: null });
+    expect(rules.selfServeMode({ subscription: paid({ status: 'cancelled' }), current: BASIC })).toEqual({ mode: 'support', reason: 'PLAN_CHANGE_NEEDS_SUPPORT' });
+    expect(rules.selfServeMode({ subscription: paid({ pricingKind: 'free' }), current: BASIC })).toEqual({ mode: 'support', reason: 'MANUAL_PRICING' });
+    expect(rules.selfServeMode({ subscription: paid(), current: BASIC, specialTerms: true })).toEqual({ mode: 'support', reason: 'SPECIAL_TERMS_ACTIVE' });
+  });
+});
+
 describe('chargeStillApplies', () => {
   const sw = { kind: 'upgrade', fromPlanId: BASIC.id, fromBillingCycle: 'monthly', toPlanId: PRO.id };
   const invoice = { periodEnd: at('2026-04-01T00:00:00Z') };

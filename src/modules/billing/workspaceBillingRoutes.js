@@ -33,6 +33,12 @@ router.get('/invoices', validate(schemas.listInvoices), controller.listInvoices)
 router.post('/plan', validate(schemas.changePlan), controller.changePlan);
 router.post('/plan-move', validate(schemas.requestPlanMove), controller.requestPlanMove);
 router.post('/plan-move/cancel', controller.cancelPlanMove);
+// Changing plan by itself at any time (billing/planSwitchService,
+// PLAN_SWITCH_ENABLED): what a switch would do, starting it, and cancelling
+// the one waiting (cancelling works with the flag off too).
+router.post('/plan-switch/preview', validate(schemas.previewPlanSwitch), controller.previewPlanSwitch);
+router.post('/plan-switch', validate(schemas.startPlanSwitch), controller.startPlanSwitch);
+router.post('/plan-switch/cancel', controller.cancelPlanSwitch);
 // Paying the charge online (billing/onlineBillingService), when
 // ONLINE_BILLING_ENABLED is on and the plan is priced in EGP.
 router.post('/payments', validate(schemas.startOnlinePayment), controller.startOnlinePayment);

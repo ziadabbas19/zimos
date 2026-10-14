@@ -83,6 +83,26 @@ function prorate({ fromPrice, toPrice, days, cycleDays }) {
 }
 
 /**
+ * How this subscription changes plan, whatever the plan asked for:
+ *   immediate  a draft or a trial: at once, nothing paid (POST /billing/plan)
+ *   move       pay per order: the move (POST /billing/plan-move)
+ *   switch     a paid subscription: by itself (POST /billing/plan-switch)
+ *   support    through Zimos support; `reason` says why:
+ *              PLAN_CHANGE_NEEDS_SUPPORT (cancelled or suspended),
+ *              MANUAL_PRICING (free or discounted by the console),
+ *              SPECIAL_TERMS_ACTIVE (a special-terms grant is running)
+ */
+function selfServeMode({ subscription, current, specialTerms = false }) {
+  const { status } = subscription;
+  if (status === 'draft' || status === 'trialing') return { mode: 'immediate', reason: null };
+  if (CLOSED_SUBSCRIPTION.has(status)) return { mode: 'support', reason: 'PLAN_CHANGE_NEEDS_SUPPORT' };
+  if (current && Number(current.perOrderFeeAmount) > 0) return { mode: 'move', reason: null };
+  if (subscription.pricingKind && subscription.pricingKind !== 'paid') return { mode: 'support', reason: 'MANUAL_PRICING' };
+  if (specialTerms) return { mode: 'support', reason: 'SPECIAL_TERMS_ACTIVE' };
+  return { mode: 'switch', reason: null };
+}
+
+/**
  * What a request to move to `target` on `targetCycle` is, for a store whose
  * subscription and plan (`current`) are as given. `price(plan, cycle)` is the
  * merchant's price for one period (the plan's price less the referral code);
@@ -110,12 +130,10 @@ function prorate({ fromPrice, toPrice, days, cycleDays }) {
  * `free`: the new plan costs nothing, so it starts as an open-ended active period.
  */
 function decide({ subscription, current, target, targetCycle, specialTerms = false, now = new Date(), price = planPrice }) {
-  const { status } = subscription;
-  if (status === 'draft' || status === 'trialing') return { kind: 'trial_change' };
-  if (CLOSED_SUBSCRIPTION.has(status)) return { refuse: 'PLAN_CHANGE_NEEDS_SUPPORT' };
-  if (current && Number(current.perOrderFeeAmount) > 0) return { kind: 'pay_per_order' };
-  if (subscription.pricingKind && subscription.pricingKind !== 'paid') return { refuse: 'MANUAL_PRICING' };
-  if (specialTerms) return { refuse: 'SPECIAL_TERMS_ACTIVE' };
+  const { mode, reason: refused } = selfServeMode({ subscription, current, specialTerms });
+  if (mode === 'immediate') return { kind: 'trial_change' };
+  if (mode === 'support') return { refuse: refused };
+  if (mode === 'move') return { kind: 'pay_per_order' };
 
   const cycle = targetCycle || subscription.billingCycle;
   const free = planPrice(target, cycle) === 0;
@@ -220,6 +238,7 @@ module.exports = {
   periodTerms,
   remainingDays,
   prorate,
+  selfServeMode,
   decide,
   chargeStillApplies,
   scheduleStillApplies,
