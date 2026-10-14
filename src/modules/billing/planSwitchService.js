@@ -646,6 +646,44 @@ async function adminVoidCharge(chargeId, { reason }, req) {
   return voidCharge({ id: chargeId }, 'voided_by_admin', { actorUserId: req.user.id, req, note: reason });
 }
 
+// -------------------------------------------------- a payment that failed
+
+/**
+ * A payment for a switch's charge did not go through: the charge is voided
+ * (payment_failed) and its switch cancelled, so the store stays on its plan
+ * with nothing pending. Only while nothing else may still pay it: no other
+ * online checkout in progress and no transfer's proof waiting for review. A
+ * renewal, or a pay-per-order move's charge, is left as before; so is every
+ * charge while PLAN_SWITCH_ENABLED is off (payable until it expires). In the
+ * caller's transaction; resolves true when it voided the charge.
+ */
+async function failSwitchCharge(invoiceId, { source = null } = {}, transaction) {
+  if (!enabled() || !invoiceId) return false;
+  const invoice = await db.BillingInvoice.findByPk(invoiceId, { transaction, lock: transaction.LOCK.UPDATE });
+  if (!invoice || invoice.status !== 'pending' || !invoice.targetPlanId) return false;
+  const sw = await settlement.switchOfCharge(invoice, transaction);
+  if (!sw || sw.status !== 'pending') return false;
+  const [checkouts, proofs] = await Promise.all([
+    db.BillingPaymentAttempt.count({ where: { billingInvoiceId: invoice.id, status: db.BillingPaymentAttempt.IN_PROGRESS }, transaction }),
+    db.PaymentProof.count({ where: { billingInvoiceId: invoice.id, status: 'pending' }, transaction }),
+  ]);
+  if (checkouts > 0 || proofs > 0) return false;
+  await db.Subscription.findByPk(invoice.subscriptionId, { transaction, lock: transaction.LOCK.UPDATE });
+  await charges.voidPendingCharge(invoice, 'payment_failed', {}, transaction);
+  logger.info(`[plan-switch] switch ${sw.id}: its charge ${invoice.id} voided, the payment did not go through (${source || 'unknown'})`);
+  return true;
+}
+
+/**
+ * failSwitchCharge in its own transaction, for a checkout that failed, was
+ * cancelled or ran out (billing/onlineBillingService) and a transfer's proof
+ * rejected (billing/paymentProofService).
+ */
+async function paymentFailed(invoiceId, { source = null } = {}) {
+  if (!enabled() || !invoiceId) return false;
+  return db.sequelize.transaction((transaction) => failSwitchCharge(invoiceId, { source }, transaction));
+}
+
 // ---------------------------------------------------------- the plans list
 
 /**
@@ -816,6 +854,8 @@ module.exports = {
   cancel,
   cancelCharge,
   adminVoidCharge,
+  failSwitchCharge,
+  paymentFailed,
   summaryFor,
   serialize,
   applyTo,

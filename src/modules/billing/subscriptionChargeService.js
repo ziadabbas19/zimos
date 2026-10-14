@@ -913,10 +913,15 @@ async function markChargeFailed(invoiceId, { reason } = {}) {
     const invoice = await db.BillingInvoice.findByPk(invoiceId, { transaction, lock: transaction.LOCK.UPDATE });
     if (!invoice) throw new NotFoundError('Billing invoice');
     if (invoice.status !== 'pending') return { invoice, changed: false };
-    // A plan switch's charge stays payable and the subscription is left
-    // alone, as an online payment that fails leaves them: the merchant pays
-    // again, cancels the switch, or it expires.
-    if (await planSwitches.switchOfCharge(invoice, transaction)) return { invoice, changed: false };
+    // A plan switch's charge never fails the subscription: with
+    // PLAN_SWITCH_ENABLED on it is voided and the switch cancelled
+    // (planSwitchService.failSwitchCharge); off, it stays payable until the
+    // merchant pays again, cancels the switch, or it expires.
+    if (await planSwitches.switchOfCharge(invoice, transaction)) {
+      // eslint-disable-next-line global-require
+      const voided = await require('./planSwitchService').failSwitchCharge(invoice.id, { source: 'invoice.payment_failed' }, transaction);
+      return { invoice, changed: voided };
+    }
 
     await invoice.update({ status: 'failed', failureReason: reason ? String(reason).slice(0, 300) : null }, { transaction });
     const subscription = await db.Subscription.findByPk(invoice.subscriptionId, { transaction });

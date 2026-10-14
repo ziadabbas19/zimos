@@ -43,7 +43,10 @@ const wallet = require('./walletService');
  *
  * A failed, cancelled or expired attempt changes only the attempt: never the
  * charge (no markChargeFailed) and never the subscription. Pressing Pay
- * again makes a new attempt.
+ * again makes a new attempt. The one exception, with PLAN_SWITCH_ENABLED
+ * on: a plan switch's charge nothing else is paying is voided and its
+ * switch cancelled (planSwitchService.paymentFailed), so the store stays on
+ * its plan with nothing pending.
  *
  * A card top-up of the prepaid balance (`startTopup`, migration 221) is an
  * attempt with purpose 'topup' and no charge: the same webhooks, sweep and
@@ -624,6 +627,21 @@ async function markNotPaid(attempt, status, reason) {
   return moved > 0;
 }
 
+/**
+ * After a checkout for a charge did not go through: a plan switch's charge
+ * nothing else is paying is voided (planSwitchService.paymentFailed).
+ * Logged, never thrown: the attempt is marked either way.
+ */
+async function afterNotPaid(attempt, source) {
+  if (!attempt.billingInvoiceId) return;
+  try {
+    // eslint-disable-next-line global-require
+    await require('./planSwitchService').paymentFailed(attempt.billingInvoiceId, { source });
+  } catch (err) {
+    logger.warn(`billing payment attempt ${attempt.id}: the plan switch's charge could not be voided: ${reasonOf(err)}`);
+  }
+}
+
 /** A refund Fawaterak approved: recorded for a platform admin, nothing changed (refunds are handled by hand). */
 async function recordRefund(attempt, payload) {
   await recordAudit({
@@ -653,8 +671,14 @@ async function actOn(event, attempt) {
   const { outcome } = await confirmAttempt(attempt, { source: `webhook:${kind}` });
   if (outcome !== 'not_paid') return outcome;
   if (kind === 'paid') return payload.status === 'paid' ? 'not_confirmed' : 'pending';
-  if (kind === 'failed') return (await markNotPaid(attempt, 'failed', payload.errorMessage)) ? 'failed' : 'not_paid';
-  return (await markNotPaid(attempt, 'expired', `${payload.paymentMethod || 'reference'} ${String(payload.status).toLowerCase()}`)) ? 'expired' : 'not_paid';
+  if (kind === 'failed') {
+    if (!(await markNotPaid(attempt, 'failed', payload.errorMessage))) return 'not_paid';
+    await afterNotPaid(attempt, 'webhook:failed');
+    return 'failed';
+  }
+  if (!(await markNotPaid(attempt, 'expired', `${payload.paymentMethod || 'reference'} ${String(payload.status).toLowerCase()}`))) return 'not_paid';
+  await afterNotPaid(attempt, 'webhook:cancel');
+  return 'expired';
 }
 
 /**
@@ -834,7 +858,10 @@ async function sweep({ limit = 50, at = now() } = {}) {
       result.asked += 1;
       if (outcome === 'paid') result.settled += 1;
       if (outcome === 'not_paid' && attempt.expiresAt && new Date(attempt.expiresAt) < at) {
-        if (await markNotPaid(attempt, 'expired', 'The checkout link expired unpaid.')) result.expired += 1;
+        if (await markNotPaid(attempt, 'expired', 'The checkout link expired unpaid.')) {
+          result.expired += 1;
+          await afterNotPaid(attempt, 'sweep');
+        }
       }
     } catch (err) {
       result.errors += 1;

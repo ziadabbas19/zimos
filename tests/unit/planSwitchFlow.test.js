@@ -549,6 +549,54 @@ describe('cancelling a charge (the merchant) and voiding one (the console)', () 
   });
 });
 
+describe('a payment for an upgrade that did not go through', () => {
+  it('voids the charge and cancels the switch: the store stays on its plan with nothing pending', async () => {
+    const sub = await store();
+    await switches.start(WID, { planId: pro.id }, req);
+    const [charge] = await pendingOf();
+    const [sw] = await openOf();
+    await db.BillingPaymentAttempt.create({ billingInvoiceId: charge.id, status: 'failed' });
+    expect(await switches.paymentFailed(charge.id, { source: 'webhook:failed' })).toBe(true);
+    expect(charge).toMatchObject({ status: 'void', voidReason: 'payment_failed' });
+    expect(sw).toMatchObject({ status: 'cancelled', endReason: 'payment_failed' });
+    expect(sub).toMatchObject({ planId: basic.id, status: 'active' });
+    expect(await pendingOf()).toHaveLength(0);
+    expect(await openOf()).toHaveLength(0);
+    // The upgrade can be started again.
+    expect((await switches.start(WID, { planId: pro.id }, req)).created).toBe(true);
+  });
+
+  it('left alone while another checkout or a transfer may still pay it', async () => {
+    await store();
+    await switches.start(WID, { planId: pro.id }, req);
+    const [charge] = await pendingOf();
+    const other = await db.BillingPaymentAttempt.create({ billingInvoiceId: charge.id, status: 'open' });
+    expect(await switches.paymentFailed(charge.id)).toBe(false);
+    await other.update({ status: 'expired' });
+    const proof = await db.PaymentProof.create({ billingInvoiceId: charge.id, status: 'pending' });
+    expect(await switches.paymentFailed(charge.id)).toBe(false);
+    expect(charge.status).toBe('pending');
+    await proof.update({ status: 'rejected' });
+    expect(await switches.paymentFailed(charge.id, { source: 'proof_rejected' })).toBe(true);
+    expect(charge.voidReason).toBe('payment_failed');
+  });
+
+  it('a renewal is left as before, and so is everything with the flag off', async () => {
+    const sub = await store();
+    const renewal = await db.BillingInvoice.create({
+      workspaceId: WID, subscriptionId: sub.id, grossAmount: 30000, amount: 30000, currency: 'EGP', periodStart: sub.currentPeriodEnd, periodEnd: new Date(sub.currentPeriodEnd.getTime() + 30 * DAY),
+    });
+    expect(await switches.paymentFailed(renewal.id)).toBe(false);
+    expect(renewal.status).toBe('pending');
+    await renewal.update({ status: 'void', voidReason: 'replaced' });
+    await switches.start(WID, { planId: pro.id }, req);
+    const [charge] = await pendingOf();
+    env.billing.planSwitch.enabled = false;
+    expect(await switches.paymentFailed(charge.id)).toBe(false);
+    expect(charge.status).toBe('pending');
+  });
+});
+
 describe('what is not changed here', () => {
   it('a trial changes plan as before, and pay per order moves as before', async () => {
     await store({ extra: { status: 'trialing' } });

@@ -600,14 +600,20 @@ async function approve(proofId, { receivedAmount }, req) {
   return { ...(await getForReview(proofId)), alreadyApproved: result.alreadyApproved };
 }
 
-/** POST /admin/payment-proofs/:id/reject { note } — the note is required and shown to the merchant. */
+/**
+ * POST /admin/payment-proofs/:id/reject { note } — the note is required and
+ * shown to the merchant. A plan switch's charge nothing else is paying is
+ * then voided (planSwitchService.paymentFailed, PLAN_SWITCH_ENABLED).
+ */
 async function reject(proofId, { note }, req) {
+  let invoiceId = null;
   const alreadyRejected = await db.sequelize.transaction(async (transaction) => {
     const proof = await db.PaymentProof.findByPk(proofId, { transaction, lock: transaction.LOCK.UPDATE });
     if (!proof) throw new NotFoundError('Payment proof');
     if (proof.status === 'approved') throw new ConflictError('This proof was approved: the charge is paid.', 'PROOF_ALREADY_REVIEWED');
     if (proof.status === 'rejected') return true;
     await proof.update({ status: 'rejected', reviewNote: note, reviewedByUserId: req.user.id, reviewedAt: new Date() }, { transaction });
+    invoiceId = proof.billingInvoiceId || null;
     await recordAudit({
       actorUserId: req.user.id,
       action: 'payment_proof.reject',
@@ -621,6 +627,14 @@ async function reject(proofId, { note }, req) {
     });
     return false;
   });
+  if (invoiceId) {
+    try {
+      // eslint-disable-next-line global-require
+      await require('./planSwitchService').paymentFailed(invoiceId, { source: 'proof_rejected' });
+    } catch (err) {
+      logger.warn(`payment proof ${proofId} rejected: the plan switch's charge could not be voided: ${err.message}`);
+    }
+  }
   return { ...(await getForReview(proofId)), alreadyRejected };
 }
 
