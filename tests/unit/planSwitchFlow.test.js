@@ -107,6 +107,17 @@ describe('an upgrade', () => {
     expect(await db.BillingInvoice.count()).toBe(0);
   });
 
+  it('the preview says how long the charge would live; a downgrade writes none', async () => {
+    await store();
+    const before = Date.now();
+    const { preview } = await switches.preview(WID, { planId: pro.id });
+    expect(preview.chargeExpiry.hours).toBe(env.billing.planSwitch.chargeExpiryHours);
+    const lives = preview.chargeExpiry.expiresAt.getTime() - before;
+    expect(lives).toBeGreaterThanOrEqual(48 * 3600 * 1000);
+    expect(lives).toBeLessThan(48 * 3600 * 1000 + 60 * 1000);
+    expect((await switches.preview(WID, { planId: free.id })).preview).toMatchObject({ kind: 'scheduled', chargeExpiry: null });
+  });
+
   it('starts one charge; the store keeps its plan until it is paid; the same request gets it back', async () => {
     const sub = await store();
     const first = await switches.start(WID, { planId: pro.id, expectedAmount: 20000 }, req);

@@ -153,6 +153,26 @@ describe('an upgrade in the middle of a paid period', () => {
     expect(new Date(next.body.invoice.periodStart).getTime()).toBe(s.end.getTime());
   });
 
+  it('the preview says how long the charge would live, and the switch started lives that long', async () => {
+    const s = await paidStore();
+    const hours = env.billing.planSwitch.chargeExpiryHours;
+    const before = Date.now();
+    const shown = await preview(s, { planId: pro.id });
+    expect(shown.body.preview.chargeExpiry).toMatchObject({ hours });
+    const lives = new Date(shown.body.preview.chargeExpiry.expiresAt).getTime() - before;
+    expect(lives).toBeGreaterThanOrEqual(hours * 3600 * 1000);
+    expect(lives).toBeLessThan(hours * 3600 * 1000 + 60 * 1000);
+    const started = await start(s, { planId: pro.id });
+    const { expiresAt, createdAt } = started.body.switch;
+    expect(new Date(expiresAt).getTime() - new Date(createdAt).getTime()).toBe(hours * 3600 * 1000);
+
+    // A downgrade writes no charge; a move from a free plan does.
+    const down = await paidStore(pro);
+    expect((await preview(down, { planId: basic.id })).body.preview).toMatchObject({ kind: 'scheduled', chargeExpiry: null });
+    const fromFree = await paidStore(free, { daysLeft: 36500 });
+    expect((await preview(fromFree, { planId: pro.id })).body.preview).toMatchObject({ kind: 'move', chargeExpiry: { hours } });
+  });
+
   it('the same request again is the same charge; an amount other than the one shown is refused', async () => {
     const s = await paidStore();
     const first = await start(s, { planId: pro.id });

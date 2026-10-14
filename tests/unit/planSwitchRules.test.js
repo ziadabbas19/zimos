@@ -307,3 +307,23 @@ describe('scheduleStillApplies and scheduleCovers', () => {
     expect(rules.expiresAt(at('2026-03-01T00:00:00Z'), 48)).toEqual(new Date(at('2026-03-01T00:00:00Z').getTime() + 2 * DAY));
   });
 });
+
+describe('chargeExpiry', () => {
+  const now = at('2026-03-17T12:00:00Z');
+  const base = { now, switchHours: 48, moveHours: 72, walletEnabled: true };
+
+  it('an upgrade or a move from a free plan: the switch hours, from now', () => {
+    expect(rules.chargeExpiry({ ...base, kind: 'upgrade' })).toEqual({ hours: 48, expiresAt: at('2026-03-19T12:00:00Z') });
+    expect(rules.chargeExpiry({ ...base, kind: 'move' })).toEqual({ hours: 48, expiresAt: at('2026-03-19T12:00:00Z') });
+    expect(rules.chargeExpiry({ ...base, kind: 'upgrade', switchHours: 1 })).toEqual({ hours: 1, expiresAt: at('2026-03-17T13:00:00Z') });
+  });
+
+  it('a pay-per-order move: its own hours, and none while the wallet is off', () => {
+    expect(rules.chargeExpiry({ ...base, kind: 'pay_per_order' })).toEqual({ hours: 72, expiresAt: at('2026-03-20T12:00:00Z') });
+    expect(rules.chargeExpiry({ ...base, kind: 'pay_per_order', walletEnabled: false })).toBeNull();
+  });
+
+  it('a switch that writes no charge: none', () => {
+    for (const kind of ['scheduled', 'immediate', 'trial_change', 'none']) expect(rules.chargeExpiry({ ...base, kind })).toBeNull();
+  });
+});

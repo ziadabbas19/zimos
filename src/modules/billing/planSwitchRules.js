@@ -228,6 +228,24 @@ function expiresAt(createdAt, hours) {
   return new Date(time(createdAt) + hours * 60 * 60 * 1000);
 }
 
+/**
+ * How long the charge a switch would write lives unpaid if it were started
+ * at `now`: { hours, expiresAt } for an upgrade or a move (from a free plan),
+ * after PLAN_SWITCH_CHARGE_EXPIRY_HOURS (`switchHours`); null for a switch
+ * that writes no charge. A pay-per-order move's charge has its own rule:
+ * WALLET_MOVE_EXPIRY_HOURS (`moveHours`), and only while WALLET_ENABLED is
+ * on — off, it never expires by itself (null). `kind` is decide()'s, so a
+ * pay-per-order move is 'pay_per_order'. The hourly billing job voids the
+ * charge at its first run after `expiresAt`, unless a transfer's proof for
+ * it is under review.
+ */
+function chargeExpiry({ kind, now, switchHours, moveHours, walletEnabled }) {
+  const after = (hours) => ({ hours, expiresAt: expiresAt(now, hours) });
+  if (kind === 'pay_per_order') return walletEnabled ? after(moveHours) : null;
+  if (kind === 'upgrade' || kind === 'move') return after(switchHours);
+  return null;
+}
+
 module.exports = {
   DAY_MS,
   MINOR_PER_UNIT,
@@ -244,4 +262,5 @@ module.exports = {
   scheduleStillApplies,
   scheduleCovers,
   expiresAt,
+  chargeExpiry,
 };

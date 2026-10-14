@@ -238,6 +238,14 @@ async function describe({ subscription, current, target, cycle, decision, price,
     proration: decision.proration || null,
     // Never a free trial on a switch.
     trial: false,
+    // How long the charge it writes would live unpaid if started now; null when it writes none.
+    chargeExpiry: rules.chargeExpiry({
+      kind: decision.kind,
+      now,
+      switchHours: env.billing.planSwitch.chargeExpiryHours,
+      moveHours: env.wallet.moveExpiryHours,
+      walletEnabled: env.wallet.enabled === true,
+    }),
     nextRenewal: toFree ? null : { at: renewalAt, amount: renewalAmount, currency: target.currency, billingCycle: cycle },
     // Whether the amount can be paid by the store itself (a gateway or a transfer is offered for its currency).
     payable: charged ? blockedBy !== 'NO_PAYMENT_METHOD' : null,
