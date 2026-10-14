@@ -17,6 +17,7 @@ const agents = require('../referrals/agentService');
 const referralCodes = require('../referrals/referralCodeService');
 const commissions = require('../referrals/commissionService');
 const charges = require('../billing/subscriptionChargeService');
+const planSwitches = require('../billing/planSwitchService');
 const billingService = require('../billing/billingService');
 const specialTerms = require('../billing/specialTermsService');
 const suspension = require('./workspaceSuspensionService');
@@ -83,6 +84,13 @@ const setBillingCycle = asyncHandler(async (req, res) => {
 const grantSpecialTerms = asyncHandler(async (req, res) => {
   const term = await specialTerms.grant(req.params.workspaceId, req.body, req);
   res.status(201).json({ term, ...(await charges.listCharges(req.params.workspaceId)) });
+});
+
+// A pending charge voided with a reason. 409 CHARGE_ALREADY_PAID /
+// CHARGE_NOT_PENDING / PROOF_UNDER_REVIEW; 404 PLAN_SWITCH_DISABLED.
+const voidCharge = asyncHandler(async (req, res) => {
+  const invoice = await planSwitches.adminVoidCharge(req.params.chargeId, req.body, req);
+  res.json({ charge: await charges.getCharge(invoice.id) });
 });
 
 // --- Store access (manual suspension + billing restriction) -----------------
@@ -413,6 +421,7 @@ module.exports = {
   createCharge,
   recordPayment,
   reversePayment,
+  voidCharge,
   setBillingCycle,
   grantSpecialTerms,
   getStoreAccess,

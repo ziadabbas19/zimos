@@ -593,6 +593,59 @@ async function cancel(workspaceId, req) {
   return { cancelled: true, switch: await withPlans(result), plans: await merchantPlans().listPlans(workspaceId) };
 }
 
+// -------------------------------------------------------- voiding a charge
+
+const chargeAlreadyPaid = () => new ConflictError('This charge is paid, so it cannot be cancelled.', 'CHARGE_ALREADY_PAID');
+const chargeNotPending = () => new ConflictError('This charge no longer asks for payment.', 'CHARGE_NOT_PENDING');
+const chargeProofUnderReview = (invoiceId) =>
+  new AppError('PROOF_UNDER_REVIEW', 'A transfer for this charge is being checked. Wait for the review before cancelling it.', 409, { invoiceId });
+
+/**
+ * The pending charge `chargeId` voided for `reason`, in one transaction: the
+ * charge locked first, then the subscription (the order a payment takes). A
+ * paid charge is never touched (409 CHARGE_ALREADY_PAID), nor one already
+ * void (409 CHARGE_NOT_PENDING); one a transfer's proof waits for is
+ * refused (409 PROOF_UNDER_REVIEW): the review decides first.
+ */
+async function voidCharge(where, reason, { actorUserId, req, note = null }) {
+  return db.sequelize.transaction(async (transaction) => {
+    const invoice = await db.BillingInvoice.findOne({ where, transaction, lock: transaction.LOCK.UPDATE });
+    if (!invoice) throw new NotFoundError('Charge');
+    if (invoice.status === 'paid') throw chargeAlreadyPaid();
+    if (invoice.status !== 'pending') throw chargeNotPending();
+    if (await proofWaiting(invoice.id, transaction)) throw chargeProofUnderReview(invoice.id);
+    await db.Subscription.findByPk(invoice.subscriptionId, { transaction, lock: transaction.LOCK.UPDATE });
+    await charges.voidPendingCharge(invoice, reason, { actorUserId, req, note }, transaction);
+    return invoice;
+  });
+}
+
+/**
+ * POST /workspaces/:id/billing/charges/:chargeId/cancel — the merchant
+ * cancels a pending charge of their own store (a renewal, an upgrade's, a
+ * move's): void (cancelled_by_merchant). A plan switch waiting for it is
+ * cancelled with it; the store keeps its plan and period. 404
+ * PLAN_SWITCH_DISABLED while the flag is off.
+ */
+async function cancelCharge(workspaceId, chargeId, req) {
+  if (!enabled()) throw disabledError();
+  const invoice = await voidCharge({ id: chargeId, workspaceId }, 'cancelled_by_merchant', { actorUserId: req.user.id, req });
+  return { invoice: { ...merchantPlans().serializeInvoice(invoice), cancellable: false }, plans: await merchantPlans().listPlans(workspaceId) };
+}
+
+/**
+ * POST /admin/charges/:chargeId/void { reason } — the console voids any
+ * pending charge (voided_by_admin), its reason kept on the charge and in the
+ * audit log. A plan switch waiting for it is dropped (admin_void). A
+ * transfer's proof waiting for it must be approved or rejected first, so
+ * money it shows is never left without its charge. 404 PLAN_SWITCH_DISABLED
+ * while the flag is off.
+ */
+async function adminVoidCharge(chargeId, { reason }, req) {
+  if (!enabled()) throw disabledError();
+  return voidCharge({ id: chargeId }, 'voided_by_admin', { actorUserId: req.user.id, req, note: reason });
+}
+
 // ---------------------------------------------------------- the plans list
 
 /**
@@ -761,6 +814,8 @@ module.exports = {
   preview,
   start,
   cancel,
+  cancelCharge,
+  adminVoidCharge,
   summaryFor,
   serialize,
   applyTo,

@@ -11,6 +11,7 @@ const charges = require('./subscriptionChargeService');
 const publicPlans = require('./publicPlansService');
 const wallet = require('./walletService');
 const planSwitches = require('./planSwitchService');
+const switchRules = require('./planSwitchRules');
 const { planPrice, BILLING_CYCLES } = require('./planPricing');
 
 /**
@@ -213,12 +214,18 @@ function serializeInvoice(invoice) {
     // A pay-per-order store's move: the plan and cycle it switches to when paid.
     targetPlanId: invoice.targetPlanId || null,
     targetBillingCycle: invoice.targetBillingCycle || null,
-    // A move's charge that no longer asks for money: cancelled | replaced | expired.
+    // A charge that no longer asks for money: cancelled | replaced | expired |
+    // cancelled_by_merchant | voided_by_admin | payment_failed.
     voidReason: invoice.voidReason || null,
   };
 }
 
-/** GET /workspaces/:id/billing/invoices?page=&pageSize= — newest first. */
+/**
+ * GET /workspaces/:id/billing/invoices?page=&pageSize= — newest first. Each
+ * says whether the merchant may cancel it (POST .../charges/:id/cancel):
+ * PLAN_SWITCH_ENABLED on, pending, and no transfer's proof for it with the
+ * console.
+ */
 async function listInvoices(workspaceId, { page = 1, pageSize = 20 } = {}) {
   const size = Math.min(Math.max(1, pageSize), MAX_PAGE_SIZE);
   const { rows, count } = await db.BillingInvoice.findAndCountAll({
@@ -230,7 +237,17 @@ async function listInvoices(workspaceId, { page = 1, pageSize = 20 } = {}) {
     limit: size,
     offset: (Math.max(1, page) - 1) * size,
   });
-  return { invoices: rows.map(serializeInvoice), page: Math.max(1, page), pageSize: size, total: count };
+  const pendingIds = rows.filter((invoice) => invoice.status === 'pending').map((invoice) => invoice.id);
+  const proofs = pendingIds.length
+    ? await db.PaymentProof.findAll({ where: { billingInvoiceId: pendingIds, status: 'pending' }, attributes: ['billingInvoiceId'] })
+    : [];
+  const waiting = new Set(proofs.map((proof) => proof.billingInvoiceId));
+  const switchOn = planSwitches.enabled();
+  const invoices = rows.map((invoice) => ({
+    ...serializeInvoice(invoice),
+    cancellable: switchRules.cancellableByMerchant({ enabled: switchOn, status: invoice.status, waitingProofs: waiting.has(invoice.id) ? 1 : 0 }),
+  }));
+  return { invoices, page: Math.max(1, page), pageSize: size, total: count };
 }
 
 /**

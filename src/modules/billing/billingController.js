@@ -127,7 +127,13 @@ const cancelPlanSwitch = asyncHandler(async (req, res) => {
   res.json(await planSwitches.cancel(req.tenant.workspaceId, req));
 });
 
+// POST /api/v1/workspaces/:workspaceId/billing/charges/:chargeId/cancel — a pending charge voided by the merchant.
+const cancelCharge = asyncHandler(async (req, res) => {
+  res.json(await planSwitches.cancelCharge(req.tenant.workspaceId, req.params.chargeId, req));
+});
+
 module.exports = {
+  cancelCharge,
   previewPlanSwitch,
   startPlanSwitch,
   cancelPlanSwitch,

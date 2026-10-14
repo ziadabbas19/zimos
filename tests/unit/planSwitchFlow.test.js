@@ -472,6 +472,83 @@ describe('a move to pay per order', () => {
   });
 });
 
+describe('cancelling a charge (the merchant) and voiding one (the console)', () => {
+  const OTHER = 'workspace-2';
+
+  async function renewalOf(sub, extra = {}) {
+    return db.BillingInvoice.create({
+      workspaceId: WID, subscriptionId: sub.id, grossAmount: 30000, amount: 30000, currency: 'EGP', periodStart: sub.currentPeriodEnd, periodEnd: new Date(sub.currentPeriodEnd.getTime() + 30 * DAY), ...extra,
+    });
+  }
+
+  it('the merchant cancels a pending renewal: void, its checkout superseded, a special-terms charge given back, the store as it was', async () => {
+    const sub = await store();
+    const term = await db.SubscriptionTerm.create({ chargesUsed: 1 });
+    const renewal = await renewalOf(sub, { specialTermsId: term.id });
+    const checkout = await db.BillingPaymentAttempt.create({ billingInvoiceId: renewal.id, status: 'open' });
+    const result = await switches.cancelCharge(WID, renewal.id, req);
+    expect(result).toMatchObject({ invoice: { id: renewal.id, status: 'void', cancellable: false }, plans: { listed: true } });
+    expect(renewal).toMatchObject({ status: 'void', voidReason: 'cancelled_by_merchant', voidNote: null });
+    expect(checkout.status).toBe('superseded');
+    expect(term.chargesUsed).toBe(0);
+    expect(sub).toMatchObject({ planId: basic.id, status: 'active' });
+  });
+
+  it("an upgrade's charge cancelled: its switch is cancelled too", async () => {
+    const sub = await store();
+    await switches.start(WID, { planId: pro.id }, req);
+    const [charge] = await pendingOf();
+    const [sw] = await openOf();
+    await switches.cancelCharge(WID, charge.id, req);
+    expect(charge.voidReason).toBe('cancelled_by_merchant');
+    expect(sw).toMatchObject({ status: 'cancelled', endReason: 'charge_cancelled' });
+    expect(sub.planId).toBe(basic.id);
+  });
+
+  it('refused while a transfer for it is being checked, when paid or already void, and for another store', async () => {
+    const sub = await store();
+    const renewal = await renewalOf(sub);
+    const proof = await db.PaymentProof.create({ billingInvoiceId: renewal.id, status: 'pending' });
+    await expect(switches.cancelCharge(WID, renewal.id, req)).rejects.toMatchObject({ code: 'PROOF_UNDER_REVIEW', statusCode: 409, details: { invoiceId: renewal.id } });
+    expect(renewal.status).toBe('pending');
+    await proof.update({ status: 'rejected' });
+    await expect(switches.cancelCharge(OTHER, renewal.id, req)).rejects.toMatchObject({ statusCode: 404 });
+    await switches.cancelCharge(WID, renewal.id, req);
+    await expect(switches.cancelCharge(WID, renewal.id, req)).rejects.toMatchObject({ code: 'CHARGE_NOT_PENDING', statusCode: 409 });
+    const paid = await renewalOf(sub, { status: 'paid', amountPaid: 30000 });
+    await expect(switches.cancelCharge(WID, paid.id, req)).rejects.toMatchObject({ code: 'CHARGE_ALREADY_PAID', statusCode: 409 });
+    expect(paid.status).toBe('paid');
+  });
+
+  it('the flag off: 404, nothing voided', async () => {
+    const renewal = await renewalOf(await store());
+    env.billing.planSwitch.enabled = false;
+    await expect(switches.cancelCharge(WID, renewal.id, req)).rejects.toMatchObject({ code: 'PLAN_SWITCH_DISABLED', statusCode: 404 });
+    await expect(switches.adminVoidCharge(renewal.id, { reason: 'test' }, req)).rejects.toMatchObject({ code: 'PLAN_SWITCH_DISABLED' });
+    expect(renewal.status).toBe('pending');
+  });
+
+  it('the console voids any pending charge with its reason; a switch waiting for it is dropped', async () => {
+    const sub = await store();
+    await switches.start(WID, { planId: pro.id }, req);
+    const [charge] = await pendingOf();
+    const [sw] = await openOf();
+    await switches.adminVoidCharge(charge.id, { reason: 'Asked by phone to drop it' }, { user: { id: 'admin-1' } });
+    expect(charge).toMatchObject({ status: 'void', voidReason: 'voided_by_admin', voidNote: 'Asked by phone to drop it' });
+    expect(sw).toMatchObject({ status: 'dropped', endReason: 'admin_void' });
+    expect(sub.planId).toBe(basic.id);
+  });
+
+  it('the console is refused while a transfer for the charge waits for review, and for a paid one', async () => {
+    const sub = await store();
+    const renewal = await renewalOf(sub);
+    await db.PaymentProof.create({ billingInvoiceId: renewal.id, status: 'pending' });
+    await expect(switches.adminVoidCharge(renewal.id, { reason: 'x' }, req)).rejects.toMatchObject({ code: 'PROOF_UNDER_REVIEW' });
+    const paid = await renewalOf(sub, { status: 'paid', amountPaid: 30000 });
+    await expect(switches.adminVoidCharge(paid.id, { reason: 'x' }, req)).rejects.toMatchObject({ code: 'CHARGE_ALREADY_PAID' });
+  });
+});
+
 describe('what is not changed here', () => {
   it('a trial changes plan as before, and pay per order moves as before', async () => {
     await store({ extra: { status: 'trialing' } });

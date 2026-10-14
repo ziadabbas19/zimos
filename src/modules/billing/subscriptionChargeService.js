@@ -1,6 +1,7 @@
 'use strict';
 
 const db = require('../../db/models');
+const env = require('../../config/env');
 const { ConflictError, NotFoundError } = require('../../core/errors/AppError');
 const logger = require('../../core/utils/logger');
 const { recordAudit } = require('../audit/auditService');
@@ -487,6 +488,63 @@ async function voidRenewalCharge(invoice, { actorUserId = null, req = null } = {
 }
 
 /**
+ * Voids a pending charge for `reason` (planSwitchRules.VOID_REASONS): the
+ * merchant cancelled it (cancelled_by_merchant), the console voided it
+ * (voided_by_admin, with its `note`), or its payment failed
+ * (payment_failed). A renewal, an upgrade's or a move's alike. Any online
+ * checkout for it is superseded, a special-terms charge it used given back,
+ * and a plan switch waiting for it ends as the reason says
+ * (planSwitchRules.switchEndForVoid). The subscription is not touched. Money
+ * that still arrives for it is applied or credited (settleLateMovePayment).
+ * The caller holds the charge locked and has checked that no transfer's
+ * proof waits for it. Resolves false when it was no longer pending.
+ */
+async function voidPendingCharge(invoice, reason, { actorUserId = null, req = null, note = null } = {}, transaction) {
+  if (!invoice || invoice.status !== 'pending') return false;
+  const before = chargeAuditState(invoice);
+  await invoice.update({ status: 'void', voidedAt: new Date(), voidReason: reason, voidNote: note || null }, { transaction });
+  const [checkoutsSuperseded] = await db.BillingPaymentAttempt.update(
+    { status: 'superseded' },
+    { where: { billingInvoiceId: invoice.id, status: db.BillingPaymentAttempt.IN_PROGRESS }, transaction }
+  );
+  if (invoice.specialTermsId) {
+    await db.SubscriptionTerm.decrement('chargesUsed', { by: 1, where: { id: invoice.specialTermsId, chargesUsed: { [db.Sequelize.Op.gt]: 0 } }, transaction });
+  }
+  const switchClosed = await planSwitches.closeForVoidedCharge(invoice, reason, transaction);
+  await recordAudit({
+    workspaceId: invoice.workspaceId,
+    actorUserId,
+    action: 'billing_invoice.void',
+    entityType: 'BillingInvoice',
+    entityId: invoice.id,
+    before,
+    after: { status: 'void', reason, note: note || null },
+    metadata: {
+      amount: Number(invoice.amount),
+      currency: invoice.currency,
+      periodStart: invoice.periodStart,
+      targetPlanId: invoice.targetPlanId || null,
+      checkoutsSuperseded,
+      ...(switchClosed ? { planSwitchClosed: true } : {}),
+    },
+    req,
+    transaction,
+  });
+  return true;
+}
+
+/**
+ * Whether the console may void this charge (POST /admin/charges/:id/void):
+ * PLAN_SWITCH_ENABLED on, the charge pending, and no transfer's proof for it
+ * waiting for review. `waitingProofs` is counted when not given.
+ */
+async function voidableByAdmin(invoice, waitingProofs = null) {
+  if (env.billing.planSwitch.enabled !== true || invoice.status !== 'pending') return false;
+  const waiting = waitingProofs == null ? await db.PaymentProof.count({ where: { billingInvoiceId: invoice.id, status: 'pending' } }) : waitingProofs;
+  return switchRules.cancellableByMerchant({ enabled: true, status: invoice.status, waitingProofs: waiting });
+}
+
+/**
  * Money arrived for a move's charge after it was voided (a transfer's proof
  * approved later, a checkout paid late, a payment recorded in the console).
  * It is never lost:
@@ -940,9 +998,12 @@ function serializeCharge(invoice, payable = null) {
     // A pay-per-order store's move: the plan and cycle it switches to when paid.
     targetPlanId: invoice.targetPlanId || null,
     targetBillingCycle: invoice.targetBillingCycle || null,
-    // A move's charge that no longer asks for money: cancelled | replaced | expired.
+    // A charge that no longer asks for money: cancelled | replaced | expired |
+    // cancelled_by_merchant | voided_by_admin | payment_failed, and the
+    // console's reason when it voided it.
     voidedAt: invoice.voidedAt || null,
     voidReason: invoice.voidReason || null,
+    voidNote: invoice.voidNote || null,
     commission: invoice.commission
       ? {
           id: invoice.commission.id,
@@ -970,7 +1031,7 @@ function serializeCharge(invoice, payable = null) {
 async function getCharge(invoiceId) {
   const invoice = await db.BillingInvoice.findByPk(invoiceId, { include: CHARGE_INCLUDE });
   if (!invoice) throw new NotFoundError('Charge');
-  return serializeCharge(invoice, invoice.status === 'paid' ? null : await payableNow(invoice));
+  return { ...serializeCharge(invoice, invoice.status === 'paid' ? null : await payableNow(invoice)), voidable: await voidableByAdmin(invoice) };
 }
 
 /**
@@ -1022,6 +1083,8 @@ async function listCharges(workspaceId) {
     if (invoice.targetPlanId) row.targetPlanName = targetNames.get(invoice.targetPlanId) || null;
     const sw = switches.get(invoice.id);
     if (sw) row.planSwitch = { id: sw.id, kind: sw.kind, status: sw.status, fromPlanId: sw.fromPlanId };
+    // Whether the console's Void applies (PLAN_SWITCH_ENABLED, pending, no proof waiting).
+    row.voidable = await voidableByAdmin(invoice);
     charges.push(row);
   }
 
@@ -1076,6 +1139,8 @@ module.exports = {
   createMoveChargeInTransaction,
   voidMoveCharge,
   voidRenewalCharge,
+  voidPendingCharge,
+  voidableByAdmin,
   settleLateMovePayment,
   quoteCharge,
   settlePaid,

@@ -40,6 +40,9 @@ module.exports = {
   getOnlinePayment: {
     params: Joi.object({ workspaceId: Joi.string().required(), paymentId: Joi.string().guid().required() }),
   },
+  cancelCharge: {
+    params: Joi.object({ workspaceId: Joi.string().required(), chargeId: Joi.string().guid().required() }),
+  },
   // What a referral code would take off each plan, before it is attached.
   previewCode: { body: Joi.object({ code: Joi.string().trim().min(1).max(64).required() }) },
   listInvoices: {

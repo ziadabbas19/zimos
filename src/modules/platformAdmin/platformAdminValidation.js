@@ -520,6 +520,11 @@ module.exports = {
     params: Joi.object({ chargeId: uuid.required() }),
     body: Joi.object({ reason: Joi.string().trim().max(1000).allow('', null).optional() }),
   },
+  // A reason is required: it is kept on the charge (void_note) and in the audit log.
+  voidCharge: {
+    params: Joi.object({ chargeId: uuid.required() }),
+    body: Joi.object({ reason: Joi.string().trim().min(1).max(500).required() }),
+  },
   markCommissionPaid: {
     params: Joi.object({ commissionId: uuid.required() }),
     body: Joi.object({ note: Joi.string().trim().max(1000).allow('', null).optional() }),
