@@ -29,5 +29,15 @@ module.exports = {
       // eslint-disable-next-line global-require
       handle: () => require('./walletFallbackService').sweep(),
     },
+    {
+      // A merchant's plan switch: its charge left unpaid
+      // PLAN_SWITCH_CHARGE_EXPIRY_HOURS is voided, and a downgrade whose paid
+      // period has ended takes effect (planSwitchService.runDue). Follows the
+      // rows: nothing to do while no switch was ever made.
+      name: 'billing.plan_switches',
+      everyMs: HOUR,
+      // eslint-disable-next-line global-require
+      handle: () => require('./planSwitchService').runDue(),
+    },
   ],
 };

@@ -278,6 +278,17 @@ async function setBillingCycle(workspaceId, billingCycle, req, { platform = fals
         'OPEN_CHARGE_EXISTS'
       );
     }
+    // A plan switch waiting (billing/planSwitchService) sets the cycle at its
+    // moment: the merchant cancels it or picks the cycle with the plan; the
+    // console's change drops it.
+    const waiting = await db.PlanSwitch.findOne({ where: { subscriptionId: subscription.id, status: ['pending', 'scheduled'] }, attributes: ['id'], transaction });
+    if (waiting) {
+      if (!platform) {
+        throw new ConflictError('A plan change is waiting. Cancel it, or choose the cycle with the plan, before changing the billing cycle.', 'PLAN_SWITCH_WAITING');
+      }
+      // eslint-disable-next-line global-require
+      await require('./planSwitchService').dropOpen(subscription, 'admin_billing_cycle', { actorUserId: req.user.id, req }, transaction);
+    }
 
     const before = subscription.billingCycle;
     await subscription.update({ billingCycle }, { transaction });

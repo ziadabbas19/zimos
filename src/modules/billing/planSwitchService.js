@@ -2,6 +2,7 @@
 
 const db = require('../../db/models');
 const env = require('../../config/env');
+const logger = require('../../core/utils/logger');
 const { AppError, ConflictError, NotFoundError } = require('../../core/errors/AppError');
 const { recordAudit } = require('../audit/auditService');
 const referralCodes = require('../referrals/referralCodeService');
@@ -458,6 +459,122 @@ async function summaryFor(subscription) {
   return { enabled: enabled(), mode, reason, open: open ? await withPlans(open) : null };
 }
 
+// ------------------------------------------------------- someone else acts
+
+/**
+ * The console changed the subscription under a switch waiting (activated a
+ * period, changed its plan, ended it, changed its cycle): that switch no
+ * longer fits and is dropped with `reason`, its charge voided (replaced) so
+ * the merchant is not asked to pay for it. Called with the subscription
+ * locked. Resolves the dropped switch, or null.
+ */
+async function dropOpen(subscription, reason, { actorUserId = null, req = null } = {}, transaction) {
+  const open = await db.PlanSwitch.findOne({ where: { subscriptionId: subscription.id, status: OPEN }, transaction, lock: transaction.LOCK.UPDATE });
+  if (!open) return null;
+  const invoice = open.status === 'pending' && open.billingInvoiceId ? await db.BillingInvoice.findByPk(open.billingInvoiceId, { transaction }) : null;
+  await settlement.drop(open, reason, transaction, { actorUserId, req });
+  if (invoice && invoice.status === 'pending') await charges.voidMoveCharge(invoice, 'replaced', { actorUserId, req }, transaction);
+  return open;
+}
+
+// --------------------------------------------------------- the hourly job
+
+/**
+ * An upgrade's (or a move's) charge left unpaid chargeExpiryHours is voided
+ * as expired, unless a transfer's proof for it is with the console (the
+ * review decides; a rejected proof lets it expire at the next run). The
+ * charge is locked first, so a payment at the same moment either settles it
+ * or finds it void (and is applied or credited).
+ */
+async function expireUnpaid({ now = new Date(), limit = 200 } = {}) {
+  const cutoff = new Date(now.getTime() - env.billing.planSwitch.chargeExpiryHours * 60 * 60 * 1000);
+  const stale = await db.PlanSwitch.findAll({
+    where: { status: 'pending', createdAt: { [db.Sequelize.Op.lt]: cutoff } },
+    attributes: ['id', 'billingInvoiceId'],
+    order: [['createdAt', 'ASC']],
+    limit,
+  });
+  let expired = 0;
+  for (const { id, billingInvoiceId } of stale) {
+    try {
+      // eslint-disable-next-line no-await-in-loop
+      const done = await db.sequelize.transaction(async (transaction) => {
+        const invoice = billingInvoiceId ? await db.BillingInvoice.findByPk(billingInvoiceId, { transaction, lock: transaction.LOCK.UPDATE }) : null;
+        const sw = await db.PlanSwitch.findByPk(id, { transaction, lock: transaction.LOCK.UPDATE });
+        if (!sw || sw.status !== 'pending') return false;
+        if (!invoice || invoice.status === 'void') {
+          await sw.update({ status: 'expired', endedAt: now }, { transaction });
+          return true;
+        }
+        if (invoice.status !== 'pending' || (await proofWaiting(invoice.id, transaction))) return false;
+        return charges.voidMoveCharge(invoice, 'expired', {}, transaction);
+      });
+      if (done) expired += 1;
+    } catch (err) {
+      logger.error(`[plan-switch] expiring switch ${id} failed: ${err.message}`);
+    }
+  }
+  return expired;
+}
+
+/**
+ * A scheduled switch whose moment has come: the store moves to its plan and
+ * cycle (a free plan as an open-ended active period) while it still fits —
+ * still on the plan and cycle it was asked from, the plan still there —
+ * otherwise it is dropped with why. The period is not touched: the renewal
+ * that follows was priced on the new plan already (nextChargeTerms).
+ */
+async function applyDue({ now = new Date(), limit = 200 } = {}) {
+  const due = await db.PlanSwitch.findAll({
+    where: { status: 'scheduled', effectiveAt: { [db.Sequelize.Op.lte]: now } },
+    attributes: ['id', 'subscriptionId'],
+    order: [['effectiveAt', 'ASC']],
+    limit,
+  });
+  const result = { applied: 0, dropped: 0 };
+  for (const { id, subscriptionId } of due) {
+    try {
+      // eslint-disable-next-line no-await-in-loop
+      const outcome = await db.sequelize.transaction(async (transaction) => {
+        const subscription = await db.Subscription.findByPk(subscriptionId, { transaction, lock: transaction.LOCK.UPDATE });
+        const sw = await db.PlanSwitch.findByPk(id, { transaction, lock: transaction.LOCK.UPDATE });
+        if (!sw || sw.status !== 'scheduled' || new Date(sw.effectiveAt).getTime() > now.getTime()) return null;
+        const target = sw.toPlanId ? await db.Plan.findByPk(sw.toPlanId, { transaction }) : null;
+        const fit = subscription ? rules.scheduleStillApplies({ subscription, sw, targetExists: Boolean(target) }) : { applies: false, reason: 'subscription_gone' };
+        if (!fit.applies) {
+          await settlement.drop(sw, fit.reason, transaction);
+          return 'dropped';
+        }
+        const before = { planId: subscription.planId, billingCycle: subscription.billingCycle, status: subscription.status, currentPeriodEnd: subscription.currentPeriodEnd };
+        await applyTo(subscription, target, sw.toBillingCycle, { free: planPrice(target, sw.toBillingCycle) === 0 }, transaction, now);
+        await settlement.markApplied(sw, transaction);
+        await settlement.audit(
+          sw,
+          'subscription.plan_switch_applied',
+          {
+            before,
+            after: { planId: subscription.planId, billingCycle: subscription.billingCycle, status: subscription.status, currentPeriodEnd: subscription.currentPeriodEnd },
+            metadata: { by: 'schedule', effectiveAt: sw.effectiveAt },
+          },
+          transaction
+        );
+        return 'applied';
+      });
+      if (outcome) result[outcome] += 1;
+    } catch (err) {
+      logger.error(`[plan-switch] applying switch ${id} failed: ${err.message}`);
+    }
+  }
+  return result;
+}
+
+/** The hourly billing job (billing.plan_switches). Follows the rows, not PLAN_SWITCH_ENABLED. */
+async function runDue({ now = new Date(), limit = 200 } = {}) {
+  const expired = await expireUnpaid({ now, limit });
+  const { applied, dropped } = await applyDue({ now, limit });
+  return { expired, applied, dropped };
+}
+
 module.exports = {
   enabled,
   disabledError,
@@ -467,4 +584,8 @@ module.exports = {
   summaryFor,
   serialize,
   applyTo,
+  dropOpen,
+  expireUnpaid,
+  applyDue,
+  runDue,
 };

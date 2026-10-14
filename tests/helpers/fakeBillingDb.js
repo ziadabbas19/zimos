@@ -122,6 +122,7 @@ const MODELS = {
   Workspace: {},
   AgentCommission: {},
   AuditLog: {},
+  SubscriptionManualChange: {},
 };
 
 function create() {
