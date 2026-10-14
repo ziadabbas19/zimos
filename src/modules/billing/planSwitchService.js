@@ -18,6 +18,7 @@ const { FREE_PLAN_YEARS } = require('./goLiveService');
 // merchantPlansService lists the plans with this file's summary in them.
 // eslint-disable-next-line global-require
 const merchantPlans = () => require('./merchantPlansService');
+const wallet = () => require('./walletService');
 
 /**
  * A merchant changing plan by themselves, at any time, from the Plans tab
@@ -112,10 +113,26 @@ async function loadSubscription(workspaceId, transaction, { lock = false } = {})
   return subscription;
 }
 
-/** The plan a switch goes to: one on offer (422 PLAN_NOT_AVAILABLE otherwise). */
+/**
+ * The plan a switch goes to: one on offer, or the pay-per-order plan while
+ * WALLET_ENABLED offers it (its card in the plans list); 422
+ * PLAN_NOT_AVAILABLE otherwise.
+ */
 async function findSwitchTarget(planId, transaction) {
+  if (planId && wallet().enabled()) {
+    const feePlan = await wallet().offeredFeePlan(transaction);
+    if (feePlan && feePlan.id === planId) return feePlan;
+  }
   return publicPlans.findOfferedPlan(planId, transaction);
 }
+
+const isPayPerOrder = (plan) => Boolean(plan && Number(plan.perOrderFeeAmount) > 0);
+
+/** The cycle a switch asks for: pay per order has none of its own, so the store's stays. */
+const cycleFor = (target, subscription, billingCycle) => (isPayPerOrder(target) ? subscription.billingCycle : billingCycle || subscription.billingCycle);
+
+const planNotAvailable = () =>
+  new AppError('PLAN_NOT_AVAILABLE', 'This plan is not available', 422, [{ field: 'planId', message: 'Choose one of the plans on offer' }]);
 
 const proofWaiting = async (invoiceId, transaction) =>
   (await db.PaymentProof.count({ where: { billingInvoiceId: invoiceId, status: 'pending' }, transaction })) > 0;
@@ -320,9 +337,7 @@ async function describe({ subscription, current, target, cycle, decision, resolv
 /** The decision, with what it refuses thrown: support's codes (409) and a plan not on offer (422). */
 function assertDecided(decision) {
   if (decision.refuse) throw refusal(decision.refuse);
-  if (decision.unavailable) {
-    throw new AppError('PLAN_NOT_AVAILABLE', 'This plan is not available', 422, [{ field: 'planId', message: 'Choose one of the plans on offer' }]);
-  }
+  if (decision.unavailable) throw planNotAvailable();
 }
 
 /** The timing asked, resolved against what the switch offers (409 SWITCH_TIMING_NOT_AVAILABLE otherwise). */
@@ -340,7 +355,7 @@ async function preview(workspaceId, { planId, billingCycle, timing } = {}) {
   const target = await findSwitchTarget(planId);
   const subscription = await loadSubscription(workspaceId);
   const now = new Date();
-  const cycle = billingCycle || subscription.billingCycle;
+  const cycle = cycleFor(target, subscription, billingCycle);
   const { current, price, decision } = await decisionFor(subscription, target, cycle, null, now);
   assertDecided(decision);
   const resolved = timingOf(decision, timing);
@@ -356,7 +371,12 @@ async function preview(workspaceId, { planId, billingCycle, timing } = {}) {
 // ------------------------------------------------------------------ start
 
 /** The store moves to `plan` on `cycle` now (`free`: an open-ended active period, as a free plan is activated). */
-async function applyTo(subscription, plan, cycle, { free }, transaction, now = new Date()) {
+async function applyTo(subscription, plan, cycle, { free, payPerOrder = false }, transaction, now = new Date()) {
+  // Pay per order: as when a trial chooses it (active, no period to pay; the balance and its rules as they are).
+  if (payPerOrder) {
+    await wallet().startPayPerOrder(subscription, plan, { now }, transaction);
+    return;
+  }
   const patch = { planId: plan.id, billingCycle: cycle };
   if (free) {
     const end = new Date(now);
@@ -405,9 +425,16 @@ async function start(workspaceId, { planId, billingCycle, timing, expectedAmount
   if (!enabled()) throw disabledError();
   const target = await findSwitchTarget(planId);
   const peek = await loadSubscription(workspaceId);
-  const cycle = billingCycle || peek.billingCycle;
+  const cycle = cycleFor(target, peek, billingCycle);
   const peekPlan = peek.planId ? await db.Plan.findByPk(peek.planId) : null;
   const { mode } = rules.selfServeMode({ subscription: peek, current: peekPlan });
+
+  // Pay per order by a switch is for a paid subscription; a draft or a trial
+  // chooses it on its card (POST /billing/pay-per-order), as before.
+  if (isPayPerOrder(target) && (mode === 'immediate' || mode === 'move')) {
+    if (peek.planId !== target.id) throw planNotAvailable();
+    return { kind: 'none', created: false, changed: false, switch: null, invoice: null, plans: await merchantPlans().listPlans(workspaceId) };
+  }
 
   // A draft or a trial changes plan at once, as before; pay per order moves, as before.
   if ((mode === 'immediate' || mode === 'move') && timing && timing !== 'now') throw timingNotAvailable(timing, ['now']);
@@ -681,7 +708,10 @@ async function applyDue({ now = new Date(), limit = 200 } = {}) {
         const sw = await db.PlanSwitch.findByPk(id, { transaction, lock: transaction.LOCK.UPDATE });
         if (!sw || sw.status !== 'scheduled' || new Date(sw.effectiveAt).getTime() > now.getTime()) return null;
         const target = sw.toPlanId ? await db.Plan.findByPk(sw.toPlanId, { transaction }) : null;
-        const fit = subscription ? rules.scheduleStillApplies({ subscription, sw, targetExists: Boolean(target) }) : { applies: false, reason: 'subscription_gone' };
+        const toPayPerOrder = isPayPerOrder(target);
+        const fit = subscription
+          ? rules.scheduleStillApplies({ subscription, sw, targetExists: Boolean(target), toPayPerOrder, walletEnabled: wallet().enabled() })
+          : { applies: false, reason: 'subscription_gone' };
         if (!fit.applies) {
           await settlement.drop(sw, fit.reason, transaction);
           return 'dropped';
@@ -690,7 +720,7 @@ async function applyDue({ now = new Date(), limit = 200 } = {}) {
         // price, unless the period after it is already paid at that price.
         const renews = Boolean(sw.quote && sw.quote.reason === 'upgrade') && !(await billedOnSchedule(sw, transaction));
         const before = { planId: subscription.planId, billingCycle: subscription.billingCycle, status: subscription.status, currentPeriodEnd: subscription.currentPeriodEnd };
-        await applyTo(subscription, target, sw.toBillingCycle, { free: planPrice(target, sw.toBillingCycle) === 0 }, transaction, now);
+        await applyTo(subscription, target, sw.toBillingCycle, { free: !toPayPerOrder && planPrice(target, sw.toBillingCycle) === 0, payPerOrder: toPayPerOrder }, transaction, now);
         await settlement.markApplied(sw, transaction);
         await settlement.audit(
           sw,

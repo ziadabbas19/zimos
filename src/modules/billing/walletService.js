@@ -599,6 +599,29 @@ async function offeredFeePlan(transaction) {
 const FEE_PLAN_YEARS = 100;
 
 /**
+ * Puts the subscription (held locked by the caller) on the pay-per-order
+ * `plan` from `now`: active, no period to pay, fees from the next order.
+ * Choosing pay per order uses the account's free trial (none later, on a
+ * move to a monthly plan or on another store). Used by choosePayPerOrder and
+ * by a plan switch to pay per order (planSwitchService).
+ */
+async function startPayPerOrder(subscription, plan, { now = new Date() } = {}, transaction) {
+  const workspace = await db.Workspace.findByPk(subscription.workspaceId, { attributes: ['id', 'ownerUserId'], transaction });
+  if (workspace && workspace.ownerUserId) {
+    await require('./goLiveService').recordTrial(
+      { userId: workspace.ownerUserId, planId: plan.id, workspaceId: subscription.workspaceId, source: 'pay_per_order', startedAt: now },
+      transaction
+    );
+  }
+  const end = new Date(now);
+  end.setUTCFullYear(end.getUTCFullYear() + FEE_PLAN_YEARS);
+  await subscription.update(
+    { planId: plan.id, status: 'active', trialEndsAt: null, currentPeriodStart: now, currentPeriodEnd: end, graceUntil: null, cancelAtPeriodEnd: false },
+    { transaction }
+  );
+}
+
+/**
  * POST /workspaces/:id/billing/pay-per-order — a draft or a trial moves to
  * the pay-per-order plan at once: active, no period to pay, fees from the
  * next order. A paid subscription changes plan through support, as for any
@@ -627,22 +650,7 @@ async function choosePayPerOrder(workspaceId, req) {
     if (open) throw new ConflictError('A charge is open for the current plan. Settle it before changing plan.', 'OPEN_CHARGE_EXISTS');
 
     const before = { planId: subscription.planId, status: subscription.status };
-    // Choosing pay per order uses the account's free trial (none later, on
-    // a move to a monthly plan or on another store).
-    const workspace = await db.Workspace.findByPk(workspaceId, { attributes: ['id', 'ownerUserId'], transaction });
-    if (workspace && workspace.ownerUserId) {
-      await require('./goLiveService').recordTrial(
-        { userId: workspace.ownerUserId, planId: plan.id, workspaceId, source: 'pay_per_order', startedAt: new Date() },
-        transaction
-      );
-    }
-    const now = new Date();
-    const end = new Date(now);
-    end.setUTCFullYear(end.getUTCFullYear() + FEE_PLAN_YEARS);
-    await subscription.update(
-      { planId: plan.id, status: 'active', trialEndsAt: null, currentPeriodStart: now, currentPeriodEnd: end, graceUntil: null, cancelAtPeriodEnd: false },
-      { transaction }
-    );
+    await startPayPerOrder(subscription, plan, { now: new Date() }, transaction);
     await recordAudit({
       workspaceId,
       actorUserId: req.user.id,
@@ -688,6 +696,7 @@ module.exports = {
   ledger,
   serializeEntry,
   offeredFeePlan,
+  startPayPerOrder,
   choosePayPerOrder,
   grantFreeOrders,
   adjustBalance,

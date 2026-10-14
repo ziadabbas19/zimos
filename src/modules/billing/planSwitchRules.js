@@ -224,15 +224,18 @@ function chargeStillApplies({ subscription, sw, invoice, late = false, targetOff
 /**
  * Whether a scheduled switch is still the store's when its moment comes: on
  * the plan and cycle it was asked from, the new plan still there, the
- * subscription neither closed nor priced by hand. Resolves { applies, reason }.
+ * subscription neither closed nor priced by hand, and, for a move to pay per
+ * order, the prepaid balance still on (WALLET_ENABLED). Resolves
+ * { applies, reason }.
  */
-function scheduleStillApplies({ subscription, sw, targetExists }) {
+function scheduleStillApplies({ subscription, sw, targetExists, toPayPerOrder = false, walletEnabled = true }) {
   if (!sw.toPlanId || !targetExists) return { applies: false, reason: 'plan_gone' };
   if (CLOSED_SUBSCRIPTION.has(subscription.status)) return { applies: false, reason: 'subscription_closed' };
   if (subscription.pricingKind && subscription.pricingKind !== 'paid') return { applies: false, reason: 'manual_pricing' };
   if (subscription.planId !== sw.fromPlanId || subscription.billingCycle !== sw.fromBillingCycle) {
     return { applies: false, reason: 'plan_changed' };
   }
+  if (toPayPerOrder && !walletEnabled) return { applies: false, reason: 'wallet_disabled' };
   return { applies: true, reason: null };
 }
 

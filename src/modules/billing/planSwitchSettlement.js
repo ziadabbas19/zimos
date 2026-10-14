@@ -1,6 +1,7 @@
 'use strict';
 
 const db = require('../../db/models');
+const env = require('../../config/env');
 const { recordAudit } = require('../audit/auditService');
 const rules = require('./planSwitchRules');
 
@@ -178,7 +179,14 @@ async function scheduledFor(subscription, periodStart, transaction) {
   const sw = await db.PlanSwitch.findOne({ where: { subscriptionId: subscription.id, status: 'scheduled' }, transaction });
   if (!sw || !rules.scheduleCovers(sw.effectiveAt, periodStart)) return null;
   const plan = sw.toPlanId ? await db.Plan.findByPk(sw.toPlanId, { transaction }) : null;
-  if (!rules.scheduleStillApplies({ subscription, sw, targetExists: Boolean(plan) }).applies) return null;
+  const fit = rules.scheduleStillApplies({
+    subscription,
+    sw,
+    targetExists: Boolean(plan),
+    toPayPerOrder: Boolean(plan && Number(plan.perOrderFeeAmount) > 0),
+    walletEnabled: env.wallet.enabled === true,
+  });
+  if (!fit.applies) return null;
   return { plan, billingCycle: sw.toBillingCycle, switchId: sw.id };
 }
 

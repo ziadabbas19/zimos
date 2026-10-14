@@ -310,6 +310,15 @@ describe('scheduleStillApplies and scheduleCovers', () => {
     expect(rules.scheduleStillApplies({ subscription: paid({ planId: PRO.id, status: 'suspended' }), sw, targetExists: true }).reason).toBe('subscription_closed');
   });
 
+  it('a move to pay per order needs the prepaid balance still on', () => {
+    const toFee = { ...sw, toPlanId: FEE.id };
+    const subscription = paid({ planId: PRO.id });
+    expect(rules.scheduleStillApplies({ subscription, sw: toFee, targetExists: true, toPayPerOrder: true, walletEnabled: true }).applies).toBe(true);
+    expect(rules.scheduleStillApplies({ subscription, sw: toFee, targetExists: true, toPayPerOrder: true, walletEnabled: false })).toEqual({ applies: false, reason: 'wallet_disabled' });
+    // Any other switch does not look at it.
+    expect(rules.scheduleStillApplies({ subscription, sw, targetExists: true, walletEnabled: false }).applies).toBe(true);
+  });
+
   it('prices the charge for the period that starts at its moment, not one before', () => {
     const effectiveAt = at('2026-04-01T00:00:00Z');
     expect(rules.scheduleCovers(effectiveAt, at('2026-04-01T00:00:00Z'))).toBe(true);
