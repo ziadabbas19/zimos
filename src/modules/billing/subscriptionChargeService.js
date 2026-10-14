@@ -10,6 +10,7 @@ const { planPrice, addBillingPeriod } = require('./planPricing');
 const specialTerms = require('./specialTermsService');
 const manualPricing = require('./manualPricing');
 const planSwitches = require('./planSwitchSettlement');
+const switchRules = require('./planSwitchRules');
 
 /**
  * Subscription charges: one billing_invoices row per charge, the first and
@@ -386,10 +387,11 @@ async function settlePaid(
     { transaction }
   );
   if (invoice.targetPlanId) {
-    // An upgrade keeps the paid period; a move (pay per order, or from a free
-    // plan) starts a full period of the new plan from now.
+    // An upgrade (its full price) or a move (pay per order, or from a free
+    // plan) starts a full period of the new plan from now; an upgrade of the
+    // old prorated kind kept the paid period.
     const sw = await planSwitches.switchOfCharge(invoice, transaction);
-    if (sw && sw.kind === 'upgrade') await planSwitches.applyUpgrade(invoice, subscription, sw, transaction);
+    if (sw && sw.kind === 'upgrade' && !switchRules.fullPeriodUpgrade(sw)) await planSwitches.applyUpgrade(invoice, subscription, sw, transaction);
     else await switchPlanForMove(invoice, subscription, transaction);
     if (sw) await planSwitches.markApplied(sw, transaction);
   } else {
@@ -482,51 +484,6 @@ async function voidRenewalCharge(invoice, { actorUserId = null, req = null } = {
     transaction,
   });
   return true;
-}
-
-/**
- * An upgrade's charge (billing/planSwitchService, which holds the
- * subscription locked and has made room for it): the difference for the
- * days left, already priced (`amount`, after the store's referral code), so
- * the charge carries no code and is never re-priced: what the merchant was
- * shown is what every way to pay asks. Its period is the days it pays for,
- * up to the end of the paid period. The plan changes when it is paid
- * (settlePaid), never before.
- */
-async function createUpgradeChargeInTransaction(subscription, plan, billingCycle, { amount, periodEnd, now = new Date(), req = null }, transaction) {
-  if (!Number.isSafeInteger(amount) || amount <= 0) throw new ConflictError('Nothing is due for this change.', 'NOTHING_TO_PAY');
-  const invoice = await db.BillingInvoice.create(
-    {
-      workspaceId: subscription.workspaceId,
-      subscriptionId: subscription.id,
-      grossAmount: amount,
-      discountAmount: 0,
-      amount,
-      currency: plan.currency,
-      referralCodeId: null,
-      specialTermsId: null,
-      status: 'pending',
-      periodStart: now,
-      periodEnd,
-      targetPlanId: plan.id,
-      targetBillingCycle: billingCycle,
-    },
-    { transaction }
-  );
-  if (req) {
-    await recordAudit({
-      workspaceId: subscription.workspaceId,
-      actorUserId: req.user.id,
-      action: 'billing_invoice.create',
-      entityType: 'BillingInvoice',
-      entityId: invoice.id,
-      after: chargeAuditState(invoice),
-      metadata: { workspaceId: subscription.workspaceId, targetPlanId: plan.id, targetBillingCycle: billingCycle, planSwitch: 'upgrade' },
-      req,
-      transaction,
-    });
-  }
-  return invoice;
 }
 
 /**
@@ -1117,7 +1074,6 @@ module.exports = {
   createCharge,
   createChargeInTransaction,
   createMoveChargeInTransaction,
-  createUpgradeChargeInTransaction,
   voidMoveCharge,
   voidRenewalCharge,
   settleLateMovePayment,

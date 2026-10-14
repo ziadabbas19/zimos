@@ -128,6 +128,47 @@ describe('the hourly job', () => {
     expect(sw).toMatchObject({ status: 'dropped', endReason: 'plan_changed' });
     expect(sub.planId).toBe(pro.id);
   });
+
+  it('an upgrade left for the end of the period applies then, and writes the renewal at the new price', async () => {
+    const sub = await store(basic.id, new Date(Date.now() - HOUR));
+    const end = sub.currentPeriodEnd;
+    const sw = await db.PlanSwitch.create({
+      workspaceId: WID, subscriptionId: sub.id, kind: 'scheduled', status: 'scheduled', fromPlanId: basic.id, fromBillingCycle: 'monthly',
+      toPlanId: pro.id, toBillingCycle: 'monthly', effectiveAt: end, quote: { reason: 'upgrade', timing: 'period_end' },
+    });
+    expect(await switches.runDue()).toEqual({ expired: 0, applied: 1, dropped: 0 });
+    expect(sw.status).toBe('applied');
+    expect(sub).toMatchObject({ planId: pro.id, currentPeriodEnd: end });
+    const [renewal] = await db.BillingInvoice.findAll({ where: { workspaceId: WID, status: 'pending' } });
+    expect(renewal).toMatchObject({ amount: 60000, currency: 'EGP', targetPlanId: null });
+    // Its period runs from when it is written, as any renewal after a period has run out.
+    expect(new Date(renewal.periodStart).getTime()).toBeGreaterThanOrEqual(end.getTime());
+    // Once applied, the job has nothing more to do.
+    expect(await switches.runDue()).toEqual({ expired: 0, applied: 0, dropped: 0 });
+    expect(await db.BillingInvoice.count()).toBe(1);
+  });
+
+  it('an upgrade left for the end of the period whose next period is already paid writes no second renewal', async () => {
+    const sub = await store(basic.id, new Date(Date.now() - HOUR));
+    const end = sub.currentPeriodEnd;
+    await db.PlanSwitch.create({
+      workspaceId: WID, subscriptionId: sub.id, kind: 'scheduled', status: 'scheduled', fromPlanId: basic.id, fromBillingCycle: 'monthly',
+      toPlanId: pro.id, toBillingCycle: 'monthly', effectiveAt: end, quote: { reason: 'upgrade', timing: 'period_end' },
+    });
+    await db.BillingInvoice.create({
+      workspaceId: WID, subscriptionId: sub.id, grossAmount: 60000, amount: 60000, amountPaid: 60000, currency: 'EGP', status: 'paid', periodStart: end, periodEnd: new Date(end.getTime() + 30 * DAY),
+    });
+    expect((await switches.runDue()).applied).toBe(1);
+    expect(sub.planId).toBe(pro.id);
+    expect(await db.BillingInvoice.count({ where: { status: 'pending' } })).toBe(0);
+  });
+
+  it('a downgrade writes no renewal when it applies', async () => {
+    const sub = await store(pro.id, new Date(Date.now() - HOUR));
+    await scheduledSwitch(sub, { to: basic });
+    await switches.runDue();
+    expect(await db.BillingInvoice.count()).toBe(0);
+  });
 });
 
 describe('the console acting under a switch waiting', () => {
