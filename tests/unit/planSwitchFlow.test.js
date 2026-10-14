@@ -602,12 +602,13 @@ describe('what is not changed here', () => {
     await store({ extra: { status: 'trialing' } });
     expect(await switches.start(WID, { planId: pro.id }, req)).toMatchObject({ kind: 'trial_change', changed: true });
     expect(merchantPlans.changePlan).toHaveBeenCalledTimes(1);
+    expect(merchantPlans.changePlan.mock.calls[0][3]).toEqual({ replacePending: true });
     db.reset();
     const fee = await db.Plan.create({ key: 'ppo', name: 'Pay per order', monthlyPriceAmount: 0, yearlyPriceAmount: 0, perOrderFeeAmount: 400 });
     pro = await db.Plan.create({ key: 'pro', name: 'Pro', monthlyPriceAmount: 60000, yearlyPriceAmount: 600000 });
     await store({ planId: fee.id });
     expect(await switches.start(WID, { planId: pro.id }, req)).toMatchObject({ kind: 'move', created: true });
-    expect(merchantPlans.requestPlanMove).toHaveBeenCalledWith(WID, { planId: pro.id, billingCycle: 'monthly' }, req);
+    expect(merchantPlans.requestPlanMove).toHaveBeenCalledWith(WID, { planId: pro.id, billingCycle: 'monthly' }, req, { replacePending: true });
   });
 
   it('refuses what support decides', async () => {

@@ -258,8 +258,10 @@ async function listInvoices(workspaceId, { page = 1, pageSize = 20 } = {}) {
  * change while a charge is open (409 OPEN_CHARGE_EXISTS), since that charge
  * was priced for the old plan. The subscription row is locked.
  */
-async function changePlan(workspaceId, { planId, billingCycle }, req) {
+async function changePlan(workspaceId, { planId, billingCycle }, req, { replacePending = false } = {}) {
   const result = await db.sequelize.transaction(async (transaction) => {
+    // Replacing a pending charge: it is locked before the subscription, the order a payment takes.
+    const locked = replacePending ? await lockPendingCharge(workspaceId, transaction) : null;
     const subscription = await loadSubscription(workspaceId, transaction, { lock: true });
     if (planChangeMode(subscription) !== 'immediate') {
       throw new ConflictError(
@@ -276,7 +278,8 @@ async function changePlan(workspaceId, { planId, billingCycle }, req) {
       attributes: ['id'],
       transaction,
     });
-    if (open) {
+    if (open && replacePending) await replacePendingCharge(open, locked, req, transaction);
+    else if (open) {
       throw new ConflictError('A charge is open for the current plan. Settle it before changing plan.', 'OPEN_CHARGE_EXISTS');
     }
 
@@ -317,10 +320,10 @@ async function changePlan(workspaceId, { planId, billingCycle }, req) {
  * through support (409 PLAN_CHANGE_NEEDS_SUPPORT); a draft or a trial uses
  * POST /billing/plan (409 PLAN_MOVE_NOT_AVAILABLE here).
  */
-async function requestPlanMove(workspaceId, { planId, billingCycle }, req) {
+async function requestPlanMove(workspaceId, { planId, billingCycle }, req, { replacePending = false } = {}) {
   const result = await db.sequelize.transaction(async (transaction) => {
     // A pending charge is locked before the subscription, the order a payment takes.
-    await lockPendingCharge(workspaceId, transaction);
+    const locked = await lockPendingCharge(workspaceId, transaction);
     const subscription = await loadSubscription(workspaceId, transaction, { lock: true });
     const current = await payPerOrderPlanOf(subscription, transaction);
     if (!current) {
@@ -340,8 +343,9 @@ async function requestPlanMove(workspaceId, { planId, billingCycle }, req) {
     if (open) {
       if (open.targetPlanId === plan.id && open.targetBillingCycle === cycle) return { invoice: open, created: false };
       // Another plan than the move waiting: that move gives way. Any other
-      // charge (a renewal) still has to be settled first.
-      if (!open.targetPlanId) {
+      // charge (a renewal) still has to be settled first, unless the plan
+      // switch asks (`replacePending`): then any charge gives way.
+      if (!open.targetPlanId && !replacePending) {
         throw new ConflictError('A charge is open. Pay it, or wait for it to be settled, before asking for another plan.', 'OPEN_CHARGE_EXISTS');
       }
       replaced = open;
@@ -367,7 +371,8 @@ async function requestPlanMove(workspaceId, { planId, billingCycle }, req) {
       );
     }
 
-    if (replaced) await charges.voidMoveCharge(replaced, 'replaced', { actorUserId: req.user.id, req }, transaction);
+    if (replaced && replacePending) await replacePendingCharge(replaced, locked, req, transaction);
+    else if (replaced) await charges.voidMoveCharge(replaced, 'replaced', { actorUserId: req.user.id, req }, transaction);
     const invoice = await charges.createMoveChargeInTransaction(subscription, plan, cycle, { req }, transaction);
     await recordAudit({
       workspaceId,
@@ -384,6 +389,27 @@ async function requestPlanMove(workspaceId, { planId, billingCycle }, req) {
     return { invoice, created: true };
   });
   return { created: result.created, invoice: serializeInvoice(result.invoice), plans: await listPlans(workspaceId) };
+}
+
+/**
+ * A plan change through the plan switch (PLAN_SWITCH_ENABLED,
+ * planSwitchService.start, `replacePending`) replaces whatever charge is
+ * pending, the one already locked: void (replaced), unless a transfer's
+ * proof for it is being checked (409 PROOF_UNDER_REVIEW). A charge that
+ * appeared after the lock: 409 OPEN_CHARGE_EXISTS, try again.
+ */
+async function replacePendingCharge(open, locked, req, transaction) {
+  if (!locked || locked.id !== open.id) {
+    throw new ConflictError('A charge is open for the current plan. Settle it before changing plan.', 'OPEN_CHARGE_EXISTS');
+  }
+  const waiting = await db.PaymentProof.count({ where: { billingInvoiceId: locked.id, status: 'pending' }, transaction });
+  if (waiting > 0) {
+    throw new AppError('PROOF_UNDER_REVIEW', 'A transfer for the charge waiting is being checked. Wait for the review before changing plan again.', 409, {
+      invoiceId: locked.id,
+    });
+  }
+  if (locked.targetPlanId) await charges.voidMoveCharge(locked, 'replaced', { actorUserId: req.user.id, req }, transaction);
+  else await charges.voidRenewalCharge(locked, { actorUserId: req.user.id, req }, transaction);
 }
 
 /** The store's pending charge, locked (none: nothing). Taken before the subscription row. */

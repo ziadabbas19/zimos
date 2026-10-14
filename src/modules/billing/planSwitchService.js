@@ -439,7 +439,8 @@ async function start(workspaceId, { planId, billingCycle, timing, expectedAmount
   // A draft or a trial changes plan at once, as before; pay per order moves, as before.
   if ((mode === 'immediate' || mode === 'move') && timing && timing !== 'now') throw timingNotAvailable(timing, ['now']);
   if (mode === 'immediate') {
-    const result = await merchantPlans().changePlan(workspaceId, { planId, billingCycle }, req);
+    // Through the switch, any charge pending gives way (unless a transfer for it is being checked).
+    const result = await merchantPlans().changePlan(workspaceId, { planId, billingCycle }, req, { replacePending: true });
     return { kind: 'trial_change', created: false, changed: result.changed, switch: null, invoice: null, plans: result.plans };
   }
   if (mode === 'move') {
@@ -447,7 +448,7 @@ async function start(workspaceId, { planId, billingCycle, timing, expectedAmount
       const due = await fullPeriodPrice(peek, target, cycle);
       if (due !== expectedAmount) throw amountChanged(due, target.currency);
     }
-    const result = await merchantPlans().requestPlanMove(workspaceId, { planId, billingCycle: cycle }, req);
+    const result = await merchantPlans().requestPlanMove(workspaceId, { planId, billingCycle: cycle }, req, { replacePending: true });
     return { kind: 'move', created: result.created, changed: false, switch: null, invoice: result.invoice, plans: result.plans };
   }
 
