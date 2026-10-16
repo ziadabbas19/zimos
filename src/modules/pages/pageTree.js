@@ -5,6 +5,7 @@ const { ValidationError } = require('../../core/errors/AppError');
 const { validateElementStyle, namedStyleProblems } = require('./elementStyle');
 const showcase = require('./showcaseElements');
 const builderExtras = require('./builderExtras');
+const xs = require('./xsElements');
 
 /**
  * Pages are stored as a structured JSON tree, never raw HTML. Shape:
@@ -76,6 +77,8 @@ const ALLOWED_ELEMENT_TYPES = new Set([
   ...showcase.TYPES,
   // Gallery with thumbnails, variant and bundle pickers, review form: builderExtras.js.
   ...builderExtras.TYPES,
+  // The imported store templates' bands (xs_slider, xs_banners…): xsElements.js.
+  ...xs.TYPES,
 ]);
 
 const MAX_NODES = 10000;

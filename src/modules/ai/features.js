@@ -2,6 +2,7 @@
 
 const Joi = require('joi');
 const { ALLOWED_ELEMENT_TYPES } = require('../pages/pageTree');
+const { isXsType } = require('../pages/xsElements');
 
 /**
  * The AI features (SPEC §19.2, the P1 rows). Each one names its prompt file,
@@ -74,7 +75,11 @@ Object.assign(FEATURES, require('./featuresP2').specs(DIALECTS, text));
 
 const FEATURE_KEYS = Object.keys(FEATURES);
 
-/** The element types a generated page may use — what the page validator allows. */
-const allowedElements = () => [...ALLOWED_ELEMENT_TYPES];
+/**
+ * The element types a generated page may use — what the page validator
+ * allows, but for the imported templates' bands, which only a template's own
+ * look can draw (pages/xsElements.js).
+ */
+const allowedElements = () => [...ALLOWED_ELEMENT_TYPES].filter((type) => !isXsType(type));
 
 module.exports = { FEATURES, FEATURE_KEYS, DIALECTS, allowedElements };
