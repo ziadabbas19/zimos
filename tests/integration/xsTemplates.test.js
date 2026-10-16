@@ -14,6 +14,8 @@ const bearer = (t) => ({ Authorization: `Bearer ${t}` });
 
 const elementTypes = (tree) => tree.sections.flatMap((s) => s.rows.flatMap((r) => r.columns.flatMap((c) => c.elements.map((e) => e.type))));
 const firstElement = (tree) => tree.sections[0].rows[0].columns[0].elements[0];
+const elementOfType = (tree, type) =>
+  tree.sections.flatMap((s) => s.rows.flatMap((r) => r.columns.flatMap((c) => c.elements))).find((e) => e.type === type);
 const unknownTypeIn = (res, type) =>
   expect(res.body.error.details).toEqual(expect.arrayContaining([expect.objectContaining({ message: expect.stringContaining(`Unknown element type "${type}"`) })]));
 
@@ -117,7 +119,7 @@ describe('the editor saving a page of xs bands', () => {
     const home = res.body.pages.find((p) => p.path === '/');
 
     const edited = xsPage('home', XS_ELEMENT_TYPES);
-    firstElement(edited).props.slides[0].heading = 'SUMMER';
+    elementOfType(edited, 'xs_slider').props.slides[0].heading = 'SUMMER';
     const saved = await request(app).patch(`${base}/pages/${home.id}`).set(H).send({ draftData: edited });
     expect(saved.status).toBe(200);
     expect((await request(app).get(`${base}/pages/${home.id}`).set(H)).body.page.draftData).toEqual(edited);
