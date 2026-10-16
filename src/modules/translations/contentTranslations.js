@@ -206,10 +206,14 @@ async function saveContent(workspaceId, { entityType, entityId, locale, texts },
 
 // --- storefront -------------------------------------------------------------
 
-/** The shopper's language when the store offers it besides its own (X-Store-Locale), else null. */
+/**
+ * The shopper's language when the store offers it besides its own: their pick
+ * (X-Store-Locale), else the store's default for shoppers (shopperDefaultOf);
+ * null otherwise.
+ */
 async function shopperLocaleFor(req, workspaceId) {
-  const { TRANSLATION_LOCALES, languagesOf } = require('./translations');
-  const asked = String(req.headers['x-store-locale'] || '').toLowerCase().split('-')[0];
+  const { TRANSLATION_LOCALES, languagesOf, shopperDefaultOf } = require('./translations');
+  const asked = String(req.headers['x-store-locale'] || shopperDefaultOf(req.publicWorkspace)).toLowerCase().split('-')[0];
   if (!TRANSLATION_LOCALES.includes(asked)) return null;
   const workspace = req.publicWorkspace || (await db.Workspace.findByPk(workspaceId, { attributes: ['id', 'defaultLocale', 'settings'] }));
   if (!workspace) return null;

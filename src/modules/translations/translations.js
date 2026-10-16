@@ -174,9 +174,22 @@ async function saveItem(workspaceId, { entityType, entityId, locale, fields }, r
 
 // --- storefront -------------------------------------------------------------
 
+/**
+ * The language a shopper who hasn't picked one reads in: the one the merchant
+ * chose for shoppers (themeSettings.shopperDisplay.locale, the dashboard's
+ * Languages tab), else none — the store's own. A store that never chose reads
+ * exactly as before.
+ */
+function shopperDefaultOf(workspace) {
+  const settings = workspace && workspace.themeSettings;
+  const display = settings && typeof settings === 'object' ? settings.shopperDisplay : null;
+  return display && typeof display === 'object' && typeof display.locale === 'string' ? display.locale : '';
+}
+
 /** The language the shopper reads in, when it is one this store offers besides its own. */
 async function shopperLocale(req) {
-  const asked = baseOf(req.headers['x-store-locale']);
+  // The shopper's own pick (X-Store-Locale) wins over the store's default for shoppers.
+  const asked = baseOf(req.headers['x-store-locale'] || shopperDefaultOf(req.publicWorkspace));
   if (!LOCALES.includes(asked)) return null;
   const workspace = req.publicWorkspace;
   if (!workspace) return null;
@@ -273,6 +286,7 @@ module.exports = {
   TRANSLATION_LOCALES: LOCALES,
   storeLanguagesSchema,
   languagesOf,
+  shopperDefaultOf,
   overview,
   listItems,
   localizeProducts,
