@@ -25,7 +25,9 @@ const logger = require('../../core/utils/logger');
  * translation of words that are gone.
  *
  * Only what is live is offered: the pages of the published website and the
- * steps of published funnels. A text without a translation shows the original.
+ * steps of published funnels — and the store's header and footer (entity
+ * `shell`, below), which are live as soon as they are saved. A text without a
+ * translation shows the original.
  */
 
 const TEXT_KEYS = new Set([
@@ -33,9 +35,14 @@ const TEXT_KEYS = new Set([
   'body', 'quote', 'description', 'desc', 'pain', 'caption', 'question', 'answer', 'placeholder',
   'submitLabel', 'successMessage', 'choiceLabel', 'checkboxLabel', 'ctaLabel', 'buttonLabel', 'cartLabel', 'saveLabel',
   'usLabel', 'themLabel', 'us', 'them',
+  // The imported templates' bands (xs_*): their links' and buttons' words, the small line over a
+  // heading, a team member's role, a post's date line, the shop band's tools and its fields' hints.
+  // (Not `formName`: it names the form in the merchant's sign-ups, whatever the shopper reads.)
+  'linkLabel', 'button2Label', 'eyebrow', 'role', 'meta', 'quoteAuthor', 'allLabel', 'searchLabel', 'searchPlaceholder',
+  'loadMoreLabel', 'viewLabel', 'openLabel', 'contactPlaceholder', 'messagePlaceholder',
 ]);
-// Lists of plain strings that are shown as they are (a bullet list's items).
-const STRING_LIST_KEYS = new Set(['items']);
+// Lists of plain strings that are shown as they are (a bullet list's items, a band's points, a countdown's units).
+const STRING_LIST_KEYS = new Set(['items', 'points', 'countdownLabels']);
 // Never text: data the storefront fills in, and how things look.
 const SKIP_KEYS = new Set(['bindings', 'style', 'styles', 'responsive', 'visibility']);
 const MAX_TEXT = 5000;
@@ -98,6 +105,77 @@ function translateTree(tree, byKey) {
   return copy;
 }
 
+// --- the header and footer ------------------------------------------------------
+
+/*
+ * The store's header and footer (and the announcement in the header) live in
+ * the workspace's themeSettings, written by the website editor, not in a page:
+ * entity `shell`, the workspace's own id. Their words are the `label`,
+ * `title` and `text` strings of themeSettings.header and .footer — the menu
+ * and its lists, the header's parts, the announcement's lines, the footer's
+ * groups, columns and bottom line — never their colours, sizes, links or ids.
+ * Saved settings are live at once, so they need no publishing to be offered.
+ */
+const SHELL_PARTS = ['header', 'footer'];
+const SHELL_TEXT_KEYS = new Set(['label', 'title', 'text']);
+// The announcement's lines to rotate through.
+const SHELL_LIST_KEYS = new Set(['messages', 'text']);
+const SHELL_SKIP_KEYS = new Set(['colors', 'sizes', 'show', 'logo', 'logoImage', 'href', 'id', 'type', 'kind', 'layout', 'width', 'align', 'hide']);
+
+function walkShell(node, visit) {
+  if (Array.isArray(node)) {
+    node.forEach((child) => walkShell(child, visit));
+    return;
+  }
+  if (!isObject(node)) return;
+  for (const [key, value] of Object.entries(node)) {
+    if (SHELL_SKIP_KEYS.has(key)) continue;
+    if (typeof value === 'string') {
+      if (SHELL_TEXT_KEYS.has(key) && value.trim() && value.length <= MAX_TEXT) visit(value, (next) => (node[key] = next));
+    } else if (Array.isArray(value)) {
+      value.forEach((item, i) => {
+        if (typeof item === 'string') {
+          if (SHELL_LIST_KEYS.has(key) && item.trim() && item.length <= MAX_TEXT) visit(item, (next) => (value[i] = next));
+        } else walkShell(item, visit);
+      });
+    } else if (isObject(value)) walkShell(value, visit);
+  }
+}
+
+/** The header's and footer's texts, each once, in reading order. */
+function shellTextsOf(themeSettings) {
+  const seen = new Map();
+  if (!isObject(themeSettings)) return seen;
+  for (const part of SHELL_PARTS) {
+    walkShell(themeSettings[part], (text) => {
+      const key = keyOf(text);
+      if (!seen.has(key)) seen.set(key, text.trim());
+    });
+  }
+  return seen;
+}
+
+/** A copy of themeSettings with the header's and footer's translated texts in place; the rest untouched. */
+function translateShell(themeSettings, byKey) {
+  if (!isObject(themeSettings) || byKey.size === 0) return themeSettings;
+  const copy = { ...themeSettings };
+  for (const part of SHELL_PARTS) {
+    if (!isObject(themeSettings[part])) continue;
+    copy[part] = JSON.parse(JSON.stringify(themeSettings[part]));
+    walkShell(copy[part], (text, set) => {
+      const next = byKey.get(keyOf(text));
+      if (next) set(next);
+    });
+  }
+  return copy;
+}
+
+async function liveShell(workspaceId) {
+  const workspace = await db.Workspace.findByPk(workspaceId, { attributes: ['id', 'themeSettings'] });
+  const texts = shellTextsOf(workspace && workspace.themeSettings);
+  return texts.size > 0 ? [{ entityType: 'shell', entityId: workspaceId, label: 'Header and footer', sub: null, texts }] : [];
+}
+
 // --- what is live -------------------------------------------------------------
 
 async function livePages(workspaceId) {
@@ -135,12 +213,13 @@ async function liveFunnels(workspaceId) {
   return out;
 }
 
-const sourcesOf = (workspaceId, entityType) => (entityType === 'page' ? livePages(workspaceId) : liveFunnels(workspaceId));
+const SOURCES = { page: livePages, funnel: liveFunnels, shell: liveShell };
+const sourcesOf = (workspaceId, entityType) => SOURCES[entityType](workspaceId);
 
 /** "type:id:key" of every live text, for the Languages overview's percentages. */
 async function wantedFields(workspaceId) {
   const out = [];
-  for (const entityType of ['page', 'funnel']) {
+  for (const entityType of ['page', 'funnel', 'shell']) {
     for (const source of await sourcesOf(workspaceId, entityType)) {
       for (const key of source.texts.keys()) out.push(`${entityType}:${source.entityId}:${key}`);
     }
@@ -173,7 +252,7 @@ async function saveContent(workspaceId, { entityType, entityId, locale, texts },
     throw new ValidationError([{ field: 'locale', message: "The store's own language is edited in the builder" }]);
   }
   const source = (await sourcesOf(workspaceId, entityType)).find((s) => s.entityId === entityId);
-  if (!source) throw new NotFoundError(entityType === 'page' ? 'Page' : 'Funnel');
+  if (!source) throw new NotFoundError({ page: 'Page', funnel: 'Funnel', shell: 'Header and footer' }[entityType]);
   const unknown = Object.keys(texts).filter((k) => !source.texts.has(k));
   if (unknown.length) throw new ValidationError(unknown.map((k) => ({ field: `texts.${k}`, message: 'This text is not on the live page' })));
 
@@ -256,10 +335,29 @@ async function localizeFunnelStep(req, funnelId, payload) {
   return payload;
 }
 
+/**
+ * The public store (GET /store/:ws) with its header and footer in the
+ * shopper's language: a copy, so the cached store is never changed. Never
+ * throws; a store with no translation for them answers exactly as before.
+ */
+async function localizeShell(req, store) {
+  try {
+    if (!store || !isObject(store.themeSettings)) return store;
+    const locale = await shopperLocaleFor(req, req.tenant.workspaceId);
+    if (!locale) return store;
+    const byKey = await translationsFor(req.tenant.workspaceId, 'shell', req.tenant.workspaceId, locale);
+    if (byKey.size === 0) return store;
+    return { ...store, themeSettings: translateShell(store.themeSettings, byKey) };
+  } catch (err) {
+    logger.warn('Header and footer could not be localized', { error: err.message });
+    return store;
+  }
+}
+
 // --- routes (inside the translations router: website.edit) --------------------
 
 const uuid = Joi.string().uuid();
-const entityType = Joi.string().valid('page', 'funnel');
+const entityType = Joi.string().valid('page', 'funnel', 'shell');
 // Checked when a request comes in: translations.js requires this file while it loads.
 const locale = () =>
   Joi.string().custom((value, helpers) => (require('./translations').TRANSLATION_LOCALES.includes(value) ? value : helpers.error('any.only')));
@@ -291,4 +389,17 @@ router.put(
   asyncHandler(async (req, res) => res.json({ item: await saveContent(req.tenant.workspaceId, req.body, req) }))
 );
 
-module.exports = { router, textsOf, translateTree, keyOf, wantedFields, listContent, saveContent, localizePage, localizeFunnelStep };
+module.exports = {
+  router,
+  textsOf,
+  translateTree,
+  shellTextsOf,
+  translateShell,
+  keyOf,
+  wantedFields,
+  listContent,
+  saveContent,
+  localizePage,
+  localizeFunnelStep,
+  localizeShell,
+};
