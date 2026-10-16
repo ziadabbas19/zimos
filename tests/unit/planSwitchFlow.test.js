@@ -89,28 +89,45 @@ describe('the flag', () => {
 });
 
 describe('an upgrade', () => {
-  it('previews the difference for the days left and the renewal at the new full price', async () => {
+  it('previews the new plan at its full price now, or at the end of the period with nothing due now', async () => {
     const sub = await store();
     const { preview } = await switches.preview(WID, { planId: pro.id });
     expect(preview).toMatchObject({
       kind: 'upgrade',
+      reason: 'upgrade',
+      timing: 'now',
+      timings: ['now', 'period_end'],
       effective: 'on_payment',
-      amountDue: 20000,
+      effectiveAt: null,
+      amountDue: 60000,
       currency: 'EGP',
-      proration: { remainingDays: 20, cycleDays: 30, fromPrice: 30000, toPrice: 60000 },
-      nextRenewal: { at: sub.currentPeriodEnd, amount: 60000, billingCycle: 'monthly' },
+      proration: null,
+      currentPeriod: { endsAt: sub.currentPeriodEnd, remainingDays: 20 },
+      nextRenewal: { at: null, amount: 60000, billingCycle: 'monthly' },
       payable: true,
       blockedBy: null,
       replaces: null,
       trial: false,
     });
+    expect(preview.options.now).toMatchObject({ effective: 'on_payment', amountDue: 60000, payable: true });
+    expect(preview.options.period_end).toMatchObject({
+      effective: 'period_end',
+      effectiveAt: sub.currentPeriodEnd,
+      amountDue: 0,
+      chargeExpiry: null,
+      nextRenewal: { at: sub.currentPeriodEnd, amount: 60000 },
+      payable: null,
+      blockedBy: null,
+    });
+    // Asking for the other timing describes it at the top.
+    expect((await switches.preview(WID, { planId: pro.id, timing: 'period_end' })).preview).toMatchObject({ timing: 'period_end', effective: 'period_end', amountDue: 0 });
     expect(await db.BillingInvoice.count()).toBe(0);
   });
 
-  it('the next renewal has a date for every kind but a move', async () => {
+  it('the next renewal has a date for every kind but one whose period starts on payment', async () => {
     const sub = await store();
     const up = (await switches.preview(WID, { planId: pro.id })).preview;
-    expect(up.nextRenewal).toMatchObject({ at: sub.currentPeriodEnd, amount: 60000, currency: 'EGP', billingCycle: 'monthly' });
+    expect(up.nextRenewal).toMatchObject({ at: null, amount: 60000, currency: 'EGP', billingCycle: 'monthly' });
     // The plan the store is on: its renewal as it stands.
     expect((await switches.preview(WID, { planId: basic.id })).preview).toMatchObject({ kind: 'none', nextRenewal: { at: sub.currentPeriodEnd, amount: 30000 } });
     // A free plan has no renewal.
@@ -120,7 +137,18 @@ describe('an upgrade', () => {
     free = await db.Plan.create({ key: 'free', name: 'Free', monthlyPriceAmount: 0, yearlyPriceAmount: 0 });
     pro = await db.Plan.create({ key: 'pro', name: 'Pro', monthlyPriceAmount: 60000, yearlyPriceAmount: 600000 });
     await store({ planId: free.id });
-    expect((await switches.preview(WID, { planId: pro.id })).preview).toMatchObject({ kind: 'move', nextRenewal: { at: null, amount: 60000, billingCycle: 'monthly' } });
+    expect((await switches.preview(WID, { planId: pro.id })).preview).toMatchObject({ kind: 'move', currentPeriod: null, nextRenewal: { at: null, amount: 60000, billingCycle: 'monthly' } });
+  });
+
+  it('a timing the switch does not offer is SWITCH_TIMING_NOT_AVAILABLE', async () => {
+    await store({ planId: pro.id });
+    await expect(switches.preview(WID, { planId: basic.id, timing: 'now' })).rejects.toMatchObject({
+      code: 'SWITCH_TIMING_NOT_AVAILABLE',
+      statusCode: 409,
+      details: { timing: 'now', available: ['period_end'] },
+    });
+    await expect(switches.start(WID, { planId: basic.id, timing: 'now' }, req)).rejects.toMatchObject({ code: 'SWITCH_TIMING_NOT_AVAILABLE' });
+    expect(await openOf()).toHaveLength(0);
   });
 
   it('the preview says how long the charge would live; a downgrade writes none', async () => {
@@ -134,12 +162,17 @@ describe('an upgrade', () => {
     expect((await switches.preview(WID, { planId: free.id })).preview).toMatchObject({ kind: 'scheduled', chargeExpiry: null });
   });
 
-  it('starts one charge; the store keeps its plan until it is paid; the same request gets it back', async () => {
+  it('now: one charge at the full price for a full period from its payment; the store keeps its plan until it is paid', async () => {
     const sub = await store();
-    const first = await switches.start(WID, { planId: pro.id, expectedAmount: 20000 }, req);
-    expect(first).toMatchObject({ kind: 'upgrade', created: true, switch: { kind: 'upgrade', status: 'pending', amountDue: 20000 } });
+    const before = Date.now();
+    const first = await switches.start(WID, { planId: pro.id, timing: 'now', expectedAmount: 60000 }, req);
+    expect(first).toMatchObject({ kind: 'upgrade', created: true, switch: { kind: 'upgrade', status: 'pending', amountDue: 60000, timing: 'now', reason: 'upgrade', proration: null } });
     const [charge] = await pendingOf();
-    expect(charge).toMatchObject({ amount: 20000, grossAmount: 20000, discountAmount: 0, referralCodeId: null, targetPlanId: pro.id, periodEnd: sub.currentPeriodEnd });
+    expect(charge).toMatchObject({ amount: 60000, grossAmount: 60000, discountAmount: 0, referralCodeId: null, targetPlanId: pro.id, targetBillingCycle: 'monthly' });
+    expect(charge.periodStart.getTime()).toBeGreaterThanOrEqual(before);
+    expect(charge.periodEnd.getTime()).toBeGreaterThan(sub.currentPeriodEnd.getTime());
+    const [row] = await openOf();
+    expect(row.quote).toMatchObject({ amount: 60000, pricing: 'full_period', timing: 'now', reason: 'upgrade' });
     expect(sub.planId).toBe(basic.id);
     expect(first.switch.expiresAt).toEqual(new Date(new Date(first.switch.createdAt).getTime() + 48 * 3600 * 1000));
 
@@ -148,11 +181,32 @@ describe('an upgrade', () => {
     expect(await pendingOf()).toHaveLength(1);
   });
 
+  it('period_end: no charge now; it waits for the end of the paid period like a downgrade', async () => {
+    const sub = await store();
+    const result = await switches.start(WID, { planId: pro.id, timing: 'period_end', expectedAmount: 0 }, req);
+    expect(result).toMatchObject({
+      kind: 'scheduled',
+      created: true,
+      invoice: null,
+      switch: { kind: 'scheduled', status: 'scheduled', effectiveAt: sub.currentPeriodEnd, reason: 'upgrade', timing: 'period_end' },
+    });
+    expect(await db.BillingInvoice.count()).toBe(0);
+    expect(sub.planId).toBe(basic.id);
+    // The same again is handed back; choosing "now" replaces it with a charge.
+    expect((await switches.start(WID, { planId: pro.id, timing: 'period_end' }, req)).created).toBe(false);
+    await switches.start(WID, { planId: pro.id, timing: 'now' }, req);
+    expect(await db.PlanSwitch.findAll({ where: { workspaceId: WID, status: 'replaced' } })).toHaveLength(1);
+    const open = await openOf();
+    expect(open).toHaveLength(1);
+    expect(open[0]).toMatchObject({ kind: 'upgrade', status: 'pending' });
+    expect(await pendingOf()).toHaveLength(1);
+  });
+
   it('refuses an amount other than the one shown', async () => {
     await store();
-    await expect(switches.start(WID, { planId: pro.id, expectedAmount: 19900 }, req)).rejects.toMatchObject({
+    await expect(switches.start(WID, { planId: pro.id, expectedAmount: 20000 }, req)).rejects.toMatchObject({
       code: 'SWITCH_AMOUNT_CHANGED',
-      details: { amountDue: 20000, currency: 'EGP' },
+      details: { amountDue: 60000, currency: 'EGP' },
     });
     expect(await db.BillingInvoice.count()).toBe(0);
   });
@@ -187,7 +241,7 @@ describe('an upgrade', () => {
     expect((await switches.summaryFor(sub)).open).toMatchObject({ status: 'pending', proofUnderReview: false });
     const [charge] = await pendingOf();
     const proof = await db.PaymentProof.create({ billingInvoiceId: charge.id, status: 'pending' });
-    expect((await switches.summaryFor(sub)).open).toMatchObject({ proofUnderReview: true, amountDue: 20000 });
+    expect((await switches.summaryFor(sub)).open).toMatchObject({ proofUnderReview: true, amountDue: 60000 });
     await proof.update({ status: 'rejected' });
     expect((await switches.summaryFor(sub)).open.proofUnderReview).toBe(false);
     // A scheduled switch has no charge: never.
@@ -314,17 +368,247 @@ describe('cancelling', () => {
   });
 });
 
+describe('a move to pay per order', () => {
+  let fee;
+
+  beforeEach(async () => {
+    env.wallet.enabled = true;
+    fee = await db.Plan.create({ key: 'ppo', name: 'Pay per order', monthlyPriceAmount: 0, yearlyPriceAmount: 0, perOrderFeeAmount: 400 });
+  });
+
+  afterEach(() => {
+    env.wallet.enabled = false;
+  });
+
+  it('previews like a downgrade: at the end of the paid period, nothing due and nothing to pay', async () => {
+    const sub = await store();
+    const { preview } = await switches.preview(WID, { planId: fee.id, billingCycle: 'yearly' });
+    expect(preview).toMatchObject({
+      kind: 'scheduled',
+      reason: 'to_pay_per_order',
+      timing: 'period_end',
+      timings: ['period_end'],
+      effective: 'period_end',
+      effectiveAt: sub.currentPeriodEnd,
+      to: { planId: fee.id, billingCycle: 'monthly' },
+      currentPeriod: { endsAt: sub.currentPeriodEnd, remainingDays: 20 },
+      amountDue: 0,
+      payable: false,
+      chargeExpiry: null,
+      nextRenewal: null,
+      blockedBy: null,
+    });
+    await expect(switches.preview(WID, { planId: fee.id, timing: 'now' })).rejects.toMatchObject({ code: 'SWITCH_TIMING_NOT_AVAILABLE' });
+  });
+
+  it('starts with nothing charged; the store keeps its plan until then; a renewal waiting gives way', async () => {
+    const sub = await store();
+    const renewal = await db.BillingInvoice.create({
+      workspaceId: WID, subscriptionId: sub.id, grossAmount: 30000, amount: 30000, currency: 'EGP', periodStart: sub.currentPeriodEnd, periodEnd: new Date(sub.currentPeriodEnd.getTime() + 30 * DAY),
+    });
+    const result = await switches.start(WID, { planId: fee.id, expectedAmount: 0 }, req);
+    expect(result).toMatchObject({
+      kind: 'scheduled',
+      created: true,
+      invoice: null,
+      switch: { kind: 'scheduled', status: 'scheduled', reason: 'to_pay_per_order', effectiveAt: sub.currentPeriodEnd, to: { planId: fee.id } },
+    });
+    expect(sub).toMatchObject({ planId: basic.id, status: 'active' });
+    expect(renewal).toMatchObject({ status: 'void', voidReason: 'replaced' });
+    expect(await pendingOf()).toHaveLength(0);
+  });
+
+  it('is cancelled before it applies, and the store stays as it is', async () => {
+    const sub = await store();
+    await switches.start(WID, { planId: fee.id }, req);
+    expect(await switches.cancel(WID, req)).toMatchObject({ cancelled: true, switch: { status: 'cancelled', reason: 'to_pay_per_order' } });
+    expect(await openOf()).toHaveLength(0);
+    expect(sub.planId).toBe(basic.id);
+  });
+
+  it('applies at its moment (the hourly job): active on the plan, no period to pay', async () => {
+    const sub = await store();
+    await switches.start(WID, { planId: fee.id }, req);
+    const [sw] = await openOf();
+    expect(await switches.applyDue({ now: new Date(sub.currentPeriodEnd.getTime() - 1000) })).toEqual({ applied: 0, dropped: 0 });
+    const at = new Date(sub.currentPeriodEnd.getTime() + 1000);
+    expect(await switches.applyDue({ now: at })).toEqual({ applied: 1, dropped: 0 });
+    expect(sw.status).toBe('applied');
+    expect(sub).toMatchObject({ planId: fee.id, status: 'active', trialEndsAt: null, billingCycle: 'monthly' });
+    expect(new Date(sub.currentPeriodEnd).getUTCFullYear()).toBeGreaterThan(at.getUTCFullYear() + 50);
+    expect(await db.BillingInvoice.count()).toBe(0);
+  });
+
+  it('is dropped at its moment when the prepaid balance has been turned off', async () => {
+    const sub = await store();
+    await switches.start(WID, { planId: fee.id }, req);
+    const [sw] = await openOf();
+    env.wallet.enabled = false;
+    expect(await switches.applyDue({ now: new Date(sub.currentPeriodEnd.getTime() + 1000) })).toEqual({ applied: 0, dropped: 1 });
+    expect(sw).toMatchObject({ status: 'dropped', endReason: 'wallet_disabled' });
+    expect(sub.planId).toBe(basic.id);
+  });
+
+  it('from a free plan, or once the period has ended: at once', async () => {
+    const sub = await store({ ended: true });
+    const result = await switches.start(WID, { planId: fee.id }, req);
+    expect(result).toMatchObject({ kind: 'immediate', changed: true, switch: { status: 'applied', reason: 'to_pay_per_order' } });
+    expect(sub).toMatchObject({ planId: fee.id, status: 'active' });
+  });
+
+  it('not on offer while the prepaid balance is off; a trial chooses it on its own card', async () => {
+    await store();
+    env.wallet.enabled = false;
+    await expect(switches.preview(WID, { planId: fee.id })).rejects.toMatchObject({ code: 'PLAN_NOT_AVAILABLE', statusCode: 422 });
+    await expect(switches.start(WID, { planId: fee.id }, req)).rejects.toMatchObject({ code: 'PLAN_NOT_AVAILABLE' });
+    env.wallet.enabled = true;
+    db.reset();
+    fee = await db.Plan.create({ key: 'ppo', name: 'Pay per order', monthlyPriceAmount: 0, yearlyPriceAmount: 0, perOrderFeeAmount: 400 });
+    basic = await db.Plan.create({ key: 'basic', name: 'Basic', monthlyPriceAmount: 30000, yearlyPriceAmount: 300000 });
+    await store({ extra: { status: 'trialing' } });
+    await expect(switches.preview(WID, { planId: fee.id })).rejects.toMatchObject({ code: 'PLAN_NOT_AVAILABLE' });
+    await expect(switches.start(WID, { planId: fee.id }, req)).rejects.toMatchObject({ code: 'PLAN_NOT_AVAILABLE' });
+    expect(merchantPlans.changePlan).not.toHaveBeenCalled();
+  });
+});
+
+describe('cancelling a charge (the merchant) and voiding one (the console)', () => {
+  const OTHER = 'workspace-2';
+
+  async function renewalOf(sub, extra = {}) {
+    return db.BillingInvoice.create({
+      workspaceId: WID, subscriptionId: sub.id, grossAmount: 30000, amount: 30000, currency: 'EGP', periodStart: sub.currentPeriodEnd, periodEnd: new Date(sub.currentPeriodEnd.getTime() + 30 * DAY), ...extra,
+    });
+  }
+
+  it('the merchant cancels a pending renewal: void, its checkout superseded, a special-terms charge given back, the store as it was', async () => {
+    const sub = await store();
+    const term = await db.SubscriptionTerm.create({ chargesUsed: 1 });
+    const renewal = await renewalOf(sub, { specialTermsId: term.id });
+    const checkout = await db.BillingPaymentAttempt.create({ billingInvoiceId: renewal.id, status: 'open' });
+    const result = await switches.cancelCharge(WID, renewal.id, req);
+    expect(result).toMatchObject({ invoice: { id: renewal.id, status: 'void', cancellable: false }, plans: { listed: true } });
+    expect(renewal).toMatchObject({ status: 'void', voidReason: 'cancelled_by_merchant', voidNote: null });
+    expect(checkout.status).toBe('superseded');
+    expect(term.chargesUsed).toBe(0);
+    expect(sub).toMatchObject({ planId: basic.id, status: 'active' });
+  });
+
+  it("an upgrade's charge cancelled: its switch is cancelled too", async () => {
+    const sub = await store();
+    await switches.start(WID, { planId: pro.id }, req);
+    const [charge] = await pendingOf();
+    const [sw] = await openOf();
+    await switches.cancelCharge(WID, charge.id, req);
+    expect(charge.voidReason).toBe('cancelled_by_merchant');
+    expect(sw).toMatchObject({ status: 'cancelled', endReason: 'charge_cancelled' });
+    expect(sub.planId).toBe(basic.id);
+  });
+
+  it('refused while a transfer for it is being checked, when paid or already void, and for another store', async () => {
+    const sub = await store();
+    const renewal = await renewalOf(sub);
+    const proof = await db.PaymentProof.create({ billingInvoiceId: renewal.id, status: 'pending' });
+    await expect(switches.cancelCharge(WID, renewal.id, req)).rejects.toMatchObject({ code: 'PROOF_UNDER_REVIEW', statusCode: 409, details: { invoiceId: renewal.id } });
+    expect(renewal.status).toBe('pending');
+    await proof.update({ status: 'rejected' });
+    await expect(switches.cancelCharge(OTHER, renewal.id, req)).rejects.toMatchObject({ statusCode: 404 });
+    await switches.cancelCharge(WID, renewal.id, req);
+    await expect(switches.cancelCharge(WID, renewal.id, req)).rejects.toMatchObject({ code: 'CHARGE_NOT_PENDING', statusCode: 409 });
+    const paid = await renewalOf(sub, { status: 'paid', amountPaid: 30000 });
+    await expect(switches.cancelCharge(WID, paid.id, req)).rejects.toMatchObject({ code: 'CHARGE_ALREADY_PAID', statusCode: 409 });
+    expect(paid.status).toBe('paid');
+  });
+
+  it('the flag off: 404, nothing voided', async () => {
+    const renewal = await renewalOf(await store());
+    env.billing.planSwitch.enabled = false;
+    await expect(switches.cancelCharge(WID, renewal.id, req)).rejects.toMatchObject({ code: 'PLAN_SWITCH_DISABLED', statusCode: 404 });
+    await expect(switches.adminVoidCharge(renewal.id, { reason: 'test' }, req)).rejects.toMatchObject({ code: 'PLAN_SWITCH_DISABLED' });
+    expect(renewal.status).toBe('pending');
+  });
+
+  it('the console voids any pending charge with its reason; a switch waiting for it is dropped', async () => {
+    const sub = await store();
+    await switches.start(WID, { planId: pro.id }, req);
+    const [charge] = await pendingOf();
+    const [sw] = await openOf();
+    await switches.adminVoidCharge(charge.id, { reason: 'Asked by phone to drop it' }, { user: { id: 'admin-1' } });
+    expect(charge).toMatchObject({ status: 'void', voidReason: 'voided_by_admin', voidNote: 'Asked by phone to drop it' });
+    expect(sw).toMatchObject({ status: 'dropped', endReason: 'admin_void' });
+    expect(sub.planId).toBe(basic.id);
+  });
+
+  it('the console is refused while a transfer for the charge waits for review, and for a paid one', async () => {
+    const sub = await store();
+    const renewal = await renewalOf(sub);
+    await db.PaymentProof.create({ billingInvoiceId: renewal.id, status: 'pending' });
+    await expect(switches.adminVoidCharge(renewal.id, { reason: 'x' }, req)).rejects.toMatchObject({ code: 'PROOF_UNDER_REVIEW' });
+    const paid = await renewalOf(sub, { status: 'paid', amountPaid: 30000 });
+    await expect(switches.adminVoidCharge(paid.id, { reason: 'x' }, req)).rejects.toMatchObject({ code: 'CHARGE_ALREADY_PAID' });
+  });
+});
+
+describe('a payment for an upgrade that did not go through', () => {
+  it('voids the charge and cancels the switch: the store stays on its plan with nothing pending', async () => {
+    const sub = await store();
+    await switches.start(WID, { planId: pro.id }, req);
+    const [charge] = await pendingOf();
+    const [sw] = await openOf();
+    await db.BillingPaymentAttempt.create({ billingInvoiceId: charge.id, status: 'failed' });
+    expect(await switches.paymentFailed(charge.id, { source: 'webhook:failed' })).toBe(true);
+    expect(charge).toMatchObject({ status: 'void', voidReason: 'payment_failed' });
+    expect(sw).toMatchObject({ status: 'cancelled', endReason: 'payment_failed' });
+    expect(sub).toMatchObject({ planId: basic.id, status: 'active' });
+    expect(await pendingOf()).toHaveLength(0);
+    expect(await openOf()).toHaveLength(0);
+    // The upgrade can be started again.
+    expect((await switches.start(WID, { planId: pro.id }, req)).created).toBe(true);
+  });
+
+  it('left alone while another checkout or a transfer may still pay it', async () => {
+    await store();
+    await switches.start(WID, { planId: pro.id }, req);
+    const [charge] = await pendingOf();
+    const other = await db.BillingPaymentAttempt.create({ billingInvoiceId: charge.id, status: 'open' });
+    expect(await switches.paymentFailed(charge.id)).toBe(false);
+    await other.update({ status: 'expired' });
+    const proof = await db.PaymentProof.create({ billingInvoiceId: charge.id, status: 'pending' });
+    expect(await switches.paymentFailed(charge.id)).toBe(false);
+    expect(charge.status).toBe('pending');
+    await proof.update({ status: 'rejected' });
+    expect(await switches.paymentFailed(charge.id, { source: 'proof_rejected' })).toBe(true);
+    expect(charge.voidReason).toBe('payment_failed');
+  });
+
+  it('a renewal is left as before, and so is everything with the flag off', async () => {
+    const sub = await store();
+    const renewal = await db.BillingInvoice.create({
+      workspaceId: WID, subscriptionId: sub.id, grossAmount: 30000, amount: 30000, currency: 'EGP', periodStart: sub.currentPeriodEnd, periodEnd: new Date(sub.currentPeriodEnd.getTime() + 30 * DAY),
+    });
+    expect(await switches.paymentFailed(renewal.id)).toBe(false);
+    expect(renewal.status).toBe('pending');
+    await renewal.update({ status: 'void', voidReason: 'replaced' });
+    await switches.start(WID, { planId: pro.id }, req);
+    const [charge] = await pendingOf();
+    env.billing.planSwitch.enabled = false;
+    expect(await switches.paymentFailed(charge.id)).toBe(false);
+    expect(charge.status).toBe('pending');
+  });
+});
+
 describe('what is not changed here', () => {
   it('a trial changes plan as before, and pay per order moves as before', async () => {
     await store({ extra: { status: 'trialing' } });
     expect(await switches.start(WID, { planId: pro.id }, req)).toMatchObject({ kind: 'trial_change', changed: true });
     expect(merchantPlans.changePlan).toHaveBeenCalledTimes(1);
+    expect(merchantPlans.changePlan.mock.calls[0][3]).toEqual({ replacePending: true });
     db.reset();
     const fee = await db.Plan.create({ key: 'ppo', name: 'Pay per order', monthlyPriceAmount: 0, yearlyPriceAmount: 0, perOrderFeeAmount: 400 });
     pro = await db.Plan.create({ key: 'pro', name: 'Pro', monthlyPriceAmount: 60000, yearlyPriceAmount: 600000 });
     await store({ planId: fee.id });
     expect(await switches.start(WID, { planId: pro.id }, req)).toMatchObject({ kind: 'move', created: true });
-    expect(merchantPlans.requestPlanMove).toHaveBeenCalledWith(WID, { planId: pro.id, billingCycle: 'monthly' }, req);
+    expect(merchantPlans.requestPlanMove).toHaveBeenCalledWith(WID, { planId: pro.id, billingCycle: 'monthly' }, req, { replacePending: true });
   });
 
   it('refuses what support decides', async () => {
@@ -345,7 +629,7 @@ describe('what is not changed here', () => {
     expect(await switches.summaryFor(sub)).toEqual({ enabled: true, mode: 'switch', reason: null, open: null });
     await switches.start(WID, { planId: pro.id }, req);
     const summary = await switches.summaryFor(sub);
-    expect(summary.open).toMatchObject({ kind: 'upgrade', from: { planName: 'Basic' }, to: { planName: 'Pro' }, amountDue: 20000 });
+    expect(summary.open).toMatchObject({ kind: 'upgrade', from: { planName: 'Basic' }, to: { planName: 'Pro' }, amountDue: 60000 });
     env.billing.planSwitch.enabled = false;
     expect(await switches.summaryFor(sub)).toMatchObject({ enabled: false, mode: null, open: { kind: 'upgrade' } });
   });

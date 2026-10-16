@@ -1,6 +1,7 @@
 'use strict';
 
 const db = require('../../db/models');
+const env = require('../../config/env');
 const { ConflictError, NotFoundError } = require('../../core/errors/AppError');
 const logger = require('../../core/utils/logger');
 const { recordAudit } = require('../audit/auditService');
@@ -10,6 +11,7 @@ const { planPrice, addBillingPeriod } = require('./planPricing');
 const specialTerms = require('./specialTermsService');
 const manualPricing = require('./manualPricing');
 const planSwitches = require('./planSwitchSettlement');
+const switchRules = require('./planSwitchRules');
 
 /**
  * Subscription charges: one billing_invoices row per charge, the first and
@@ -386,11 +388,29 @@ async function settlePaid(
     { transaction }
   );
   if (invoice.targetPlanId) {
-    // An upgrade keeps the paid period; a move (pay per order, or from a free
-    // plan) starts a full period of the new plan from now.
+    // An upgrade (its full price) or a move (pay per order, or from a free
+    // plan) starts a full period of the new plan from now; an upgrade of the
+    // old prorated kind kept the paid period.
     const sw = await planSwitches.switchOfCharge(invoice, transaction);
-    if (sw && sw.kind === 'upgrade') await planSwitches.applyUpgrade(invoice, subscription, sw, transaction);
-    else await switchPlanForMove(invoice, subscription, transaction);
+    if (sw && sw.kind === 'upgrade' && !switchRules.fullPeriodUpgrade(sw)) await planSwitches.applyUpgrade(invoice, subscription, sw, transaction);
+    else {
+      const before = { planId: subscription.planId, billingCycle: subscription.billingCycle, status: subscription.status };
+      await switchPlanForMove(invoice, subscription, transaction);
+      // A plan switch's charge: the switch's own audit entry too, as for the old prorated kind.
+      if (sw) {
+        await planSwitches.audit(
+          sw,
+          'subscription.plan_switch_applied',
+          {
+            before,
+            after: { planId: subscription.planId, billingCycle: subscription.billingCycle, status: subscription.status },
+            metadata: { paymentSource: invoice.paymentSource, amountPaid: Number(invoice.amountPaid), currency: invoice.currency, currentPeriodStart: subscription.currentPeriodStart, currentPeriodEnd: subscription.currentPeriodEnd },
+            actorUserId: invoice.recordedByUserId || null,
+          },
+          transaction
+        );
+      }
+    }
     if (sw) await planSwitches.markApplied(sw, transaction);
   } else {
     // A late payment for an earlier period never moves the period backwards.
@@ -485,48 +505,60 @@ async function voidRenewalCharge(invoice, { actorUserId = null, req = null } = {
 }
 
 /**
- * An upgrade's charge (billing/planSwitchService, which holds the
- * subscription locked and has made room for it): the difference for the
- * days left, already priced (`amount`, after the store's referral code), so
- * the charge carries no code and is never re-priced: what the merchant was
- * shown is what every way to pay asks. Its period is the days it pays for,
- * up to the end of the paid period. The plan changes when it is paid
- * (settlePaid), never before.
+ * Voids a pending charge for `reason` (planSwitchRules.VOID_REASONS): the
+ * merchant cancelled it (cancelled_by_merchant), the console voided it
+ * (voided_by_admin, with its `note`), or its payment failed
+ * (payment_failed). A renewal, an upgrade's or a move's alike. Any online
+ * checkout for it is superseded, a special-terms charge it used given back,
+ * and a plan switch waiting for it ends as the reason says
+ * (planSwitchRules.switchEndForVoid). The subscription is not touched. Money
+ * that still arrives for it is applied or credited (settleLateMovePayment).
+ * The caller holds the charge locked and has checked that no transfer's
+ * proof waits for it. Resolves false when it was no longer pending.
  */
-async function createUpgradeChargeInTransaction(subscription, plan, billingCycle, { amount, periodEnd, now = new Date(), req = null }, transaction) {
-  if (!Number.isSafeInteger(amount) || amount <= 0) throw new ConflictError('Nothing is due for this change.', 'NOTHING_TO_PAY');
-  const invoice = await db.BillingInvoice.create(
-    {
-      workspaceId: subscription.workspaceId,
-      subscriptionId: subscription.id,
-      grossAmount: amount,
-      discountAmount: 0,
-      amount,
-      currency: plan.currency,
-      referralCodeId: null,
-      specialTermsId: null,
-      status: 'pending',
-      periodStart: now,
-      periodEnd,
-      targetPlanId: plan.id,
-      targetBillingCycle: billingCycle,
-    },
-    { transaction }
+async function voidPendingCharge(invoice, reason, { actorUserId = null, req = null, note = null } = {}, transaction) {
+  if (!invoice || invoice.status !== 'pending') return false;
+  const before = chargeAuditState(invoice);
+  await invoice.update({ status: 'void', voidedAt: new Date(), voidReason: reason, voidNote: note || null }, { transaction });
+  const [checkoutsSuperseded] = await db.BillingPaymentAttempt.update(
+    { status: 'superseded' },
+    { where: { billingInvoiceId: invoice.id, status: db.BillingPaymentAttempt.IN_PROGRESS }, transaction }
   );
-  if (req) {
-    await recordAudit({
-      workspaceId: subscription.workspaceId,
-      actorUserId: req.user.id,
-      action: 'billing_invoice.create',
-      entityType: 'BillingInvoice',
-      entityId: invoice.id,
-      after: chargeAuditState(invoice),
-      metadata: { workspaceId: subscription.workspaceId, targetPlanId: plan.id, targetBillingCycle: billingCycle, planSwitch: 'upgrade' },
-      req,
-      transaction,
-    });
+  if (invoice.specialTermsId) {
+    await db.SubscriptionTerm.decrement('chargesUsed', { by: 1, where: { id: invoice.specialTermsId, chargesUsed: { [db.Sequelize.Op.gt]: 0 } }, transaction });
   }
-  return invoice;
+  const switchClosed = await planSwitches.closeForVoidedCharge(invoice, reason, transaction);
+  await recordAudit({
+    workspaceId: invoice.workspaceId,
+    actorUserId,
+    action: 'billing_invoice.void',
+    entityType: 'BillingInvoice',
+    entityId: invoice.id,
+    before,
+    after: { status: 'void', reason, note: note || null },
+    metadata: {
+      amount: Number(invoice.amount),
+      currency: invoice.currency,
+      periodStart: invoice.periodStart,
+      targetPlanId: invoice.targetPlanId || null,
+      checkoutsSuperseded,
+      ...(switchClosed ? { planSwitchClosed: true } : {}),
+    },
+    req,
+    transaction,
+  });
+  return true;
+}
+
+/**
+ * Whether the console may void this charge (POST /admin/charges/:id/void):
+ * PLAN_SWITCH_ENABLED on, the charge pending, and no transfer's proof for it
+ * waiting for review. `waitingProofs` is counted when not given.
+ */
+async function voidableByAdmin(invoice, waitingProofs = null) {
+  if (env.billing.planSwitch.enabled !== true || invoice.status !== 'pending') return false;
+  const waiting = waitingProofs == null ? await db.PaymentProof.count({ where: { billingInvoiceId: invoice.id, status: 'pending' } }) : waitingProofs;
+  return switchRules.cancellableByMerchant({ enabled: true, status: invoice.status, waitingProofs: waiting });
 }
 
 /**
@@ -898,10 +930,15 @@ async function markChargeFailed(invoiceId, { reason } = {}) {
     const invoice = await db.BillingInvoice.findByPk(invoiceId, { transaction, lock: transaction.LOCK.UPDATE });
     if (!invoice) throw new NotFoundError('Billing invoice');
     if (invoice.status !== 'pending') return { invoice, changed: false };
-    // A plan switch's charge stays payable and the subscription is left
-    // alone, as an online payment that fails leaves them: the merchant pays
-    // again, cancels the switch, or it expires.
-    if (await planSwitches.switchOfCharge(invoice, transaction)) return { invoice, changed: false };
+    // A plan switch's charge never fails the subscription: with
+    // PLAN_SWITCH_ENABLED on it is voided and the switch cancelled
+    // (planSwitchService.failSwitchCharge); off, it stays payable until the
+    // merchant pays again, cancels the switch, or it expires.
+    if (await planSwitches.switchOfCharge(invoice, transaction)) {
+      // eslint-disable-next-line global-require
+      const voided = await require('./planSwitchService').failSwitchCharge(invoice.id, { source: 'invoice.payment_failed' }, transaction);
+      return { invoice, changed: voided };
+    }
 
     await invoice.update({ status: 'failed', failureReason: reason ? String(reason).slice(0, 300) : null }, { transaction });
     const subscription = await db.Subscription.findByPk(invoice.subscriptionId, { transaction });
@@ -983,9 +1020,12 @@ function serializeCharge(invoice, payable = null) {
     // A pay-per-order store's move: the plan and cycle it switches to when paid.
     targetPlanId: invoice.targetPlanId || null,
     targetBillingCycle: invoice.targetBillingCycle || null,
-    // A move's charge that no longer asks for money: cancelled | replaced | expired.
+    // A charge that no longer asks for money: cancelled | replaced | expired |
+    // cancelled_by_merchant | voided_by_admin | payment_failed, and the
+    // console's reason when it voided it.
     voidedAt: invoice.voidedAt || null,
     voidReason: invoice.voidReason || null,
+    voidNote: invoice.voidNote || null,
     commission: invoice.commission
       ? {
           id: invoice.commission.id,
@@ -1013,7 +1053,7 @@ function serializeCharge(invoice, payable = null) {
 async function getCharge(invoiceId) {
   const invoice = await db.BillingInvoice.findByPk(invoiceId, { include: CHARGE_INCLUDE });
   if (!invoice) throw new NotFoundError('Charge');
-  return serializeCharge(invoice, invoice.status === 'paid' ? null : await payableNow(invoice));
+  return { ...serializeCharge(invoice, invoice.status === 'paid' ? null : await payableNow(invoice)), voidable: await voidableByAdmin(invoice) };
 }
 
 /**
@@ -1065,6 +1105,8 @@ async function listCharges(workspaceId) {
     if (invoice.targetPlanId) row.targetPlanName = targetNames.get(invoice.targetPlanId) || null;
     const sw = switches.get(invoice.id);
     if (sw) row.planSwitch = { id: sw.id, kind: sw.kind, status: sw.status, fromPlanId: sw.fromPlanId };
+    // Whether the console's Void applies (PLAN_SWITCH_ENABLED, pending, no proof waiting).
+    row.voidable = await voidableByAdmin(invoice);
     charges.push(row);
   }
 
@@ -1117,9 +1159,10 @@ module.exports = {
   createCharge,
   createChargeInTransaction,
   createMoveChargeInTransaction,
-  createUpgradeChargeInTransaction,
   voidMoveCharge,
   voidRenewalCharge,
+  voidPendingCharge,
+  voidableByAdmin,
   settleLateMovePayment,
   quoteCharge,
   settlePaid,

@@ -39,6 +39,9 @@ router.post('/plan-move/cancel', controller.cancelPlanMove);
 router.post('/plan-switch/preview', validate(schemas.previewPlanSwitch), controller.previewPlanSwitch);
 router.post('/plan-switch', validate(schemas.startPlanSwitch), controller.startPlanSwitch);
 router.post('/plan-switch/cancel', controller.cancelPlanSwitch);
+// Cancelling a pending charge (a renewal, an upgrade's, a move's) while no
+// transfer for it is being checked (PLAN_SWITCH_ENABLED).
+router.post('/charges/:chargeId/cancel', validate(schemas.cancelCharge), controller.cancelCharge);
 // Paying the charge online (billing/onlineBillingService), when
 // ONLINE_BILLING_ENABLED is on and the plan is priced in EGP.
 router.post('/payments', validate(schemas.startOnlinePayment), controller.startOnlinePayment);

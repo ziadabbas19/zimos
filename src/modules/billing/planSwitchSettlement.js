@@ -1,6 +1,7 @@
 'use strict';
 
 const db = require('../../db/models');
+const env = require('../../config/env');
 const { recordAudit } = require('../audit/auditService');
 const rules = require('./planSwitchRules');
 
@@ -139,11 +140,17 @@ async function markApplied(sw, transaction) {
   await sw.update({ status: 'applied', appliedAt: new Date(), endedAt: null, endReason: null }, { transaction });
 }
 
-/** A switch's charge was voided (cancelled, replaced, expired): its switch, still waiting, ends the same way. */
+/**
+ * A switch's charge was voided: its switch, still waiting, ends as the
+ * reason says (planSwitchRules.switchEndForVoid): cancelled, replaced or
+ * expired the same way; cancelled by the merchant or a failed payment as
+ * cancelled; voided by the console as dropped.
+ */
 async function closeForVoidedCharge(invoice, reason, transaction) {
-  if (!invoice.targetPlanId || !rules.STATUSES.includes(reason)) return 0;
+  const end = rules.switchEndForVoid(reason);
+  if (!invoice.targetPlanId || !end) return 0;
   const [closed] = await db.PlanSwitch.update(
-    { status: reason, endedAt: new Date() },
+    { status: end.status, endedAt: new Date(), ...(end.endReason ? { endReason: end.endReason } : {}) },
     { where: { billingInvoiceId: invoice.id, status: 'pending' }, transaction }
   );
   return closed;
@@ -178,7 +185,14 @@ async function scheduledFor(subscription, periodStart, transaction) {
   const sw = await db.PlanSwitch.findOne({ where: { subscriptionId: subscription.id, status: 'scheduled' }, transaction });
   if (!sw || !rules.scheduleCovers(sw.effectiveAt, periodStart)) return null;
   const plan = sw.toPlanId ? await db.Plan.findByPk(sw.toPlanId, { transaction }) : null;
-  if (!rules.scheduleStillApplies({ subscription, sw, targetExists: Boolean(plan) }).applies) return null;
+  const fit = rules.scheduleStillApplies({
+    subscription,
+    sw,
+    targetExists: Boolean(plan),
+    toPayPerOrder: Boolean(plan && Number(plan.perOrderFeeAmount) > 0),
+    walletEnabled: env.wallet.enabled === true,
+  });
+  if (!fit.applies) return null;
   return { plan, billingCycle: sw.toBillingCycle, switchId: sw.id };
 }
 

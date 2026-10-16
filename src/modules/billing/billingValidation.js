@@ -2,6 +2,7 @@
 
 const Joi = require('joi');
 const { BILLING_CYCLES } = require('./planPricing');
+const { TIMINGS: SWITCH_TIMINGS } = require('./planSwitchRules');
 
 const METHOD_CODE = /^[a-z][a-z0-9_]{1,39}$/;
 
@@ -39,6 +40,9 @@ module.exports = {
   getOnlinePayment: {
     params: Joi.object({ workspaceId: Joi.string().required(), paymentId: Joi.string().guid().required() }),
   },
+  cancelCharge: {
+    params: Joi.object({ workspaceId: Joi.string().required(), chargeId: Joi.string().guid().required() }),
+  },
   // What a referral code would take off each plan, before it is attached.
   previewCode: { body: Joi.object({ code: Joi.string().trim().min(1).max(64).required() }) },
   listInvoices: {
@@ -58,16 +62,20 @@ module.exports = {
   // `billingCycle`, the subscription's. `expectedAmount` (start only) is what
   // the preview showed as due now, in minor units, only compared with the
   // server's (409 SWITCH_AMOUNT_CHANGED).
+  // `timing`: when an upgrade takes effect, "now" (default) or "period_end";
+  // another switch has one timing (409 SWITCH_TIMING_NOT_AVAILABLE otherwise).
   previewPlanSwitch: {
     body: Joi.object({
       planId: Joi.string().guid().required(),
       billingCycle: Joi.string().valid(...BILLING_CYCLES).optional(),
+      timing: Joi.string().valid(...SWITCH_TIMINGS).optional(),
     }),
   },
   startPlanSwitch: {
     body: Joi.object({
       planId: Joi.string().guid().required(),
       billingCycle: Joi.string().valid(...BILLING_CYCLES).optional(),
+      timing: Joi.string().valid(...SWITCH_TIMINGS).optional(),
       expectedAmount: Joi.number().integer().min(0).max(1e12).optional(),
     }),
   },

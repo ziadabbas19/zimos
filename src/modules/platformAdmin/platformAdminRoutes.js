@@ -52,6 +52,9 @@ router.post('/charges/:chargeId/record-payment', can(P.PAYMENTS_RECORD), validat
 // Undoes a payment recorded here (never a gateway one): the charge goes back
 // to pending and its commission ledger row is voided.
 router.post('/charges/:chargeId/reverse-payment', can(P.PAYMENTS_RECORD), validate(schemas.reversePayment), controller.reversePayment);
+// Voids a pending charge, with a reason (PLAN_SWITCH_ENABLED). Never a paid
+// one, nor one a transfer's proof waits for: review the proof first.
+router.post('/charges/:chargeId/void', can(P.PAYMENTS_RECORD), validate(schemas.voidCharge), controller.voidCharge);
 // Monthly or annual (10 × monthly), from the next charge.
 router.patch('/workspaces/:workspaceId/subscription', can(P.SUBSCRIPTIONS_MANAGE), validate(schemas.setBillingCycle), controller.setBillingCycle);
 // Special terms outside normal plan pricing: free months, or a price for the
