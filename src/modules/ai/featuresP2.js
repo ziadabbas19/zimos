@@ -5,6 +5,7 @@ const { Op, QueryTypes } = require('sequelize');
 const db = require('../../db/models');
 const { AppError, NotFoundError } = require('../../core/errors/AppError');
 const { validatePageTree, ALLOWED_ELEMENT_TYPES } = require('../pages/pageTree');
+const { isXsType } = require('../pages/xsElements');
 const { pageFacts, pageOutline } = require('./pageFacts');
 
 /**
@@ -214,7 +215,8 @@ async function storeContext() {
   const themes = await db.Theme.findAll({ where: { isActive: true, priceAmount: null }, order: [['position', 'ASC']], attributes: ['key', 'name', 'category'] });
   return {
     themes: themes.map((t) => ({ key: t.key, name: (t.name && (t.name.en || t.name.ar)) || t.key, category: t.category })),
-    allowedElements: [...ALLOWED_ELEMENT_TYPES],
+    // Not the imported templates' bands: only a template's own look draws them (pages/xsElements.js).
+    allowedElements: [...ALLOWED_ELEMENT_TYPES].filter((type) => !isXsType(type)),
   };
 }
 
