@@ -25,7 +25,9 @@ const getStore = asyncHandler(async (req, res) => {
   // per request, outside the cache: it starts and ends by the clock.
   // Gift wrap and message offered at checkout (modules/giftOptions).
   const giftOptions = await cache.cached(ws, 'gift-options', () => require('../giftOptions').publicView(req.publicWorkspace));
-  res.json({ store: { ...store, giftOptions, holiday: require('../holidayMode').publicView(req.publicWorkspace) } });
+  // The header and footer in the shopper's language, on a copy of the cached store (modules/translations).
+  const localized = await require('../translations/contentTranslations').localizeShell(req, store);
+  res.json({ store: { ...localized, giftOptions, holiday: require('../holidayMode').publicView(req.publicWorkspace) } });
 });
 // Products and collections come back in the shopper's language when the store
 // has it translated (X-Store-Locale; modules/translations) — originals otherwise.
