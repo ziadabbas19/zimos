@@ -31,6 +31,7 @@ const TABLES = {
   payment_methods: keep('how merchants pay the platform (with the account numbers)'),
   feature_flags: keep('the platform flags; target_workspace_ids keeps ids of stores that are gone'),
   platform_roles: keep('the console role definitions (creator, admin, agent); no row points at a user, users.platform_role points here'),
+  platform_settings: keep("the platform's public details edited in the console (migration 706); updated_by may name an account that goes, it has no foreign key"),
   users: { action: 'keep-creator', why: 'the creator account only; every other account goes' },
 
   // ---- wallet ledger: TRUNCATE ------------------------------------------

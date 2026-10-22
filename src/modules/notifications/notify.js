@@ -74,7 +74,9 @@ async function persist({ workspaceId, channel, provider, recipient, template, st
 
 async function sendEmail({ recipient, template, data, workspaceId = null, orderId = null }) {
   const provider = env.notifications.emailProvider;
-  const { subject, html, text } = emailTemplates.render(template, data);
+  // The console's sender name, signature and footer links (PLATFORM_SETTINGS_ENABLED); null = as before. Never throws.
+  const branding = await require('../platformSettings/platformSettingsService').emailBranding();
+  const { subject, html, text } = emailTemplates.render(template, data, branding);
 
   // An address that hard-bounced or complained gets nothing more (account and security emails excepted).
   const delivery = deliveryStatus();
@@ -95,7 +97,11 @@ async function sendEmail({ recipient, template, data, workspaceId = null, orderI
       messageId = consoleMessageId();
       logger.info(`[notification:email] ${template} -> ${recipient} :: ${subject}`, { data: loggable(data) });
     } else if (provider === 'brevo') {
-      const sent = await brevoEmailProvider.sendEmail({ to: recipient, subject, html, text, fromName: data && data.fromName ? String(data.fromName).slice(0, 100) : undefined, replyTo: data && data.replyTo ? String(data.replyTo) : undefined });
+      // A store's own sender name first; on the platform's own emails only, the console's; else EMAIL_FROM_NAME.
+      // A store's email to its shopper never takes the console's name, so a shopper never sees it on a store's email.
+      const platformEmail = emailTemplates.PLATFORM_TEMPLATES.has(template);
+      const fromName = data && data.fromName ? String(data.fromName).slice(0, 100) : branding && platformEmail ? branding.senderName : undefined;
+      const sent = await brevoEmailProvider.sendEmail({ to: recipient, subject, html, text, fromName, replyTo: data && data.replyTo ? String(data.replyTo) : undefined });
       attempts = sent.attempts || attempts;
       messageId = sent.messageId ? String(sent.messageId).trim().replace(/^<|>$/g, '') : null;
     } else {
