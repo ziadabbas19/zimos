@@ -11,6 +11,8 @@ const { Op } = db.Sequelize;
  * Working on many catalog rows at once (SPEC §7.2, §7.5, §7.10):
  *   - the product list's extra filters (name, SKU, type, stock);
  *   - bulk edit of selected products (status, shipping, collection, price);
+ *   - bulk delete (archive, or for good) of selected products, or of every
+ *     product the list's filters match, a chunk per request;
  *   - the variant table of one product, saved in one request;
  *   - duplicating a product with its variants, offers and collections.
  * Every write is one transaction and one audit row per product touched.
@@ -151,6 +153,90 @@ async function bulkEditProducts(workspaceId, { productIds, changes }, req) {
 
     return { updated: products.length, variantsRepriced };
   });
+}
+
+/** Products one bulk-delete request handles; the dashboard sends the next chunk after it. */
+const BULK_DELETE_CHUNK = 100;
+
+// The single delete's refusals, as the bulk delete reports them per product.
+const SKIP_REASONS = {
+  PRODUCT_HAS_ORDERS: 'has_orders',
+  PRODUCT_IN_FUNNEL: 'in_funnel',
+  NOT_FOUND: 'not_found',
+};
+
+/**
+ * Archives (`mode: 'archive'`) or deletes for good (`'permanent'`) one chunk
+ * of products: the `productIds` given, or the next ones the product list's
+ * `filter` matches after `cursor`, among those that existed at
+ * `filter.createdBefore` (the count's `asOf`), so a product added since the
+ * merchant chose "all" is never taken with them.
+ *
+ * Each product goes through the single delete (catalogService) in a savepoint
+ * of this request's one transaction: a product it refuses — it has orders, a
+ * funnel sells it, it is gone already — is skipped with the reason and the
+ * others go on. Any other error undoes the whole chunk.
+ *
+ * Returns `deleted` (archived, or removed for good), `skipped` [{ id, name,
+ * reason, funnelIds? }] and the `nextCursor` to send for the next chunk.
+ */
+async function bulkDeleteProducts(workspaceId, { mode, productIds, filter, cursor }, req) {
+  // eslint-disable-next-line global-require
+  const catalogService = require('./catalogService');
+  const attributes = ['id', 'name', 'status'];
+  const skipped = [];
+  let products;
+  let nextCursor = null;
+
+  if (productIds) {
+    products = await db.Product.findAll({ where: { id: productIds, workspaceId }, attributes, order: [['id', 'ASC']] });
+    const found = new Set(products.map((p) => p.id));
+    for (const id of productIds) if (!found.has(id)) skipped.push({ id, name: null, reason: 'not_found' });
+  } else {
+    const { createdBefore, ...listFilters } = filter;
+    const { where, include } = catalogService.productListQuery(workspaceId, listFilters);
+    where.createdAt = { [Op.lte]: createdBefore };
+    if (cursor) where.id = { [Op.gt]: cursor };
+    const rows = await db.Product.findAll({ where, include, attributes, order: [['id', 'ASC']], limit: BULK_DELETE_CHUNK + 1 });
+    products = rows.slice(0, BULK_DELETE_CHUNK);
+    if (rows.length > BULK_DELETE_CHUNK) nextCursor = products[products.length - 1].id;
+  }
+
+  let deleted = 0;
+  if (products.length > 0) {
+    await db.sequelize.transaction(async (t) => {
+      for (const product of products) {
+        if (mode === 'archive' && product.status === 'archived') {
+          skipped.push({ id: product.id, name: product.name, reason: 'already_archived' });
+          continue;
+        }
+        try {
+          if (mode === 'archive') await catalogService.deleteProduct(workspaceId, product.id, req, { transaction: t });
+          else await catalogService.deleteProductPermanently(workspaceId, product.id, req, { transaction: t });
+          deleted += 1;
+        } catch (err) {
+          const reason = SKIP_REASONS[err.code];
+          if (!reason) throw err;
+          const funnelIds = reason === 'in_funnel' && Array.isArray(err.details) && err.details[0] ? err.details[0].funnelIds : undefined;
+          skipped.push({ id: product.id, name: product.name, reason, ...(funnelIds ? { funnelIds } : {}) });
+        }
+      }
+
+      const reasons = {};
+      for (const item of skipped) reasons[item.reason] = (reasons[item.reason] || 0) + 1;
+      await recordAudit({
+        workspaceId,
+        actorUserId: req.user.id,
+        action: 'product.bulk_delete',
+        entityType: 'Product',
+        metadata: { mode, deleted, skipped: skipped.length, reasons, ...(productIds ? { by: 'ids' } : { by: 'filter', filter, cursor: cursor || null }) },
+        req,
+        transaction: t,
+      });
+    });
+  }
+
+  return { mode, deleted, skipped, nextCursor };
 }
 
 const VARIANT_FIELDS = ['sku', 'barcode', 'priceAmount', 'compareAtAmount', 'costAmount', 'allowOverselling', 'status', 'imageUrl'];
@@ -318,4 +404,12 @@ async function duplicateProduct(workspaceId, productId, req, { slugFor, generate
   });
 }
 
-module.exports = { listConditions, applyPrice, bulkEditProducts, bulkUpdateVariants, duplicateProduct };
+module.exports = {
+  listConditions,
+  applyPrice,
+  bulkEditProducts,
+  BULK_DELETE_CHUNK,
+  bulkDeleteProducts,
+  bulkUpdateVariants,
+  duplicateProduct,
+};

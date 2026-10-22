@@ -7,7 +7,9 @@ const validate = require('../../core/middleware/validate');
 const { requirePermission } = require('../../core/middleware/rbac');
 const { PERMISSIONS } = require('../../core/security/permissions');
 const { requireCreationAllowed } = require('../../core/middleware/subscriptionGuard');
+const { productBulkDeleteLimiter } = require('../../core/middleware/rateLimiters');
 const catalogService = require('./catalogService');
+const { productListFilters } = require('./catalogValidation');
 const bulk = require('./catalogBulk');
 
 /*
@@ -17,6 +19,7 @@ const bulk = require('./catalogBulk');
  */
 
 const router = Router({ mergeParams: true });
+const canView = requirePermission(PERMISSIONS.PRODUCTS_VIEW);
 const canManage = requirePermission(PERMISSIONS.PRODUCTS_MANAGE);
 
 // Import and export (importExport/routes.js): /products/export.json, /products/import, /imports.
@@ -46,6 +49,24 @@ const schemas = {
         .min(1)
         .required(),
     }),
+  },
+  productCount: {
+    params: Joi.object({ workspaceId: uuid.required() }),
+    query: Joi.object(productListFilters),
+  },
+  // The ticked products, or every product the list's filters match (a chunk
+  // per request, `cursor` from the previous answer); never both.
+  bulkDelete: {
+    params: Joi.object({ workspaceId: uuid.required() }),
+    body: Joi.object({
+      mode: Joi.string().valid('archive', 'permanent').required(),
+      productIds: Joi.array().items(uuid.required()).min(1).max(bulk.BULK_DELETE_CHUNK).unique(),
+      filter: Joi.object({ ...productListFilters, createdBefore: Joi.date().iso().required() }),
+      cursor: uuid,
+    })
+      .xor('productIds', 'filter')
+      .without('productIds', 'cursor')
+      .required(),
   },
   duplicate: {
     params: Joi.object({ workspaceId: uuid.required(), productId: uuid.required() }),
@@ -84,6 +105,29 @@ router.post(
   canManage,
   asyncHandler(async (req, res) => {
     res.json(await bulk.bulkEditProducts(req.tenant.workspaceId, req.body, req));
+  })
+);
+
+// How many products the list's filters match across every page, and `asOf`,
+// the cut-off a bulk delete of all of them sends back as filter.createdBefore.
+router.get(
+  '/products/count',
+  validate(schemas.productCount),
+  canView,
+  asyncHandler(async (req, res) => {
+    res.json(await catalogService.countProducts(req.tenant.workspaceId, req.query));
+  })
+);
+
+// Archive or delete for good, by the single delete's rules: one chunk per
+// request, 200 { mode, deleted, skipped: [{ id, name, reason }], nextCursor }.
+router.post(
+  '/products/bulk-delete',
+  validate(schemas.bulkDelete),
+  canManage,
+  productBulkDeleteLimiter,
+  asyncHandler(async (req, res) => {
+    res.json(await bulk.bulkDeleteProducts(req.tenant.workspaceId, req.body, req));
   })
 );
 

@@ -492,6 +492,21 @@ async function importOne(workspaceId, source, req, collectionCache) {
   return product;
 }
 
+// How often a running import writes its counts, so the dashboard shows them
+// and an import cut off midway still says how far it got.
+const PROGRESS_EVERY_MS = 2000;
+const STOPPED_MESSAGE = 'The import stopped unexpectedly. Products created so far were kept.';
+const INTERRUPTED_MESSAGE =
+  'The import stopped because the server restarted while it ran. Products created so far were kept; import the rest again.';
+
+/**
+ * Writes to the import only while it is still `from` (normally 'running'): an
+ * import already closed — by the interruption hook below — keeps that ending.
+ */
+async function updateImport(importId, from, fields) {
+  await db.CatalogImport.update(fields, { where: { id: importId, status: from } });
+}
+
 /** The `io` job: creates the products of one import and writes its report. Safe to run twice. */
 async function runImport(importId) {
   const [claimed] = await db.CatalogImport.update({ status: 'running' }, { where: { id: importId, status: 'queued' } });
@@ -500,6 +515,7 @@ async function runImport(importId) {
   const req = { user: { id: row.createdBy }, ip: null, headers: {} };
   const errors = [];
   let createdCount = 0;
+  let savedAt = Date.now();
   const collectionCache = new Map();
   try {
     for (const source of row.payload) {
@@ -513,19 +529,53 @@ async function runImport(importId) {
           message: String(err.message || 'Could not be imported').slice(0, 500),
         });
       }
+      if (Date.now() - savedAt >= PROGRESS_EVERY_MS) {
+        savedAt = Date.now();
+        // Progress only: a failed write here must not stop the import.
+        await updateImport(importId, 'running', { createdCount, failedCount: errors.length, errors: [...errors] }).catch((err) =>
+          logger.warn('Could not save catalog import progress', { importId, error: err.message })
+        );
+      }
     }
-    await row.update({ status: 'done', createdCount, failedCount: errors.length, errors, payload: [], finishedAt: new Date() });
+    await updateImport(importId, 'running', {
+      status: 'done',
+      createdCount,
+      failedCount: errors.length,
+      errors,
+      payload: [],
+      finishedAt: new Date(),
+    });
   } catch (err) {
     logger.error('Catalog import failed', { importId, error: err.message });
-    await row.update({
+    await updateImport(importId, 'running', {
       status: 'failed',
       createdCount,
       failedCount: row.total - createdCount,
-      errors: [...errors, { row: null, name: '', message: 'The import stopped unexpectedly. Products created so far were kept.' }],
+      errors: [...errors, { row: null, name: '', message: STOPPED_MESSAGE }],
       payload: [],
       finishedAt: new Date(),
     });
   }
+}
+
+/**
+ * The queue's hook for an import job whose worker stopped mid-run (a restart,
+ * a deploy): the `io` queue does not run it again, so the import is closed as
+ * failed with the counts it last wrote — otherwise it would stay "running" and
+ * the dashboard would wait for it forever.
+ */
+async function importInterrupted(job) {
+  const importId = job && job.payload && job.payload.importId;
+  if (!importId) return;
+  const row = await db.CatalogImport.findByPk(importId, { attributes: { exclude: ['payload'] } });
+  if (!row || (row.status !== 'running' && row.status !== 'queued')) return;
+  await updateImport(importId, row.status, {
+    status: 'failed',
+    failedCount: Math.max(0, row.total - row.createdCount),
+    errors: [...(row.errors || []), { row: null, name: '', message: INTERRUPTED_MESSAGE }],
+    payload: [],
+    finishedAt: new Date(),
+  });
 }
 
 module.exports = {
@@ -542,4 +592,5 @@ module.exports = {
   listImports,
   getImport,
   runImport,
+  importInterrupted,
 };

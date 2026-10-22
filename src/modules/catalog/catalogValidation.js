@@ -93,25 +93,31 @@ const productDelete = productGet;
 const productRestore = productGet;
 const productDeletePermanent = productGet;
 
+// The staff product list's filters; the count and the bulk delete of every
+// match (catalogBulkRoutes.js) take the same ones.
+const productListFilters = {
+  // One status, or several: "draft,active" (or a repeated ?status= param).
+  status: Joi.alternatives()
+    .try(
+      productStatus,
+      Joi.string()
+        .pattern(/^(draft|active|archived)(,(draft|active|archived))+$/)
+        .message('"status" must be draft, active, archived, or a comma-separated list of them'),
+      Joi.array().items(productStatus).min(1)
+    )
+    .optional(),
+  collectionId: uuid.optional(),
+  // Name contains / a variant's SKU contains / type / can still be sold or not.
+  q: Joi.string().trim().max(100).allow('').optional(),
+  sku: Joi.string().trim().max(100).allow('').optional(),
+  productType: Joi.string().valid('physical', 'digital', 'service').optional(),
+  stock: Joi.string().valid('in', 'out').optional(),
+};
+
 const productList = {
   params: Joi.object({ workspaceId: uuid.required() }),
   query: Joi.object({
-    // One status, or several: "draft,active" (or a repeated ?status= param).
-    status: Joi.alternatives()
-      .try(
-        productStatus,
-        Joi.string()
-          .pattern(/^(draft|active|archived)(,(draft|active|archived))+$/)
-          .message('"status" must be draft, active, archived, or a comma-separated list of them'),
-        Joi.array().items(productStatus).min(1)
-      )
-      .optional(),
-    collectionId: uuid.optional(),
-    // Name contains / a variant's SKU contains / type / can still be sold or not.
-    q: Joi.string().trim().max(100).allow('').optional(),
-    sku: Joi.string().trim().max(100).allow('').optional(),
-    productType: Joi.string().valid('physical', 'digital', 'service').optional(),
-    stock: Joi.string().valid('in', 'out').optional(),
+    ...productListFilters,
     limit: Joi.number().integer().min(1).max(200).default(50),
     cursor: uuid.optional(),
   }),
@@ -307,6 +313,7 @@ module.exports = {
   productDelete,
   productRestore,
   productDeletePermanent,
+  productListFilters,
   productList,
   variant,
   variantGet,

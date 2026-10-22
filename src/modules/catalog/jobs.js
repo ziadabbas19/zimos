@@ -10,6 +10,10 @@ module.exports = {
       name: 'catalog.import',
       // eslint-disable-next-line global-require
       handle: (job) => require('./importExport/productTransfer').runImport(job.payload.importId),
+      // Its worker stopped mid-run: close the import as failed instead of
+      // leaving it "running" for good.
+      // eslint-disable-next-line global-require
+      onInterrupted: (job) => require('./importExport/productTransfer').importInterrupted(job),
     },
   ],
 };

@@ -137,19 +137,30 @@ function statusFilter(status) {
   return list.length === 1 ? list[0] : { [Op.in]: list };
 }
 
-async function listProducts(workspaceId, { status, collectionId, limit = 50, cursor, ...filters } = {}) {
+/**
+ * The staff product list's WHERE and collection join, shared by the list, its
+ * count and the bulk delete of every product it matches (catalogBulk.js).
+ */
+function productListQuery(workspaceId, { status, collectionId, ...filters } = {}) {
   // Name, SKU, type and stock filters live in catalogBulk.listConditions.
   const where = { workspaceId, [Op.and]: require('./catalogBulk').listConditions(filters) };
   if (status) where.status = statusFilter(status);
+  const include = [];
+  if (collectionId) {
+    include.push({ model: db.Collection, as: 'collections', where: { id: collectionId }, attributes: [] });
+  }
+  return { where, include };
+}
+
+async function listProducts(workspaceId, { limit = 50, cursor, ...filters } = {}) {
+  const { where, include: collectionJoin } = productListQuery(workspaceId, filters);
   if (cursor) where.id = { [db.Sequelize.Op.gt]: cursor };
 
   const include = [
     { model: db.ProductVariant, as: 'variants' },
     { model: db.Offer, as: 'offers' },
+    ...collectionJoin,
   ];
-  if (collectionId) {
-    include.push({ model: db.Collection, as: 'collections', where: { id: collectionId }, attributes: [] });
-  }
 
   const products = await db.Product.findAll({
     where,
@@ -161,6 +172,18 @@ async function listProducts(workspaceId, { status, collectionId, limit = 50, cur
   const hasMore = products.length > limit;
   const page = products.slice(0, limit);
   return { products: page, nextCursor: hasMore ? page[page.length - 1].id : null };
+}
+
+/**
+ * How many products the list shows for these filters, across every page, and
+ * when they were counted: the bulk delete of "all of them" takes `asOf` as its
+ * cut-off, so a product added after the count is never removed with them.
+ */
+async function countProducts(workspaceId, filters = {}) {
+  const asOf = new Date();
+  const { where, include } = productListQuery(workspaceId, filters);
+  const count = await db.Product.count({ where, include, distinct: true, col: 'id' });
+  return { count, asOf: asOf.toISOString() };
 }
 
 async function getProduct(workspaceId, productId) {
@@ -292,9 +315,16 @@ async function getVariant(workspaceId, variantId) {
  * inventory history and funnel references stay intact (OrderItem holds its
  * own snapshot either way). A real delete is deleteProductPermanently, and
  * only for a product that has never been ordered.
+ *
+ * Both run in their own transaction, or — given `transaction` (the bulk
+ * delete, catalogBulk.js) — in a savepoint of it, so one refused product
+ * does not undo the others.
  */
-async function deleteProduct(workspaceId, productId, req) {
-  return db.sequelize.transaction(async (t) => {
+const inTransaction = (transaction, fn) =>
+  transaction ? db.sequelize.transaction({ transaction }, fn) : db.sequelize.transaction(fn);
+
+async function deleteProduct(workspaceId, productId, req, { transaction } = {}) {
+  return inTransaction(transaction, async (t) => {
     const product = await db.Product.findOne({
       where: { id: productId, workspaceId },
       lock: t.LOCK.UPDATE,
@@ -389,8 +419,8 @@ async function funnelsUsingOffers(workspaceId, offerIds, transaction) {
  * either commits first — and its order_items make this a 409 — or it runs
  * after the delete and no longer finds the variant.
  */
-async function deleteProductPermanently(workspaceId, productId, req) {
-  return db.sequelize.transaction(async (t) => {
+async function deleteProductPermanently(workspaceId, productId, req, { transaction } = {}) {
+  return inTransaction(transaction, async (t) => {
     const product = await db.Product.findOne({
       where: { id: productId, workspaceId },
       lock: t.LOCK.UPDATE,
@@ -1008,7 +1038,9 @@ module.exports = {
   slugFor,
   generateProductCode,
   createProduct,
+  productListQuery,
   listProducts,
+  countProducts,
   getProduct,
   updateProduct,
   deleteProduct,
