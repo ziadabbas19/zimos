@@ -24,6 +24,14 @@ module.exports = (sequelize, DataTypes) => {
       city: { type: DataTypes.STRING(50), allowNull: true },
       currentVisitId: { type: DataTypes.STRING(64), allowNull: false, field: 'current_visit_id' },
       lastSeenAt: { type: DataTypes.DATE, allowNull: false, field: 'last_seen_at' },
+      // The events guard (migration 704, analytics/traffic): the IP hashed with
+      // that day's salt, and whether the session's events are kept out of the numbers.
+      ipHash: { type: DataTypes.STRING(16), allowNull: true, field: 'ip_hash' },
+      isBot: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false, field: 'is_bot' },
+      isSuspicious: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false, field: 'is_suspicious' },
+      flagReason: { type: DataTypes.STRING(30), allowNull: true, field: 'flag_reason' },
+      flaggedAt: { type: DataTypes.DATE, allowNull: true, field: 'flagged_at' },
+      excludedEvents: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0, field: 'excluded_events' },
     },
     {
       tableName: 'analytics_sessions',

@@ -12,5 +12,13 @@ module.exports = {
       // eslint-disable-next-line global-require
       handle: () => require('./analyticsDaily').rollupRecent(),
     },
+    {
+      // What the events guard keeps only for a while: quarantined events, the
+      // counts of what it kept out, and the IP salts (traffic/purge.js).
+      name: 'analytics.traffic_purge',
+      everyMs: 6 * 60 * MINUTE,
+      // eslint-disable-next-line global-require
+      handle: () => require('./traffic/purge').run(),
+    },
   ],
 };

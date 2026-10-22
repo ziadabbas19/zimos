@@ -5,6 +5,9 @@ const { randomUUID: uuidv4 } = require('crypto');
 const db = require('../../db/models');
 const env = require('../../config/env');
 const { getClientInfo, getDevice, isBot } = require('./clientDetect');
+const suspicion = require('./traffic/suspicion');
+const trafficCounters = require('./traffic/trafficCounters');
+const { hashIp } = require('./traffic/ipHash');
 
 const HOUR_MS = 60 * 60 * 1000;
 const FUTURE_TOLERANCE_MS = HOUR_MS;
@@ -119,12 +122,14 @@ function derivePage({ url, hostname, referrer }) {
  * geo; later batches never rewrite them. Two concurrent first batches race
  * on the composite PK — the loser re-reads the winner's row.
  */
-async function loadSession(workspaceId, body, client, firstEventAt, websiteId) {
+async function loadSession(workspaceId, body, client, firstEventAt, websiteId, extra = {}) {
   const where = { workspaceId, id: body.sessionId };
   let session = await db.AnalyticsSession.findOne({ where });
   if (session) return session;
   try {
     session = await db.AnalyticsSession.create({
+      // The events guard's fields (ip hash, a browser driven by automation), only while it is on.
+      ...extra,
       id: body.sessionId,
       workspaceId,
       websiteId: websiteId || null,
@@ -161,9 +166,18 @@ async function loadSession(workspaceId, body, client, firstEventAt, websiteId) {
  * while events keep arriving within 30 minutes of the last one, otherwise a
  * new visit id is minted (Umami semantics). Bots store nothing.
  *
- * Returns the number of events accepted (written or deduped).
+ * `guard` is set by the events guard (traffic/trafficGuard.js) only while
+ * TRAFFIC_GUARD_ENABLED is on; without it nothing below changes. With it:
+ * the same event twice within a second counts once, a session driven by
+ * automation or faster than a person is flagged and its events leave the
+ * numbers (traffic/suspicion.js), and past the store's daily cap events are
+ * counted rather than stored (traffic/trafficCounters.js) — a purchase of a
+ * real order is always stored.
+ *
+ * Returns the number of events accepted (written or deduped), and
+ * `excluded: true` when the batch belonged to a flagged session.
  */
-async function ingest(workspaceId, body, { userAgent, getHeader } = {}) {
+async function ingest(workspaceId, body, { userAgent, getHeader, guard = null } = {}) {
   if (isBot(userAgent)) return { accepted: 0, bot: true };
 
   const now = new Date();
@@ -193,9 +207,25 @@ async function ingest(workspaceId, body, { userAgent, getHeader } = {}) {
   const funnels = new Set(funnelRows.map((f) => f.id));
 
   // Events are processed in order so the visit boundary falls where it did in the browser.
-  const timed = body.events.map((e) => ({ e, createdAt: resolveOccurredAt(e.occurredAt, now) }));
+  let timed = body.events.map((e) => ({ e, createdAt: resolveOccurredAt(e.occurredAt, now) }));
+  if (guard) {
+    timed = withoutDuplicates(workspaceId, body.visitorId, timed, guard);
+    if (timed.length === 0) return { accepted: 0 };
+  }
   const firstWebsiteId = timed.map(({ e }) => e.websiteId).find((id) => id && websites.has(id)) || null;
-  const session = await loadSession(workspaceId, body, client, timed[0].createdAt, firstWebsiteId);
+  const automation = Boolean(guard) && body.automation === true;
+  const extra = guard
+    ? {
+        ipHash: await hashIp(guard.ip),
+        ...(automation ? { isBot: true, flagReason: 'automation', flaggedAt: now } : {}),
+      }
+    : {};
+  const session = await loadSession(workspaceId, body, client, timed[0].createdAt, firstWebsiteId, extra);
+
+  if (guard) {
+    const kept = await keptOut(workspaceId, body, session, timed, { automation, orders, country: guard.country || '' });
+    if (kept) return { accepted: 0, excluded: true };
+  }
 
   let visitId = session.currentVisitId;
   let lastSeenAt = new Date(session.lastSeenAt).getTime();
@@ -267,15 +297,71 @@ async function ingest(workspaceId, body, { userAgent, getHeader } = {}) {
     });
   }
 
-  if (rows.length > 0) {
-    await db.AnalyticsEvent.bulkCreate(rows, { ignoreDuplicates: true });
+  let stored = rows;
+  if (guard && rows.length > 0) stored = await withinDailyCap(workspaceId, rows);
+  if (stored.length > 0) {
+    await db.AnalyticsEvent.bulkCreate(stored, { ignoreDuplicates: true });
   }
 
   const patch = { lastSeenAt: new Date(lastSeenAt) };
   if (visitChanged) patch.currentVisitId = visitId;
   await db.AnalyticsSession.update(patch, { where: { workspaceId, id: body.sessionId } });
 
-  return { accepted: rows.length };
+  return { accepted: stored.length };
+}
+
+/** The batch without events seen within the last second (same visitor, name and page); the rest are counted. */
+function withoutDuplicates(workspaceId, visitorId, timed, guard) {
+  const kept = timed.filter(
+    ({ e, createdAt }) =>
+      // A purchase of an order has its own dedupe (dedupeId and the stored order).
+      (e.name === 'purchase' && e.orderId) ||
+      !suspicion.isDuplicate({ workspaceId, visitorId, name: e.name, page: e.url || e.path || '' }, createdAt.getTime())
+  );
+  const dropped = timed.length - kept.length;
+  if (dropped > 0) trafficCounters.recordFiltered({ workspaceId, kind: 'rejected', reason: 'duplicate', country: guard.country || '', count: dropped });
+  return kept;
+}
+
+/**
+ * True when this batch is kept out of the numbers: its session is (or now
+ * becomes) flagged as automation or faster than a person. A batch with a
+ * purchase of a real order of this store is never kept out.
+ */
+async function keptOut(workspaceId, body, session, timed, { automation, orders, country }) {
+  const buysRealOrder = timed.some(({ e }) => e.name === 'purchase' && e.orderId && orders.has(e.orderId));
+  if (buysRealOrder) return false;
+  let flagged = session.isBot || session.isSuspicious;
+  if (!flagged && automation) flagged = await suspicion.flagSession(workspaceId, body.sessionId, 'automation', { country });
+  const views = timed.filter(({ e }) => e.name === 'page_view').length;
+  if (!flagged && suspicion.tooFast(workspaceId, body.visitorId, views)) {
+    flagged = await suspicion.flagSession(workspaceId, body.sessionId, 'too_fast', { country });
+  }
+  if (!flagged) return false;
+  await suspicion.countExcluded(workspaceId, body.sessionId, {
+    reason: session.flagReason || (automation ? 'automation' : 'too_fast'),
+    isBot: session.isBot || automation,
+    count: timed.length,
+    country,
+  });
+  return true;
+}
+
+/**
+ * The rows the store may still store today (its daily cap, TRAFFIC_STORE_DAILY_CAP);
+ * the others are counted. A purchase of a real order is always stored.
+ */
+async function withinDailyCap(workspaceId, rows) {
+  const orders = rows.filter((r) => r.orderId);
+  const rest = rows.filter((r) => !r.orderId);
+  const allowed = await trafficCounters.storable(workspaceId, rest.length);
+  const kept = [...orders, ...rest.slice(0, allowed)];
+  const over = rest.slice(allowed);
+  if (over.length > 0) {
+    trafficCounters.addOverflow(workspaceId, { events: over.length, pageViews: over.filter((r) => r.eventType === EVENT_TYPE.pageView).length });
+  }
+  trafficCounters.addStored(workspaceId, kept.length);
+  return kept;
 }
 
 module.exports = { ingest, deviceFromUserAgent, resolveOccurredAt, derivePage, EVENT_TYPE, VISIT_TIMEOUT_MS };

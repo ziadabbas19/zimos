@@ -75,6 +75,9 @@ module.exports = {
       screen: Joi.string().max(11).pattern(/^\d{1,5}x\d{1,5}$/).optional(),
       language: Joi.string().max(35).optional(),
       hostname: Joi.string().max(100).optional(),
+      // navigator.webdriver: the browser is driven by automation. Read only by
+      // the events guard (traffic/), which keeps such a session out of the numbers.
+      automation: Joi.boolean().optional(),
       attribution: attribution.optional(),
       // The 30-day first/last touch cookie (SPEC §13.4), copied onto an order
       // by marketing/orderAttribution.js when its purchase event arrives.

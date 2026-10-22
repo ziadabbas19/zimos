@@ -29,6 +29,8 @@ router.use(require('./platformNotificationRoutes'));
 router.use(require('../suggestions/suggestionAdminRoutes'));
 // Marketing-site traffic (siteAnalytics/siteTrafficAdminRoutes).
 router.use(require('../siteAnalytics/siteTrafficAdminRoutes'));
+// Every store's storefront traffic and what the events guard kept out (analytics/traffic).
+router.use(require('../analytics/traffic/storeTrafficAdminRoutes'));
 // The theme catalog (themes/themesCatalog.js).
 router.use(require('../themes/themesCatalog').admin);
 
