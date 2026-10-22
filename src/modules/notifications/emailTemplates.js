@@ -11,18 +11,67 @@ const SPAM_FOOTER =
 const SPAM_FOOTER_AR =
   'لم تصلك هذه الرسالة في البريد الوارد؟ ابحث عنها في مجلد الرسائل غير المرغوب فيها وحدّدها بأنها ليست كذلك لتصلك رسائلنا القادمة.';
 
+// The platform's own emails to its users (accounts, security, the merchant's
+// notifications and reports): the ones that carry the signature and footer
+// links set in the console (platformSettings, PLATFORM_SETTINGS_ENABLED). A
+// store's emails to its shoppers never do.
+const PLATFORM_TEMPLATES = new Set([
+  'signup_code',
+  'account_reauth_code',
+  'email_change_code',
+  'email_changed',
+  'email_verification',
+  'password_reset',
+  'workspace_invite',
+  'login_code',
+  'security_notice',
+  'email_change_confirm',
+  'email_change_requested',
+  'merchant_notification',
+  'summary_report',
+]);
+
+// The console's signature and footer links for the email being rendered, set
+// by `render` for its (synchronous) duration only; null for every other email.
+let branding = null;
+
+const SOCIAL_NAMES = {
+  en: { instagram: 'Instagram', facebook: 'Facebook', tiktok: 'TikTok', youtube: 'YouTube', x: 'X', linkedin: 'LinkedIn', whatsapp: 'WhatsApp' },
+  ar: { instagram: 'إنستغرام', facebook: 'فيسبوك', tiktok: 'تيك توك', youtube: 'يوتيوب', x: 'إكس', linkedin: 'لينكدإن', whatsapp: 'واتساب' },
+};
+
+/** The signature (in the email's language, else the other one) and the footer links, as HTML and as text. */
+function brandingBlock(dir) {
+  if (!branding) return { html: '', text: '' };
+  const lang = dir === 'rtl' ? 'ar' : 'en';
+  const signature = branding.signature ? branding.signature[lang] || branding.signature[lang === 'ar' ? 'en' : 'ar'] || '' : '';
+  const links = [
+    ...(branding.supportEmail ? [{ label: lang === 'ar' ? 'الدعم' : 'Support', href: `mailto:${branding.supportEmail}`, shown: branding.supportEmail }] : []),
+    ...(branding.socialLinks || []).map((link) => ({ label: SOCIAL_NAMES[lang][link.platform] || link.platform, href: link.url, shown: link.url })),
+  ];
+  const html = [
+    signature ? `<p style="margin:20px 0 0">${escapeHtml(signature).replace(/\n/g, '<br />')}</p>` : '',
+    links.length
+      ? `<p style="font-size:13px;color:#6b7280;margin:12px 0 0">${links.map((l) => `<a href="${escapeHtml(l.href)}" style="color:#6b7280">${escapeHtml(l.label)}</a>`).join(' · ')}</p>`
+      : '',
+  ].join('');
+  const text = [signature, ...links.map((l) => `${l.label}: ${l.shown}`)].filter(Boolean).join('\n');
+  return { html: html ? `\n${html}` : '', text: text ? `\n\n${text}` : '' };
+}
+
 // `arabicFooter` puts the Arabic footer first; the English one is on every
 // email either way.
 function wrap(bodyHtml, bodyText, { dir = 'ltr', arabicFooter = false } = {}) {
   const arabicHtml = arabicFooter
     ? `<p dir="rtl" style="font-size:13px;color:#6b7280;margin:0 0 8px">${SPAM_FOOTER_AR}</p>\n`
     : '';
+  const own = brandingBlock(dir);
   const html = `<div dir="${dir}" style="font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:15px;line-height:1.6;color:#1a1a1a">
-${bodyHtml}
+${bodyHtml}${own.html}
 <hr style="border:none;border-top:1px solid #e5e5e5;margin:28px 0 16px" />
 ${arabicHtml}<p dir="ltr" style="font-size:13px;color:#6b7280;margin:0">${SPAM_FOOTER}</p>
 </div>`;
-  const text = `${bodyText}\n\n---\n${arabicFooter ? `${SPAM_FOOTER_AR}\n` : ''}${SPAM_FOOTER}`;
+  const text = `${bodyText}${own.text}\n\n---\n${arabicFooter ? `${SPAM_FOOTER_AR}\n` : ''}${SPAM_FOOTER}`;
   return { html, text };
 }
 
@@ -453,17 +502,25 @@ ${paragraphs}
   },
 };
 
-function render(template, data) {
-  const fn = templates[template];
-  if (fn) return fn(data);
-  // Fallback so an untemplated notification still sends rather than throwing.
-  const lines = Object.entries(data || {})
-    .map(([k, v]) => `${k}: ${v}`)
-    .join('\n');
-  return {
-    subject: template.replace(/[_-]+/g, ' '),
-    ...wrap(`<p>${template}</p><pre>${lines}</pre>`, `${template}\n\n${lines}`),
-  };
+// `platformBranding`: the console's signature and footer links
+// (platformSettingsService.emailBranding), used by the platform's own emails
+// only; null renders every email as before.
+function render(template, data, platformBranding = null) {
+  branding = platformBranding && PLATFORM_TEMPLATES.has(template) ? platformBranding : null;
+  try {
+    const fn = templates[template];
+    if (fn) return fn(data);
+    // Fallback so an untemplated notification still sends rather than throwing.
+    const lines = Object.entries(data || {})
+      .map(([k, v]) => `${k}: ${v}`)
+      .join('\n');
+    return {
+      subject: template.replace(/[_-]+/g, ' '),
+      ...wrap(`<p>${template}</p><pre>${lines}</pre>`, `${template}\n\n${lines}`),
+    };
+  } finally {
+    branding = null;
+  }
 }
 
-module.exports = { render, wrap, SPAM_FOOTER, TEMPLATE_NAMES: Object.keys(templates) };
+module.exports = { render, wrap, SPAM_FOOTER, TEMPLATE_NAMES: Object.keys(templates), PLATFORM_TEMPLATES };

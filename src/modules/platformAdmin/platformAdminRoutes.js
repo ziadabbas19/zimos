@@ -31,6 +31,8 @@ router.use(require('../suggestions/suggestionAdminRoutes'));
 router.use(require('../siteAnalytics/siteTrafficAdminRoutes'));
 // The theme catalog (themes/themesCatalog.js).
 router.use(require('../themes/themesCatalog').admin);
+// The platform's public details: contact, social links, company, footer, emails (platformSettings/).
+router.use(require('../platformSettings/platformSettingsRoutes').adminRouter);
 
 // --- Plans ---------------------------------------------------------------
 router.get('/plans', can(P.PLANS_VIEW), controller.listPlans);

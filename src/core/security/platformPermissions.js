@@ -71,6 +71,12 @@ const PLATFORM_PERMISSIONS = Object.freeze({
   COMMISSIONS_MARK_PAID: 'commissions.mark_paid',
   // An agent's own codes, referred merchants and ledger rows, read-only.
   REFERRALS_VIEW_OWN: 'referrals.view_own',
+  // The platform's public details (modules/platformSettings): reading them, and
+  // saving, resetting and reverting them. Held through '*' only, like the
+  // payment methods: no migration adds them to the admin role or to any admin,
+  // so a creator grants them by hand.
+  PLATFORM_SETTINGS_VIEW: 'platform_settings.view',
+  PLATFORM_SETTINGS_MANAGE: 'platform_settings.manage',
 });
 
 const ALL_PLATFORM_PERMISSIONS = Object.freeze(Object.values(PLATFORM_PERMISSIONS));

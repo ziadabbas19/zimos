@@ -387,6 +387,16 @@ const env = {
     phoneChangeEnabled: process.env.NODE_ENV !== 'test' && process.env.PHONE_CHANGE_ENABLED === 'true',
   },
 
+  // The platform's public details edited in the console (modules/platformSettings:
+  // contact, social links, company, footer, the system emails' sender name and
+  // signature). Off unless exactly "true": off, GET /platform-settings/public
+  // answers 404 like an unknown path and the emails are sent as before; the
+  // console can still edit the values, ready for when it is turned on. Under
+  // NODE_ENV=test it starts off; a test flips it on this object.
+  platformSettings: {
+    enabled: process.env.NODE_ENV !== 'test' && process.env.PLATFORM_SETTINGS_ENABLED === 'true',
+  },
+
   // The AI features (modules/ai, translations/aiFill, risk/aiOrderCheck, the
   // WhatsApp bot). Off unless AI_ENABLED is exactly "true": off, their routes
   // answer as if they did not exist, the bot never replies, the order check
