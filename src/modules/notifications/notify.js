@@ -97,8 +97,10 @@ async function sendEmail({ recipient, template, data, workspaceId = null, orderI
       messageId = consoleMessageId();
       logger.info(`[notification:email] ${template} -> ${recipient} :: ${subject}`, { data: loggable(data) });
     } else if (provider === 'brevo') {
-      // A store's own sender name first; else the console's (it replaces EMAIL_FROM_NAME); else EMAIL_FROM_NAME.
-      const fromName = data && data.fromName ? String(data.fromName).slice(0, 100) : branding ? branding.senderName : undefined;
+      // A store's own sender name first; on the platform's own emails only, the console's; else EMAIL_FROM_NAME.
+      // A store's email to its shopper never takes the console's name, so a shopper never sees it on a store's email.
+      const platformEmail = emailTemplates.PLATFORM_TEMPLATES.has(template);
+      const fromName = data && data.fromName ? String(data.fromName).slice(0, 100) : branding && platformEmail ? branding.senderName : undefined;
       const sent = await brevoEmailProvider.sendEmail({ to: recipient, subject, html, text, fromName, replyTo: data && data.replyTo ? String(data.replyTo) : undefined });
       attempts = sent.attempts || attempts;
       messageId = sent.messageId ? String(sent.messageId).trim().replace(/^<|>$/g, '') : null;

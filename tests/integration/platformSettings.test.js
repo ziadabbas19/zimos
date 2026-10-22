@@ -426,6 +426,33 @@ describe('the system emails', () => {
     expect(mail.html).not.toContain('mailto:');
   });
 
+  it('never gives the console’s sender name to a store’s email that has no sender name of its own', async () => {
+    await put(creator, 'contact', CONTACT);
+    await put(creator, 'email', EMAIL);
+    const original = env.notifications.emailProvider;
+    env.notifications.emailProvider = 'brevo';
+    const sent = jest.spyOn(brevoEmailProvider, 'sendEmail').mockResolvedValue({ messageId: 'test', attempts: 1 });
+    const shop = { storeName: 'Mona Shop', locale: 'en' };
+    const storeEmails = [
+      ['shopper_login_code', { ...shop, code: '123456', minutes: 10 }],
+      ['back_in_stock', { ...shop, productName: 'Mug', url: 'https://mona.zimos.test/products/mug' }],
+      ['question_answered', { ...shop, productName: 'Mug', question: 'Size?', answer: 'Large', url: 'https://mona.zimos.test/products/mug' }],
+      ['gift_card', { ...shop, code: 'ABCD-EFGH', amount: '100', currency: 'EGP' }],
+      ['automation_message', { ...shop, subject: 'Hello', body: 'Thanks' }],
+    ];
+    try {
+      for (const [template, data] of storeEmails) await notify.email({ recipient: 'shopper@zimos.test', template, data });
+    } finally {
+      env.notifications.emailProvider = original;
+    }
+    expect(sent.mock.calls).toHaveLength(storeEmails.length);
+    for (const [[mail], [template]] of sent.mock.calls.map((call, i) => [call, storeEmails[i]])) {
+      // Undefined: Brevo falls back to EMAIL_FROM_NAME, the name these emails always had.
+      expect([template, mail.fromName]).toEqual([template, undefined]);
+      expect([template, mail.html.includes('Zimos team') || mail.html.includes('help@zimos.co')]).toEqual([template, false]);
+    }
+  });
+
   it('go out as before while the flag is off, even with the group saved', async () => {
     await put(creator, 'email', EMAIL);
     env.platformSettings.enabled = false;

@@ -12,9 +12,10 @@ const SPAM_FOOTER_AR =
   'لم تصلك هذه الرسالة في البريد الوارد؟ ابحث عنها في مجلد الرسائل غير المرغوب فيها وحدّدها بأنها ليست كذلك لتصلك رسائلنا القادمة.';
 
 // The platform's own emails to its users (accounts, security, the merchant's
-// notifications and reports): the ones that carry the signature and footer
-// links set in the console (platformSettings, PLATFORM_SETTINGS_ENABLED). A
-// store's emails to its shoppers never do.
+// notifications and reports): the only ones that take the sender name, the
+// signature and the footer links set in the console (platformSettings,
+// PLATFORM_SETTINGS_ENABLED; the sender name in notify.js). A store's emails
+// to its shoppers never do, and keep the sender name they had.
 const PLATFORM_TEMPLATES = new Set([
   'signup_code',
   'account_reauth_code',
