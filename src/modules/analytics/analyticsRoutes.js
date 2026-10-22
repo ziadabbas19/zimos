@@ -38,5 +38,9 @@ router.get('/live', validate(schemas.live), controller.live);
 router.post('/live/stream-ticket', validate(schemas.liveTicket), controller.liveTicket);
 // Sales, products, delivery and customers reports, insights and CSV export.
 router.use('/reports', require('./reportsRoutes'));
+// Visitors: who came, from where, what they looked at and for how long, the
+// funnel, campaigns and outcomes per governorate (traffic/visitorRoutes.js).
+// An advanced_analytics screen like the web analytics above.
+router.use('/visitors', advanced, require('./traffic/visitorRoutes'));
 
 module.exports = router;

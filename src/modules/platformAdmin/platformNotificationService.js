@@ -42,6 +42,8 @@ const TYPES = [
   'suggestion',
   // A store whose subscription ended moved to pay per order (billing/walletFallbackService, migration 224).
   'wallet_fallback',
+  // A store went over its daily analytics limit (migration 704, analytics/traffic/trafficCounters.js).
+  'traffic_cap',
 ];
 
 // The console permission of the page each type points at.
@@ -59,6 +61,8 @@ const TYPE_PERMISSION = Object.freeze({
   // The suggestions inbox is read with support.view (suggestions/suggestionAdminRoutes).
   suggestion: P.SUPPORT_VIEW,
   wallet_fallback: P.SUBSCRIPTIONS_VIEW,
+  // The console's store traffic page (analytics/traffic) is read with workspaces.view.
+  traffic_cap: P.WORKSPACES_VIEW,
 });
 
 /** The types this console account may be told about. */

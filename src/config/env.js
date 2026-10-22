@@ -152,6 +152,17 @@ function limitOrOff(name) {
   return Number(value);
 }
 
+// One of a fixed set of words from the environment (lower-cased). Unset or
+// blank is the fallback; anything else refuses to start, naming the variable.
+// Under NODE_ENV=test it is always the fallback.
+function oneOf(name, values, fallback) {
+  const raw = process.env[name];
+  if (process.env.NODE_ENV === 'test' || isBlank(raw)) return fallback;
+  const value = raw.trim().toLowerCase();
+  if (!values.includes(value)) throw new Error(`${name} must be one of: ${values.join(', ')} (unset, it is ${fallback})`);
+  return value;
+}
+
 const env = {
   nodeEnv: process.env.NODE_ENV || 'development',
   isProduction: process.env.NODE_ENV === 'production',
@@ -802,6 +813,43 @@ const env = {
     enabled: process.env.NODE_ENV !== 'test' && process.env.SITE_ANALYTICS_ENABLED === 'true',
     origins: csvList(process.env.SITE_ANALYTICS_ORIGINS, ''),
   },
+
+  // The storefront events guard (analytics/traffic). Off unless exactly
+  // "true": POST /store/:id/events behaves as it always has. On: known bots
+  // and refused requests are counted per day instead of stored; events per
+  // minute are limited per IP, per visitor and per store (429); the same event
+  // twice within a second counts once; a visitor faster than a person is kept
+  // out of the numbers; and a store stores at most storeDailyCap raw events a
+  // UTC day — past it events are only counted, and the console is told once.
+  // Under NODE_ENV=test it starts off; a test flips it on this object.
+  //   originCheck   off (default) | report: counts requests whose Origin is not
+  //                 one of the store's hosts and still stores them | enforce:
+  //                 refuses them (403). Read only while the guard is on.
+  //   extraOrigins  hosts every store may also send from (the storefront's own
+  //                 host, if it ever serves /store/<slug> paths to shoppers).
+  trafficGuard: {
+    enabled: process.env.NODE_ENV !== 'test' && process.env.TRAFFIC_GUARD_ENABLED === 'true',
+    originCheck: oneOf('TRAFFIC_ORIGIN_CHECK', ['off', 'report', 'enforce'], 'off'),
+    extraOrigins: csvList(process.env.TRAFFIC_EXTRA_ORIGINS, ''),
+    storeDailyCap: positiveInt('TRAFFIC_STORE_DAILY_CAP', 100000),
+  },
+
+  // What each visit was, for the visitors screens (analytics/traffic/visitorDetails.js).
+  // Off unless exactly "true": the events endpoint stores what it always has.
+  // On: the session row keeps its source, UTM, ad click ids (as yes/no only),
+  // governorate (from the IP region, then from the shopper's order) and the
+  // funnel steps it reached, and page views get their visible time from the
+  // tracker's reports. Under NODE_ENV=test it starts off; a test flips it.
+  trafficDetails: {
+    enabled: process.env.NODE_ENV !== 'test' && process.env.TRAFFIC_DETAILS_ENABLED === 'true',
+  },
+
+  // Raw storefront analytics (analytics_events, analytics_sessions) older than
+  // this many days are deleted every night, after their days are counted into
+  // analytics_daily (analytics/traffic/retention.js). 0 or unset keeps them for
+  // ever, as before. The web analytics screens read raw events: with this set,
+  // their periods reach this far back only.
+  analyticsRawRetentionDays: limitOrOff('ANALYTICS_RAW_RETENTION_DAYS'),
 
   // Merchant custom domains (modules/domains). Off unless exactly "true": every
   // dashboard route under /workspaces/:id/domains answers 404 like an unknown
