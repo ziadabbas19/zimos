@@ -559,6 +559,20 @@ const paymentProofLimiter = createUserLimiter({
 });
 
 /*
+ * Bulk product delete (POST /products/bulk-delete): a chunk of up to 100
+ * products per request, which the dashboard sends one after another — 30 a
+ * minute is 3,000 products. Per signed-in user; the dashboard waits out a 429.
+ */
+const PRODUCT_BULK_DELETES_PER_MINUTE = 30;
+
+const productBulkDeleteLimiter = createUserLimiter({
+  prefix: 'product-bulk-delete',
+  windowMs: 60 * 1000,
+  max: PRODUCT_BULK_DELETES_PER_MINUTE,
+  skip,
+});
+
+/*
  * Carrier status webhooks (POST /webhooks/carriers/:code/:token). Every
  * merchant's Bosta pushes arrive from Bosta's servers, so a per-IP limit would
  * put all merchants in one bucket; each merchant's webhook token gets its own.
@@ -726,5 +740,7 @@ module.exports = {
   createAuthIpLimiter,
   PAYMENT_PROOFS_PER_HOUR,
   paymentProofLimiter,
+  PRODUCT_BULK_DELETES_PER_MINUTE,
+  productBulkDeleteLimiter,
   createUserLimiter,
 };
