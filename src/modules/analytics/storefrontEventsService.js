@@ -8,6 +8,7 @@ const { getClientInfo, getDevice, isBot } = require('./clientDetect');
 const suspicion = require('./traffic/suspicion');
 const trafficCounters = require('./traffic/trafficCounters');
 const { hashIp } = require('./traffic/ipHash');
+const details = require('./traffic/visitorDetails');
 
 const HOUR_MS = 60 * 60 * 1000;
 const FUTURE_TOLERANCE_MS = HOUR_MS;
@@ -188,6 +189,8 @@ async function ingest(workspaceId, body, { userAgent, getHeader, guard = null } 
     trustedGeo: env.analytics.geoHeaders,
   });
   const attribution = body.attribution || {};
+  // What each visit was (TRAFFIC_DETAILS_ENABLED, traffic/visitorDetails.js).
+  const detailed = details.detailsEnabled();
 
   const distinct = (pick) => [...new Set(body.events.map(pick).filter(Boolean))];
   const orderIds = distinct((e) => (e.name === 'purchase' ? e.orderId : null));
@@ -198,7 +201,13 @@ async function ingest(workspaceId, body, { userAgent, getHeader, guard = null } 
   // workspace's is nulled (or, for a purchase, the event is dropped) rather
   // than letting Postgres reject the whole batch.
   const [orderRows, websiteRows, funnelRows] = await Promise.all([
-    orderIds.length ? db.Order.findAll({ where: { workspaceId, id: { [Op.in]: orderIds } }, attributes: ['id', 'totalAmount'], raw: true }) : [],
+    orderIds.length
+      ? db.Order.findAll({
+          where: { workspaceId, id: { [Op.in]: orderIds } },
+          attributes: detailed ? ['id', 'totalAmount', 'shippingAddressSnapshot'] : ['id', 'totalAmount'],
+          raw: true,
+        })
+      : [],
     websiteIds.length ? db.Website.findAll({ where: { workspaceId, id: { [Op.in]: websiteIds } }, attributes: ['id'], raw: true }) : [],
     funnelIds.length ? db.Funnel.findAll({ where: { workspaceId, id: { [Op.in]: funnelIds } }, attributes: ['id'], raw: true }) : [],
   ]);
@@ -208,6 +217,16 @@ async function ingest(workspaceId, body, { userAgent, getHeader, guard = null } 
 
   // Events are processed in order so the visit boundary falls where it did in the browser.
   let timed = body.events.map((e) => ({ e, createdAt: resolveOccurredAt(e.occurredAt, now) }));
+  // Visible-time reports update their page view rather than becoming events;
+  // with the details off they are dropped.
+  const dwell = timed.filter(({ e }) => e.name === details.DWELL_EVENT);
+  if (dwell.length > 0) {
+    timed = timed.filter(({ e }) => e.name !== details.DWELL_EVENT);
+    if (timed.length === 0) {
+      const applied = detailed ? await details.applyDwell(workspaceId, body.sessionId, dwell, { country: guard ? guard.country : '' }) : 0;
+      return { accepted: applied };
+    }
+  }
   if (guard) {
     timed = withoutDuplicates(workspaceId, body.visitorId, timed, guard);
     if (timed.length === 0) return { accepted: 0 };
@@ -220,6 +239,11 @@ async function ingest(workspaceId, body, { userAgent, getHeader, guard = null } 
         ...(automation ? { isBot: true, flagReason: 'automation', flaggedAt: now } : {}),
       }
     : {};
+  if (detailed) {
+    const first = timed[0].e;
+    const page = derivePage({ url: first.url || first.path || '', hostname: body.hostname, referrer: first.referrer });
+    Object.assign(extra, details.sessionFields({ attribution, page, client }));
+  }
   const session = await loadSession(workspaceId, body, client, timed[0].createdAt, firstWebsiteId, extra);
 
   if (guard) {
@@ -260,7 +284,8 @@ async function ingest(workspaceId, body, { userAgent, getHeader, guard = null } 
       visitorId: body.visitorId,
       sessionId: body.sessionId,
       visitId,
-      dedupeId: e.dedupeId || null,
+      // A page view the tracker numbered is found again by its visible-time reports.
+      dedupeId: e.dedupeId || (detailed && e.name === 'page_view' && e.pageViewId ? `pv:${e.pageViewId}` : null),
       eventName: e.name,
       eventType: e.name === 'page_view' ? EVENT_TYPE.pageView : EVENT_TYPE.customEvent,
       // A page that carries its own utm tags describes itself; the batch's
@@ -272,7 +297,9 @@ async function ingest(workspaceId, body, { userAgent, getHeader, guard = null } 
       campaign: clip(pageUtm ? page.utm.campaign : attribution.campaign, 150),
       referrer: attribution.referrer || null,
       landingPage: attribution.landingPage || null,
-      clickIds: attribution.clickIds || (Object.values(page.clickIds).some(Boolean) ? page.clickIds : null),
+      clickIds: ((ids) => (detailed ? details.clickFlags(ids) : ids))(
+        attribution.clickIds || (Object.values(page.clickIds).some(Boolean) ? page.clickIds : null)
+      ),
       orderId,
       revenueAmount,
       metadata: {
@@ -305,9 +332,17 @@ async function ingest(workspaceId, body, { userAgent, getHeader, guard = null } 
 
   const patch = { lastSeenAt: new Date(lastSeenAt) };
   if (visitChanged) patch.currentVisitId = visitId;
+  if (detailed && session.detailed) Object.assign(patch, details.sessionPatch(timed.map(({ e }) => e), orders));
   await db.AnalyticsSession.update(patch, { where: { workspaceId, id: body.sessionId } });
 
-  return { accepted: stored.length };
+  let applied = 0;
+  if (detailed) {
+    if (dwell.length > 0) applied = await details.applyDwell(workspaceId, body.sessionId, dwell, { country: guard ? guard.country : '' });
+    const bought = timed.filter(({ e }) => e.name === 'purchase' && e.orderId && orders.has(e.orderId)).map(({ e }) => orders.get(e.orderId));
+    if (bought.length > 0 && session.detailed) await details.linkOrders(workspaceId, body.visitorId, bought);
+  }
+
+  return { accepted: stored.length + applied };
 }
 
 /** The batch without events seen within the last second (same visitor, name and page); the rest are counted. */

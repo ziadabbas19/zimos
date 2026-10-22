@@ -824,6 +824,23 @@ const env = {
     storeDailyCap: positiveInt('TRAFFIC_STORE_DAILY_CAP', 100000),
   },
 
+  // What each visit was, for the visitors screens (analytics/traffic/visitorDetails.js).
+  // Off unless exactly "true": the events endpoint stores what it always has.
+  // On: the session row keeps its source, UTM, ad click ids (as yes/no only),
+  // governorate (from the IP region, then from the shopper's order) and the
+  // funnel steps it reached, and page views get their visible time from the
+  // tracker's reports. Under NODE_ENV=test it starts off; a test flips it.
+  trafficDetails: {
+    enabled: process.env.NODE_ENV !== 'test' && process.env.TRAFFIC_DETAILS_ENABLED === 'true',
+  },
+
+  // Raw storefront analytics (analytics_events, analytics_sessions) older than
+  // this many days are deleted every night, after their days are counted into
+  // analytics_daily (analytics/traffic/retention.js). 0 or unset keeps them for
+  // ever, as before. The web analytics screens read raw events: with this set,
+  // their periods reach this far back only.
+  analyticsRawRetentionDays: limitOrOff('ANALYTICS_RAW_RETENTION_DAYS'),
+
   // Merchant custom domains (modules/domains). Off unless exactly "true": every
   // dashboard route under /workspaces/:id/domains answers 404 like an unknown
   // path. Domains already verified keep resolving: GET /store/resolve-host and

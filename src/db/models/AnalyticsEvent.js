@@ -39,6 +39,10 @@ module.exports = (sequelize, DataTypes) => {
       currency: { type: DataTypes.STRING(3), allowNull: true },
       screen: { type: DataTypes.STRING(11), allowNull: true },
       language: { type: DataTypes.STRING(35), allowNull: true },
+      // Visible time on this page view and the product it showed (migration 705,
+      // analytics/traffic/visitorDetails.js); page views only.
+      dwellMs: { type: DataTypes.INTEGER, allowNull: true, field: 'dwell_ms' },
+      productId: { type: DataTypes.UUID, allowNull: true, field: 'product_id' },
     },
     {
       tableName: 'analytics_events',

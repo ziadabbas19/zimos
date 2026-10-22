@@ -32,6 +32,11 @@ const event = Joi.object({
   eventId: Joi.string().max(64).pattern(/^[A-Za-z0-9_.:-]+$/).optional(),
   occurredAt: Joi.date().iso().optional(),
   metadata: metadata.optional(),
+  // The tracker numbers each page view; its `page_dwell` reports name it with the
+  // visible time so far and the product the page showed (traffic/visitorDetails.js).
+  pageViewId: Joi.string().pattern(/^[A-Za-z0-9_-]{8,64}$/).optional(),
+  dwellMs: Joi.number().integer().min(0).max(24 * 60 * 60 * 1000).optional(),
+  productId: uuid.optional(),
 });
 
 const attribution = Joi.object({

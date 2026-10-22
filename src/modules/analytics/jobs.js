@@ -20,5 +20,13 @@ module.exports = {
       // eslint-disable-next-line global-require
       handle: () => require('./traffic/purge').run(),
     },
+    {
+      // Raw events and sessions past ANALYTICS_RAW_RETENTION_DAYS, after their
+      // days are counted into analytics_daily (traffic/retention.js). Off by default.
+      name: 'analytics.raw_retention',
+      everyMs: 6 * 60 * MINUTE,
+      // eslint-disable-next-line global-require
+      handle: () => require('./traffic/retention').run(),
+    },
   ],
 };
