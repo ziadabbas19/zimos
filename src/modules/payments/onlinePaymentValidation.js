@@ -54,6 +54,10 @@ module.exports = {
   },
   shopperAction: { params: storeOrderParam },
   webhook: {
-    params: Joi.object({ code: Joi.string().max(50).required(), token: Joi.string().max(100).required() }),
+    params: Joi.object({
+      code: Joi.string().max(50).required(),
+      token: Joi.string().max(100).required(),
+      variant: Joi.string().max(30).optional(),
+    }),
   },
 };

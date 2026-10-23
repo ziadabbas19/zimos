@@ -11,5 +11,8 @@ const schemas = require('./onlinePaymentValidation');
 const router = Router();
 
 router.post('/:code/:token', validate(schemas.webhook), controller.webhook);
+// A last segment some gateways need in the URL (Fawaterak sends its paid
+// webhook as JSON only to a path with `_json` in it).
+router.post('/:code/:token/:variant', validate(schemas.webhook), controller.webhook);
 
 module.exports = router;
