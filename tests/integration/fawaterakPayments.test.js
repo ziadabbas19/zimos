@@ -406,6 +406,15 @@ describe('Fawaterak webhooks: a signal, never the truth', () => {
     expect(await db.Payment.count({ where: { orderId: o.id, status: 'captured' } })).toBe(1);
   });
 
+  it('one signed body replayed with made-up statuses adds one event, not one per status', async () => {
+    const ctx = await store();
+    const placed = await placeOnline(ctx);
+    for (const status of ['x-1', 'x-2', 'x-3']) {
+      expect((await hook(ctx, fw.paidWebhook(placed.intentKey, { status }))).status).toBe(200);
+    }
+    expect(await db.PaymentEvent.count({ where: { orderId: placed.order.id, source: 'webhook' } })).toBe(1);
+  });
+
   it('a webhook racing the shopper\'s return records the payment once', async () => {
     const ctx = await store();
     const placed = await placeOnline(ctx);

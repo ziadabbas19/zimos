@@ -264,6 +264,13 @@ describe('webhooks', () => {
     expect(fawaterak.parseWebhook({ body: [] }, stored()).valid).toBe(false);
   });
 
+  it('the unsigned status adds nothing to the event key but paid or pending', async () => {
+    const intentKey = await paidIntent();
+    const keyOf = (status) => fawaterak.parseWebhook({ body: fw.paidWebhook(intentKey, { status }) }, stored()).eventKey;
+    expect(keyOf('made-up-1')).toBe(keyOf('made-up-2'));
+    expect(new Set([keyOf('paid'), keyOf('pending'), keyOf('made-up-1')]).size).toBe(3);
+  });
+
   it('a verified refund webhook is acknowledged and dropped', () => {
     expect(fawaterak.parseWebhook({ body: fake.refundWebhook() }, stored())).toBeNull();
   });

@@ -578,9 +578,12 @@ function parseWebhook({ body }, creds) {
   if (kind === 'cancel' || kind === 'refund') return null;
 
   const payload = storableWebhook(kind, body);
+  // The status is not signed: only a documented value goes into the key, so
+  // replaying one signed body with made-up statuses cannot add events.
+  const status = ['paid', 'pending'].includes(payload.status) ? payload.status : '';
   return {
     valid: true,
-    eventKey: `wh:${kind}:${payload.transaction_key}:${payload.transaction_id}:${payload.status || ''}`,
+    eventKey: `wh:${kind}:${payload.transaction_key}:${payload.transaction_id}:${status}`,
     transaction: normalizeTransaction(payload),
     payload,
   };
