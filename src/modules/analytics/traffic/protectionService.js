@@ -1,6 +1,7 @@
 'use strict';
 
 const db = require('../../../db/models');
+const env = require('../../../config/env');
 const { guardEnabled, originMode, storeDailyCap } = require('./guardConfig');
 
 /**
@@ -12,6 +13,10 @@ const { guardEnabled, originMode, storeDailyCap } = require('./guardConfig');
  *
  * Kept 30 days (traffic/purge.js), so a range is at most that. Days are
  * UTC days, as the counters write them.
+ *
+ * `scope` is store (the storefront events endpoint, the default) or site (the
+ * marketing site's beacon, siteAnalytics/): the site has no stores, no daily
+ * cap and no flagged sessions, so those lists come back empty for it.
  */
 
 const RANGES = { today: 1, '7d': 7, '30d': 30 };
@@ -20,10 +25,13 @@ const TOP = 20;
 const toNumber = (v) => (v === null || v === undefined ? 0 : Number(v));
 const query = (sql, replacements) => db.sequelize.query(sql, { replacements, type: db.Sequelize.QueryTypes.SELECT });
 
-async function summary({ range = '7d', workspaceId = null } = {}) {
+async function summary({ range = '7d', workspaceId = null, scope = 'store' } = {}) {
   const days = RANGES[range] || 7;
-  const replacements = { days: days - 1, workspaceId };
-  const where = `f.day >= (now() AT TIME ZONE 'UTC')::date - CAST(:days AS integer)${workspaceId ? ' AND f.workspace_id = :workspaceId' : ''}`;
+  const site = scope === 'site';
+  const replacements = { days: days - 1, workspaceId, scope: site ? 'site' : 'store' };
+  const where = `f.day >= (now() AT TIME ZONE 'UTC')::date - CAST(:days AS integer) AND f.scope = :scope${
+    workspaceId && !site ? ' AND f.workspace_id = :workspaceId' : ''
+  }`;
   const pivot = `
       coalesce(sum(f.count) FILTER (WHERE f.kind = 'bot'), 0) AS bot,
       coalesce(sum(f.count) FILTER (WHERE f.kind = 'rejected'), 0) AS rejected,
@@ -56,31 +64,36 @@ async function summary({ range = '7d', workspaceId = null } = {}) {
       replacements
     ),
     query(`SELECT to_char(f.day, 'YYYY-MM-DD') AS day, ${pivot} FROM traffic_filter_days f WHERE ${where} GROUP BY 1 ORDER BY 1`, replacements),
-    query(
-      `SELECT d.workspace_id AS "workspaceId", w.name, w.slug, to_char(d.day, 'YYYY-MM-DD') AS day,
-              d.stored_events AS stored, d.overflow_events AS overflow, d.cap_reached_at AS "capReachedAt"
-         FROM traffic_store_days d JOIN workspaces w ON w.id = d.workspace_id
-        WHERE d.day >= (now() AT TIME ZONE 'UTC')::date - CAST(:days AS integer) AND d.cap_reached_at IS NOT NULL
-              ${workspaceId ? 'AND d.workspace_id = :workspaceId' : ''}
-        ORDER BY d.day DESC, d.overflow_events DESC LIMIT 50`,
-      replacements
-    ),
-    query(
-      `SELECT s.workspace_id AS "workspaceId", w.name AS "storeName", s.id AS "sessionId", s.flag_reason AS reason,
-              s.is_bot AS "isBot", s.flagged_at AS "flaggedAt", s.excluded_events AS "excludedEvents",
-              s.ip_hash AS "ipHash", s.country, s.device, s.browser, s.os
-         FROM analytics_sessions s JOIN workspaces w ON w.id = s.workspace_id
-        WHERE s.flagged_at >= ((now() AT TIME ZONE 'UTC')::date - CAST(:days AS integer))::timestamp AT TIME ZONE 'UTC'
-              ${workspaceId ? 'AND s.workspace_id = :workspaceId' : ''}
-        ORDER BY s.flagged_at DESC LIMIT 50`,
-      replacements
-    ),
+    site
+      ? []
+      : query(
+          `SELECT d.workspace_id AS "workspaceId", w.name, w.slug, to_char(d.day, 'YYYY-MM-DD') AS day,
+                  d.stored_events AS stored, d.overflow_events AS overflow, d.cap_reached_at AS "capReachedAt"
+             FROM traffic_store_days d JOIN workspaces w ON w.id = d.workspace_id
+            WHERE d.day >= (now() AT TIME ZONE 'UTC')::date - CAST(:days AS integer) AND d.cap_reached_at IS NOT NULL
+                  ${workspaceId ? 'AND d.workspace_id = :workspaceId' : ''}
+            ORDER BY d.day DESC, d.overflow_events DESC LIMIT 50`,
+          replacements
+        ),
+    site
+      ? []
+      : query(
+          `SELECT s.workspace_id AS "workspaceId", w.name AS "storeName", s.id AS "sessionId", s.flag_reason AS reason,
+                  s.is_bot AS "isBot", s.flagged_at AS "flaggedAt", s.excluded_events AS "excludedEvents",
+                  s.ip_hash AS "ipHash", s.country, s.device, s.browser, s.os
+             FROM analytics_sessions s JOIN workspaces w ON w.id = s.workspace_id
+            WHERE s.flagged_at >= ((now() AT TIME ZONE 'UTC')::date - CAST(:days AS integer))::timestamp AT TIME ZONE 'UTC'
+                  ${workspaceId ? 'AND s.workspace_id = :workspaceId' : ''}
+            ORDER BY s.flagged_at DESC LIMIT 50`,
+          replacements
+        ),
   ]);
 
   return {
-    enabled: guardEnabled(),
-    originCheck: originMode(),
-    dailyCap: storeDailyCap(),
+    scope: site ? 'site' : 'store',
+    enabled: site ? Boolean(env.siteAnalytics.detailsEnabled) : guardEnabled(),
+    originCheck: site ? 'allowlist' : originMode(),
+    dailyCap: site ? null : storeDailyCap(),
     range,
     totals: counts(totals),
     byReason: byReason.map((r) => ({ kind: r.kind, reason: r.reason, count: toNumber(r.count) })),

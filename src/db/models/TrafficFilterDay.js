@@ -8,6 +8,8 @@ module.exports = (sequelize, DataTypes) => {
     {
       id: { type: DataTypes.BIGINT, primaryKey: true, autoIncrement: true },
       day: { type: DataTypes.DATEONLY, allowNull: false },
+      // store | site: which endpoint's guard kept it out (migration 707).
+      scope: { type: DataTypes.STRING(10), allowNull: false, defaultValue: 'store' },
       workspaceId: { type: DataTypes.UUID, allowNull: true, field: 'workspace_id' },
       // bot | rejected | suspicious | capped
       kind: { type: DataTypes.STRING(20), allowNull: false },
