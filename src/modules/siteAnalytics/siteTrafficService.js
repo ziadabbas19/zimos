@@ -5,7 +5,8 @@ const { QueryTypes } = require('sequelize');
 const db = require('../../db/models');
 const env = require('../../config/env');
 const logger = require('../../core/utils/logger');
-const { getDevice, getLocation } = require('../analytics/clientDetect');
+const { getClientInfo, getDevice, getLocation } = require('../analytics/clientDetect');
+const { governorateFromRegion } = require('../analytics/traffic/visitorDetails');
 
 /**
  * Anonymous visits to the marketing site (zimos.co), for the console.
@@ -58,6 +59,7 @@ function referrerHost(referrer) {
 const orNull = (v) => (v === undefined || v === '' ? null : v);
 
 async function recordEvent(body, req) {
+  if (env.siteAnalytics.detailsEnabled) return recordDetailedEvent(body, req);
   const country = getLocation((name) => req.get(name), env.analytics.geoHeaders).country;
   await db.sequelize.query(
     `INSERT INTO site_visits
@@ -80,6 +82,48 @@ async function recordEvent(body, req) {
         country: country || null,
         event: body.event,
         seconds: body.event === 'ping' ? PING_SECONDS : 0,
+      },
+      type: QueryTypes.INSERT,
+    }
+  );
+}
+
+/**
+ * The same row with SITE_TRAFFIC_DETAILS_ENABLED: also the browser, the
+ * governorate (Cloudflare's region header through ANALYTICS_GEO_HEADERS and the
+ * store traffic mapping; null without it, nothing guessed) and, for a
+ * cta_click, which dashboard link it was.
+ */
+async function recordDetailedEvent(body, req) {
+  const client = getClientInfo({
+    userAgent: req.get('user-agent'),
+    getHeader: (name) => req.get(name),
+    trustedGeo: env.analytics.geoHeaders,
+  });
+  await db.sequelize.query(
+    `INSERT INTO site_visits
+       (visitor_hash, session_id, path, locale, referrer_host, utm_source, utm_medium, utm_campaign,
+        device_class, country, event, seconds_on_page, browser, governorate, cta_kind)
+     VALUES
+       (:visitorHash, :sessionId, :path, :locale, :referrerHost, :utmSource, :utmMedium, :utmCampaign,
+        :deviceClass, :country, :event, :seconds, :browser, :governorate, :ctaKind)`,
+    {
+      replacements: {
+        visitorHash: visitorHash(body.visitorId),
+        sessionId: body.sessionId,
+        path: orNull(body.path),
+        locale: orNull(body.locale),
+        referrerHost: referrerHost(body.referrer),
+        utmSource: orNull(body.utmSource),
+        utmMedium: orNull(body.utmMedium),
+        utmCampaign: orNull(body.utmCampaign),
+        deviceClass: deviceClass(req.get('user-agent')),
+        country: client.country || null,
+        event: body.event,
+        seconds: body.event === 'ping' ? PING_SECONDS : 0,
+        browser: client.browser || null,
+        governorate: governorateFromRegion(client.country, client.region),
+        ctaKind: body.event === 'cta_click' ? body.cta || null : null,
       },
       type: QueryTypes.INSERT,
     }

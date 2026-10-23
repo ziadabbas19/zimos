@@ -63,9 +63,9 @@ describe('the feature catalogue', () => {
     const res = await request(app).get('/api/v1/admin/plans').set(admin.H);
     expect(res.status).toBe(200);
     const byKey = Object.fromEntries(res.body.featureCatalog.map((f) => [f.key, f]));
-    expect(Object.keys(byKey)).toHaveLength(10);
+    expect(Object.keys(byKey)).toHaveLength(11);
     expect(byKey.multi_warehouse.available).toBe(false);
-    for (const k of ['custom_domain', 'funnels', 'whatsapp_confirmation', 'abandoned_cart', 'api_access', 'staff_accounts', 'advanced_analytics', 'remove_branding', 'priority_support']) {
+    for (const k of ['custom_domain', 'funnels', 'whatsapp_confirmation', 'abandoned_cart', 'api_access', 'staff_accounts', 'advanced_analytics', 'visitor_insights', 'remove_branding', 'priority_support']) {
       expect(byKey[k].available).toBe(true);
     }
     expect(byKey.staff_accounts.label).toEqual({ en: 'Staff accounts', ar: 'حسابات الفريق' });

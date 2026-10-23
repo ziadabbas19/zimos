@@ -10,10 +10,11 @@ const { LIMITS, storeDailyCap } = require('./guardConfig');
  * database every LIMITS.FLUSH_MS — never one write per request, so a flood of
  * refused requests costs no more database work than a quiet minute.
  *
- *  - What was kept out (traffic_filter_days): per UTC day, store, kind
- *    (bot | rejected | suspicious | capped), reason, label and country. One
- *    flush writes at most MAX_FILTER_KEYS_PER_FLUSH keys; the smallest of the
- *    rest are summed under the label "other".
+ *  - What was kept out (traffic_filter_days): per UTC day, scope (store, or
+ *    the marketing site's beacon: site), store, kind (bot | rejected |
+ *    suspicious | capped), reason, label and country. One flush writes at most
+ *    MAX_FILTER_KEYS_PER_FLUSH keys; the smallest of the rest are summed under
+ *    the label "other".
  *  - Raw events stored per store and UTC day (traffic_store_days), for the
  *    daily cap. A process sees the total as of its last flush plus what it
  *    stored since, so with several processes a store can pass its cap by what
@@ -35,17 +36,18 @@ const utcDay = (at = new Date()) => at.toISOString().slice(0, 10);
 const clip = (value, max) => String(value || '').slice(0, max);
 
 /** Counts `count` requests or events the guard kept out. Never throws. */
-function recordFiltered({ workspaceId = null, kind, reason, label = '', country = '', count = 1 }) {
+function recordFiltered({ scope = 'store', workspaceId = null, kind, reason, label = '', country = '', count = 1 }) {
   if (!count || count < 0) return;
   const row = {
     day: utcDay(),
+    scope: scope === 'site' ? 'site' : 'store',
     workspaceId: workspaceId || null,
     kind,
     reason: clip(reason, 30),
     label: clip(label, 100),
     country: /^[A-Z]{2}$/.test(country || '') ? country : '',
   };
-  const key = [row.day, row.workspaceId || NO_STORE, row.kind, row.reason, row.label, row.country].join('|');
+  const key = [row.day, row.scope, row.workspaceId || NO_STORE, row.kind, row.reason, row.label, row.country].join('|');
   const entry = filtered.get(key);
   if (entry) entry.count += count;
   else filtered.set(key, { ...row, count });
@@ -135,12 +137,12 @@ function boundedRows(rows) {
   if (rows.length <= LIMITS.MAX_FILTER_KEYS_PER_FLUSH) return rows;
   const sorted = rows.slice().sort((a, b) => b.count - a.count);
   const kept = sorted.slice(0, LIMITS.MAX_FILTER_KEYS_PER_FLUSH - 20);
-  const merged = new Map(kept.map((r) => [[r.day, r.workspaceId || NO_STORE, r.kind, r.reason, r.label, r.country].join('|'), { ...r }]));
+  const merged = new Map(kept.map((r) => [[r.day, r.scope, r.workspaceId || NO_STORE, r.kind, r.reason, r.label, r.country].join('|'), { ...r }]));
   for (const r of sorted.slice(kept.length)) {
-    const key = [r.day, NO_STORE, r.kind, r.reason, 'other', ''].join('|');
+    const key = [r.day, r.scope, NO_STORE, r.kind, r.reason, 'other', ''].join('|');
     const entry = merged.get(key);
     if (entry) entry.count += r.count;
-    else merged.set(key, { day: r.day, workspaceId: null, kind: r.kind, reason: r.reason, label: 'other', country: '', count: r.count });
+    else merged.set(key, { day: r.day, scope: r.scope, workspaceId: null, kind: r.kind, reason: r.reason, label: 'other', country: '', count: r.count });
   }
   return [...merged.values()];
 }
@@ -151,6 +153,7 @@ async function writeFiltered(rows) {
   const values = rows.map((r, i) => {
     Object.assign(replacements, {
       [`d${i}`]: r.day,
+      [`s${i}`]: r.scope,
       [`w${i}`]: r.workspaceId,
       [`k${i}`]: r.kind,
       [`r${i}`]: r.reason,
@@ -158,12 +161,13 @@ async function writeFiltered(rows) {
       [`c${i}`]: r.country,
       [`n${i}`]: r.count,
     });
-    return `(CAST(:d${i} AS date), CAST(:w${i} AS uuid), :k${i}, :r${i}, :l${i}, :c${i}, :n${i}, NOW())`;
+    return `(CAST(:d${i} AS date), :s${i}, CAST(:w${i} AS uuid), :k${i}, :r${i}, :l${i}, :c${i}, :n${i}, NOW())`;
   });
+  // The key is traffic_filter_days_scope_key_uq (migration 707).
   await db.sequelize.query(
-    `INSERT INTO traffic_filter_days (day, workspace_id, kind, reason, label, country, count, updated_at)
+    `INSERT INTO traffic_filter_days (day, scope, workspace_id, kind, reason, label, country, count, updated_at)
      VALUES ${values.join(', ')}
-     ON CONFLICT (day, kind, reason, label, country, (coalesce(workspace_id, '00000000-0000-0000-0000-000000000000'::uuid)))
+     ON CONFLICT (day, scope, kind, reason, label, country, (coalesce(workspace_id, '00000000-0000-0000-0000-000000000000'::uuid)))
      DO UPDATE SET count = traffic_filter_days.count + EXCLUDED.count, updated_at = NOW()`,
     { replacements }
   );

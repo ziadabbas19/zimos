@@ -588,6 +588,7 @@ async function governorateOutcomes(scope, query = {}) {
 }
 
 module.exports = {
+  readOnly,
   summary,
   sessions,
   sessionTimeline,
