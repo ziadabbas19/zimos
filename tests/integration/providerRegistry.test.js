@@ -235,7 +235,7 @@ describe('provider registry — payment gateways', () => {
 
     env.payments.fawaterak.enabled = false;
     let row = await fawaterak();
-    expect(row).toMatchObject({ availability: 'off', capabilities: { methods: ['card'], currencies: ['EGP'] } });
+    expect(row).toMatchObject({ availability: 'off', capabilities: { methods: ['card'], currencies: ['EGP'], refunds: false, statusInquiry: true } });
     expect(row.availabilityDetail).toMatch(/PAYMENTS_FAWATERAK_ENABLED is off/);
     expect(row.healthCheck).toEqual({ checkable: true, target: 'app.fawaterk.com' });
 

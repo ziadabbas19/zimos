@@ -293,7 +293,8 @@ function describeGateway(adapter, counts, availability) {
     capabilities: {
       methods: [...adapter.methods],
       currencies: [...adapter.currencies],
-      refunds: typeof adapter.refund === 'function',
+      // Refunds sent from here; a gateway refunded in its own dashboard sends none (Fawaterak).
+      refunds: typeof adapter.refund === 'function' && !adapter.refundsInGatewayDashboard,
       statusInquiry: typeof adapter.inquire === 'function',
       webhook: adapter.webhookSetup ? { automatic: Boolean(adapter.webhookSetup.automatic) } : null,
       methodsFromAccount: adapter.settingFields.length === 0,
