@@ -254,15 +254,16 @@ describe('the phone (PHONE_CHANGE_ENABLED)', () => {
 
   it('on: a code by SMS to the new number, normalised; the code changes it', async () => {
     env.account.phoneChangeEnabled = true;
+    // registerAndActivate signs up with 01012345678, so the new number must differ.
     const a = await registerAndActivate();
-    const res = await requestPhone(a, { newPhone: '0101 234 5678', currentPassword: PASSWORD });
+    const res = await requestPhone(a, { newPhone: '0102 345 6789', currentPassword: PASSWORD });
     expect(res.status).toBe(200);
-    expect(res.body.target).toBe('01******678');
-    const code = await sentTo(smsSpy, '201012345678');
+    expect(res.body.target).toBe('01******789');
+    const code = await sentTo(smsSpy, '201023456789');
     expect(code).toMatch(/^\d{6}$/);
     const done = await request(app).post('/api/v1/auth/me/phone-change/confirm').set(auth(a)).send({ code });
     expect(done.status).toBe(200);
-    expect(await db.User.findByPk(a.userId)).toMatchObject({ phone: '201012345678' });
+    expect(await db.User.findByPk(a.userId)).toMatchObject({ phone: '201023456789' });
     expect((await db.User.findByPk(a.userId)).phoneVerifiedAt).toBeTruthy();
 
     const wrong = await requestPhone(a, { newPhone: '01112345678', currentPassword: 'nope' });

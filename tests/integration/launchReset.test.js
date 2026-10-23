@@ -295,7 +295,7 @@ describe('the classification', () => {
   });
 
   it('holds the decisions taken: what is kept, what is truncated, and the four tables decided as wipe', () => {
-    expect(KEPT.sort()).toEqual(['SequelizeMeta', 'feature_flags', 'geo_regions', 'payment_methods', 'plans', 'platform_roles', 'template_versions', 'templates', 'themes']);
+    expect(KEPT.sort()).toEqual(['SequelizeMeta', 'feature_flags', 'geo_regions', 'payment_methods', 'plans', 'platform_roles', 'platform_settings', 'template_versions', 'templates', 'themes']);
     expect(Object.keys(TABLES).filter((n) => TABLES[n].action === 'keep-creator')).toEqual(['users']);
     expect(Object.keys(TABLES).filter((n) => TABLES[n].action === 'truncate').sort()).toEqual(['wallet_ledger_entries', 'workspace_wallets']);
     for (const name of ['announcements', 'platform_blocklist_entries', 'plan_trials', 'referral_codes']) {
