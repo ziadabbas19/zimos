@@ -48,6 +48,18 @@ function requireAdapter(code) {
   return adapter;
 }
 
+/** The store as the gateway rollout reads it (gateways.isOfferedTo). */
+function rolloutWorkspace(workspaceId) {
+  return db.Workspace.findByPk(workspaceId, { attributes: ['id', 'slug'] });
+}
+
+/** A gateway this store may not see answers exactly like an unknown one. */
+async function requireOfferedAdapter(workspaceId, code) {
+  const adapter = requireAdapter(code);
+  if (!gateways.isOfferedTo(code, await rolloutWorkspace(workspaceId))) throw new NotFoundError('Payment gateway');
+  return adapter;
+}
+
 function webhookUrlFor(account) {
   return `${env.appUrl.replace(/\/+$/, '')}/api/${env.apiVersion}/webhooks/payments/${account.providerCode}/${account.webhookToken}`;
 }
@@ -64,6 +76,8 @@ function describeConnection(account) {
     mode: account.mode,
     settings: account.settings || {},
     methods: adapter ? adapter.availableMethods(account.settings || {}) : [],
+    // Warning codes for the dashboard (Fawaterak: the shopper pays the fees).
+    notices: adapter && adapter.connectionNotices ? adapter.connectionNotices(account.settings || {}) : [],
     webhookUrl: webhookUrlFor(account),
     lastVerifiedAt: account.lastVerifiedAt,
     lastWebhookAt: account.lastWebhookAt,
@@ -86,19 +100,27 @@ function describeAdapter(adapter) {
     // Card / wallet / … as this gateway's own account shows them: the methods
     // come from the account itself, nothing to type in.
     methodsFromAccount: adapter.settingFields.length === 0,
+    // Refunds of its payments are made in the gateway's own dashboard (Fawaterak).
+    refundsInGatewayDashboard: Boolean(adapter.refundsInGatewayDashboard),
   };
 }
 
 async function listGateways(workspaceId) {
-  const accounts = await db.PaymentGatewayAccount.findAll({ where: { workspaceId } });
+  const [accounts, workspace] = await Promise.all([
+    db.PaymentGatewayAccount.findAll({ where: { workspaceId } }),
+    rolloutWorkspace(workspaceId),
+  ]);
   const byCode = new Map(accounts.map((a) => [a.providerCode, a]));
   return {
     configured: isConfigured(),
     onlineEnabled: env.payments.onlineEnabled,
-    gateways: gateways.listAdapters().map((adapter) => ({
-      ...describeAdapter(adapter),
-      connection: describeConnection(byCode.get(adapter.code)),
-    })),
+    gateways: gateways
+      .listAdapters()
+      .filter((adapter) => gateways.isOfferedTo(adapter.code, workspace))
+      .map((adapter) => ({
+        ...describeAdapter(adapter),
+        connection: describeConnection(byCode.get(adapter.code)),
+      })),
   };
 }
 
@@ -141,7 +163,7 @@ async function loadWithCredentials(where) {
  */
 async function connect(workspaceId, code, body, req) {
   assertConfigured();
-  const adapter = requireAdapter(code);
+  const adapter = await requireOfferedAdapter(workspaceId, code);
   const existing = await loadWithCredentials({ workspaceId, providerCode: code });
 
   if (!body.credentials && !existing) {
