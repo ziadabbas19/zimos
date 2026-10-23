@@ -68,26 +68,30 @@ async function screenshot() {
     .toBuffer();
 }
 
-/** Opens the charge, sends its transfer proof, and has the console approve it. */
+/**
+ * Opens the charge, sends its transfer proof, and has the console approve it.
+ * Returns the charge the proof wrote, as stored once approved: open only
+ * quotes it, and the dates are set when it is written.
+ */
 async function payByTransfer(store, admin) {
   // res.json (200): the pending charge, or the quote of the next one under the id `next`.
   const opened = await request(app).post(`/api/v1/workspaces/${store.wid}/billing/invoices/open`).set(store.H).send({});
   expect(opened.status).toBe(200);
-  const invoice = opened.body.invoice;
+  const quote = opened.body.invoice;
   const sent = await request(app)
-    .post(`/api/v1/workspaces/${store.wid}/billing/invoices/${invoice.id}/payment-proofs`)
+    .post(`/api/v1/workspaces/${store.wid}/billing/invoices/${quote.id}/payment-proofs`)
     .set(store.H)
     .field('methodCode', 'instapay')
     .field('senderPhone', '01012345678')
     .attach('file', await screenshot(), { filename: 'transfer.png', contentType: 'image/png' });
   expect(sent.status).toBe(201);
-  expect(sent.body.proof).toMatchObject({ status: 'pending', amount: invoice.amountDue });
+  expect(sent.body.proof).toMatchObject({ status: 'pending', amount: quote.amountDue });
   const approved = await request(app)
     .post(`/api/v1/admin/payment-proofs/${sent.body.proof.id}/approve`)
     .set(admin.H)
-    .send({ receivedAmount: invoice.amountDue });
+    .send({ receivedAmount: quote.amountDue });
   expect(approved.status).toBe(200);
-  return invoice;
+  return db.BillingInvoice.findByPk(sent.body.proof.invoiceId);
 }
 
 describe('a trial that ended 10 days ago', () => {
@@ -189,8 +193,10 @@ describe('paying from the first day, by transfer', () => {
     const before = Date.now();
     const invoice = await payByTransfer(store, admin);
     // Priced from the plan and cycle on the subscription (no code attached),
-    // and dated from today, not from the trial's end.
-    expect(invoice).toMatchObject({ status: 'pending', grossAmount: PRO, discountAmount: 0, amountDue: PRO, currency: 'EGP' });
+    // and dated from today, not from the trial's end. The row's BIGINT
+    // amounts come back as strings.
+    expect(invoice.currency).toBe('EGP');
+    expect([invoice.grossAmount, invoice.discountAmount, invoice.amount].map(Number)).toEqual([PRO, 0, PRO]);
     const start = new Date(invoice.periodStart);
     expect(start.getTime()).toBeGreaterThanOrEqual(before - 1000);
     expect(start.getTime()).toBeLessThan(trialEnd.getTime());
@@ -255,7 +261,7 @@ describe('paying from the first day, by transfer', () => {
 
     expect((await request(app).post(`/api/v1/workspaces/${store.wid}/billing/plan`).set(store.H).send({ planId: pro.id })).status).toBe(200);
     const invoice = await payByTransfer(store, admin);
-    expect(invoice.amountDue).toBe(PRO);
+    expect(Number(invoice.amount)).toBe(PRO);
 
     const sub = await subscriptionOf(store.wid);
     expect(sub).toMatchObject({ status: 'active', planId: pro.id });
