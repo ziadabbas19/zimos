@@ -382,6 +382,18 @@ describe('Fawaterak webhooks: a signal, never the truth', () => {
     expect((await order(placed.order.id)).financialState).toBe('pending');
   });
 
+  it('a paid answer with no currency is never recorded', async () => {
+    const ctx = await store();
+    const placed = await placeOnline(ctx);
+    fw.pay(placed.intentKey, { currency: null });
+    const res = await hook(ctx, fw.paidWebhook(placed.intentKey));
+    expect(res.status).toBe(200);
+    expect(res.body.confirmed).toBeNull();
+    const o = await order(placed.order.id);
+    expect(o.financialState).toBe('pending');
+    expect(Number(o.amountPaid)).toBe(0);
+  });
+
   it('a payment whose pay_load names another attempt is not recorded as paid', async () => {
     const ctx = await store();
     const placed = await placeOnline(ctx);

@@ -213,6 +213,14 @@ describe('inquire', () => {
     await expect(fawaterak.inquire(stored(), { payment })).rejects.toMatchObject({ code: 'GATEWAY_ERROR' });
   });
 
+  it('a paid answer with no currency is an unknown outcome, never the order\'s currency', async () => {
+    const payment = await created();
+    fw.pay(payment.providerOrderId, { currency: null });
+    await expect(fawaterak.inquire(stored(), { payment })).rejects.toMatchObject({ code: 'GATEWAY_ERROR' });
+    // A stored payload without one never re-normalizes to paid either.
+    expect(fawaterak.normalizeTransaction({ verified: fawaterak.VERIFIED, intent_key: 'k', paid: 1, total: 235.5 }).status).toBe('pending');
+  });
+
   it('a pay_load naming another attempt never reads as paid', async () => {
     const payment = await created();
     fw.pay(payment.providerOrderId, { payLoad: JSON.stringify({ attemptId: 'someone-else' }) });

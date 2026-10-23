@@ -465,12 +465,13 @@ function normalizeTransaction(p = {}) {
   if (p.verified !== VERIFIED) return { ...base, status: 'pending', amount: NaN, currency: null };
 
   const amount = toMinor(p.total);
-  const paid = Number(p.paid) === 1 && p.attemptMatches !== false && Number.isFinite(amount);
+  const currency = typeof p.currency === 'string' ? p.currency.trim().toUpperCase() : null;
+  const paid = Number(p.paid) === 1 && p.attemptMatches !== false && Number.isFinite(amount) && /^[A-Z]{3}$/.test(currency || '');
   return {
     ...base,
     status: paid ? 'paid' : 'pending',
     amount,
-    currency: typeof p.currency === 'string' ? p.currency.trim().toUpperCase() : null,
+    currency,
   };
 }
 
@@ -513,6 +514,10 @@ async function inquire(creds, { payment }) {
     // An amount we cannot read is never recorded (the caller would fall back
     // to the amount expected): the outcome stays unknown and is asked again.
     throw new GatewayError('Fawaterak reports this payment paid without a total we can read.');
+  }
+  if (Number(data.paid) === 1 && !/^[A-Z]{3}$/.test(String(data.currency || '').trim().toUpperCase())) {
+    // Nor without a currency: the caller would take a missing one as the order's.
+    throw new GatewayError('Fawaterak reports this payment paid without a currency we can read.');
   }
 
   const payload = {
