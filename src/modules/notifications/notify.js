@@ -20,14 +20,17 @@ const consoleMessageId = () => `console-${require('crypto').randomUUID()}`;
 
 // Minimal SMS bodies. OTP flows pass { code } (and, for the sign-up code,
 // { minutes, locale }); anything else falls back to a terse template-name +
-// data dump so nothing sends blank.
+// data dump so nothing sends blank. A code sent on a store's behalf to its
+// shopper (the checkout code) carries { storeName }, and the text names the
+// store instead of the platform; the platform's own codes name the platform.
 function smsBody(template, data = {}) {
   // A ready text (automations' SMS step): sent as written.
   if (typeof data.body === 'string' && data.body.trim()) return data.body;
   if (data.code) {
     const minutes = Number(data.minutes) || 5;
-    if (data.locale === 'ar') return `رمز التحقق في Zimos: ${data.code}. صالح لمدة ${minutes} دقائق.`;
-    return `Your Zimos verification code is ${data.code}. It expires in ${minutes} minutes.`;
+    const brand = typeof data.storeName === 'string' && data.storeName.trim() ? data.storeName.trim().slice(0, 60) : 'Zimos';
+    if (data.locale === 'ar') return `رمز التحقق في ${brand}: ${data.code}. صالح لمدة ${minutes} دقائق.`;
+    return `Your ${brand} verification code is ${data.code}. It expires in ${minutes} minutes.`;
   }
   const extra = Object.entries(data)
     .map(([k, v]) => `${k}: ${v}`)
@@ -50,6 +53,25 @@ function smsBody(template, data = {}) {
 function loggable(data) {
   if (!env.isProduction || !data || typeof data !== 'object' || !('code' in data)) return data;
   return { ...data, code: '[REDACTED]' };
+}
+
+// A store's emails to its own shoppers (the rest are the platform's to its
+// merchants). Every one of them goes out under the store's sender name and
+// Reply-To (orderEmailSender.senderFor: the name the merchant set for order
+// emails, else the store's name), whatever the plan — a shopper never reads
+// the platform's name on a store's email. The order emails pass it
+// themselves; the others are given it here.
+const SHOPPER_TEMPLATES = new Set(['order_email', 'automation_message', 'back_in_stock', 'question_answered', 'gift_card', 'shopper_login_code']);
+
+async function storeSender({ template, data, workspaceId }) {
+  if (!workspaceId || !SHOPPER_TEMPLATES.has(template) || (data && data.fromName)) return null;
+  try {
+    return await require('./orderEmailSender').senderFor(workspaceId);
+  } catch (err) {
+    // The email still goes, under the platform's name as before.
+    logger.warn(`[notification:email] ${template}: the store's sender name could not be read: ${err.message}`);
+    return null;
+  }
 }
 
 // `orderId`: a message to a customer about an order — logged with it and its line, for the order's timeline.
@@ -100,8 +122,11 @@ async function sendEmail({ recipient, template, data, workspaceId = null, orderI
       // A store's own sender name first; on the platform's own emails only, the console's; else EMAIL_FROM_NAME.
       // A store's email to its shopper never takes the console's name, so a shopper never sees it on a store's email.
       const platformEmail = emailTemplates.PLATFORM_TEMPLATES.has(template);
-      const fromName = data && data.fromName ? String(data.fromName).slice(0, 100) : branding && platformEmail ? branding.senderName : undefined;
-      const sent = await brevoEmailProvider.sendEmail({ to: recipient, subject, html, text, fromName, replyTo: data && data.replyTo ? String(data.replyTo) : undefined });
+      const own = await storeSender({ template, data, workspaceId });
+      const fromName =
+        data && data.fromName ? String(data.fromName).slice(0, 100) : own ? own.fromName : branding && platformEmail ? branding.senderName : undefined;
+      const replyTo = data && data.replyTo ? String(data.replyTo) : own && own.replyTo ? own.replyTo : undefined;
+      const sent = await brevoEmailProvider.sendEmail({ to: recipient, subject, html, text, fromName, replyTo });
       attempts = sent.attempts || attempts;
       messageId = sent.messageId ? String(sent.messageId).trim().replace(/^<|>$/g, '') : null;
     } else {

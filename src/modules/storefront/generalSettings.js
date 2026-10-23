@@ -9,7 +9,7 @@ const { LEGAL_KEYS } = require('./storeInfo');
  * General store settings and store-level SEO (SPEC §8.8, §8.9). Four blobs in
  * the workspace settings, each sent whole through PATCH /workspaces/:id:
  *
- *   settings.general            { favicon_url, country }
+ *   settings.general            { favicon_url, country, hide_platform_branding }
  *   settings.social_links       { facebook, instagram, tiktok, whatsapp, youtube, snapchat, x }
  *   settings.floating_whatsapp  { enabled, phone, message }
  *   settings.store_seo          { title_template, description, og_image_url, google_site_verification }
@@ -32,6 +32,9 @@ const httpUrl = (max = 1000) =>
 const generalSchema = Joi.object({
   favicon_url: httpUrl(),
   country: Joi.string().trim().uppercase().length(2).allow('', null).optional(),
+  // "Hide ZIMOS branding": stored on any plan, in effect only while the store
+  // has remove_branding (storefront/platformBranding.js). Off unless true.
+  hide_platform_branding: Joi.boolean().allow(null).optional(),
 });
 
 const socialLinksSchema = Joi.object(Object.fromEntries(SOCIAL_KEYS.map((key) => [key, httpUrl(500)])));

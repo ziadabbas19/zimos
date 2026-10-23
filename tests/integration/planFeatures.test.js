@@ -55,17 +55,17 @@ async function storeOn(plan, name = 'Feature Store') {
 }
 
 const REAL_AND_FAKE = ['funnels', 'api_access', 'remove_branding', 'staff_accounts', 'multi_warehouse', 'priority_support', 'abandoned_cart'];
-const SHOWN = ['funnels', 'staff_accounts', 'abandoned_cart'];
+const SHOWN = ['funnels', 'api_access', 'remove_branding', 'staff_accounts', 'priority_support', 'abandoned_cart'];
 
 describe('the feature catalogue', () => {
-  it('marks the four features with nothing behind them unavailable, and the rest available', async () => {
+  it('marks the one feature with nothing behind it unavailable, and the rest available', async () => {
     const admin = await makePlatformUser('admin');
     const res = await request(app).get('/api/v1/admin/plans').set(admin.H);
     expect(res.status).toBe(200);
     const byKey = Object.fromEntries(res.body.featureCatalog.map((f) => [f.key, f]));
     expect(Object.keys(byKey)).toHaveLength(11);
-    for (const k of ['multi_warehouse', 'api_access', 'remove_branding', 'priority_support']) expect(byKey[k].available).toBe(false);
-    for (const k of ['custom_domain', 'funnels', 'whatsapp_confirmation', 'abandoned_cart', 'staff_accounts', 'advanced_analytics', 'visitor_insights']) {
+    expect(byKey.multi_warehouse.available).toBe(false);
+    for (const k of ['custom_domain', 'funnels', 'whatsapp_confirmation', 'abandoned_cart', 'api_access', 'staff_accounts', 'advanced_analytics', 'visitor_insights', 'remove_branding', 'priority_support']) {
       expect(byKey[k].available).toBe(true);
     }
     expect(byKey.staff_accounts.label).toEqual({ en: 'Staff accounts', ar: 'حسابات الفريق' });
@@ -112,10 +112,10 @@ describe('saving a plan in the console', () => {
 
   it('refuses a new plan with a feature that is not available (422 PLAN_FEATURE_NOT_AVAILABLE)', async () => {
     const admin = await makePlatformUser('admin');
-    const res = await request(app).post('/api/v1/admin/plans').set(admin.H).send(body(['funnels', 'api_access']));
+    const res = await request(app).post('/api/v1/admin/plans').set(admin.H).send(body(['funnels', 'multi_warehouse']));
     expect(res.status).toBe(422);
     expect(res.body.error.code).toBe('PLAN_FEATURE_NOT_AVAILABLE');
-    expect(res.body.error.details).toEqual([expect.objectContaining({ field: 'features', key: 'api_access' })]);
+    expect(res.body.error.details).toEqual([expect.objectContaining({ field: 'features', key: 'multi_warehouse' })]);
     expect(await db.Plan.count({ where: { name: 'Console Plan' } })).toBe(0);
   });
 
@@ -124,7 +124,7 @@ describe('saving a plan in the console', () => {
     const created = await request(app).post('/api/v1/admin/plans').set(admin.H).send(body(['funnels']));
     expect(created.status).toBe(201);
     const id = created.body.plan.id;
-    const added = await request(app).patch(`/api/v1/admin/plans/${id}`).set(admin.H).send(body(['funnels', 'priority_support'], { code: created.body.plan.code }));
+    const added = await request(app).patch(`/api/v1/admin/plans/${id}`).set(admin.H).send(body(['funnels', 'multi_warehouse'], { code: created.body.plan.code }));
     expect(added.status).toBe(422);
     expect(added.body.error.code).toBe('PLAN_FEATURE_NOT_AVAILABLE');
     const unknown = await request(app).patch(`/api/v1/admin/plans/${id}`).set(admin.H).send(body(['funnels', 'teleport'], { code: created.body.plan.code }));
@@ -134,20 +134,20 @@ describe('saving a plan in the console', () => {
 
   it('saves an older plan that already lists one, unchanged, and lets it be removed', async () => {
     const admin = await makePlatformUser('admin');
-    const old = await makePlan({ name: 'Old', features: ['funnels', 'remove_branding'] });
+    const old = await makePlan({ name: 'Old', features: ['funnels', 'multi_warehouse'] });
     const same = await request(app)
       .patch(`/api/v1/admin/plans/${old.id}`)
       .set(admin.H)
-      .send(body(['funnels', 'remove_branding'], { code: old.key, name: 'Old renamed' }));
+      .send(body(['funnels', 'multi_warehouse'], { code: old.key, name: 'Old renamed' }));
     expect(same.status).toBe(200);
-    expect(same.body.plan.features).toEqual(['funnels', 'remove_branding']);
+    expect(same.body.plan.features).toEqual(['funnels', 'multi_warehouse']);
     expect(same.body.plan.name).toBe('Old renamed');
 
     const removed = await request(app).patch(`/api/v1/admin/plans/${old.id}`).set(admin.H).send(body(['funnels'], { code: old.key }));
     expect(removed.status).toBe(200);
     expect(removed.body.plan.features).toEqual(['funnels']);
     // …and once removed, it can't come back.
-    const back = await request(app).patch(`/api/v1/admin/plans/${old.id}`).set(admin.H).send(body(['funnels', 'remove_branding'], { code: old.key }));
+    const back = await request(app).patch(`/api/v1/admin/plans/${old.id}`).set(admin.H).send(body(['funnels', 'multi_warehouse'], { code: old.key }));
     expect(back.status).toBe(422);
   });
 

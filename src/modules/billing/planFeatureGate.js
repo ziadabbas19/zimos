@@ -4,7 +4,7 @@ const asyncHandler = require('express-async-handler');
 const env = require('../../config/env');
 const { AppError } = require('../../core/errors/AppError');
 const entitlements = require('./entitlementsService');
-const { featureDefinition } = require('./featureCatalog');
+const { featureDefinition, isAvailableFeature } = require('./featureCatalog');
 
 /**
  * requirePlanFeature(key): a route only a store with `key` may use, while
@@ -37,4 +37,17 @@ function requirePlanFeature(key) {
   });
 }
 
-module.exports = { requirePlanFeature };
+/**
+ * What the dashboard needs to show a screen locked before the gate refuses
+ * anything (GET /workspaces/:id/plan-features, any member): the keys the
+ * store holds — plan plus overrides, catalogue keys whose feature exists —
+ * and whether the gate is on. A screen is locked for a gated route only when
+ * `enforced` is true and the key is missing; a feature that is a benefit
+ * rather than a refusal (remove_branding) follows the keys alone.
+ */
+async function planFeaturesFor(workspaceId) {
+  const features = (await entitlements.effectiveFeatures(workspaceId)).filter(isAvailableFeature);
+  return { features, enforced: env.planFeatures.enforcement };
+}
+
+module.exports = { requirePlanFeature, planFeaturesFor };

@@ -5,6 +5,7 @@ const service = require('./workspaceService');
 const access = require('./workspaceAccessService');
 const goLive = require('../billing/goLiveService');
 const billingService = require('../billing/billingService');
+const { planFeaturesFor } = require('../billing/planFeatureGate');
 const { issueStorePreviewToken } = require('../../core/security/storePreview');
 
 const create = asyncHandler(async (req, res) => {
@@ -96,6 +97,12 @@ const getAccess = asyncHandler(async (req, res) => {
   res.json({ access: body });
 });
 
+// GET /workspaces/:workspaceId/plan-features — the keys the store holds and
+// whether PLAN_FEATURE_ENFORCEMENT is on.
+const getPlanFeatures = asyncHandler(async (req, res) => {
+  res.json({ planFeatures: await planFeaturesFor(req.tenant.workspaceId) });
+});
+
 // POST /workspaces/:workspaceId/start-trial — a draft's free trial, from now.
 // 201 when it started, 200 when this store's trial had already started.
 const startTrial = asyncHandler(async (req, res) => {
@@ -127,6 +134,7 @@ const storePreviewToken = asyncHandler(async (req, res) => {
 module.exports = {
   create,
   getAccess,
+  getPlanFeatures,
   startTrial,
   activateFreePlan,
   storePreviewToken,

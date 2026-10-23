@@ -28,6 +28,10 @@ const { recordAudit } = require('../audit/auditService');
 
 const STATUSES = ['open', 'pending', 'resolved', 'closed'];
 const PRIORITIES = ['low', 'normal', 'high', 'urgent'];
+// The queue's order: the most pressing priority first (listAllTickets).
+const PRIORITY_RANK_SQL = db.sequelize.literal(
+  `CASE "SupportTicket"."priority" WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'normal' THEN 2 ELSE 3 END`
+);
 const CATEGORIES = ['general', 'billing', 'orders', 'shipping', 'payments', 'technical', 'account'];
 
 const MERCHANT_LIST_CAP = 100;
@@ -138,9 +142,23 @@ async function listWorkspaceTickets(workspaceId) {
   return tickets.map((t) => serializeTicket(t, { messageCount: counts.get(t.id) || 0 }));
 }
 
+/**
+ * A store with priority_support (its plan, or a console grant) opens its
+ * tickets at high priority; everyone else at normal. Only the queue's order
+ * and badge change: the merchant is promised nothing and shown nothing new.
+ * A failed lookup opens the ticket at normal priority rather than not at all.
+ */
+async function openingPriority(workspaceId, transaction) {
+  const prioritised = await require('../billing/entitlementsService')
+    .hasFeature(workspaceId, 'priority_support', { transaction })
+    .catch(() => false);
+  return prioritised ? 'high' : 'normal';
+}
+
 async function openTicket(workspaceId, { subject, body, category }, req) {
   return db.sequelize.transaction(async (transaction) => {
     const now = new Date();
+    const priority = await openingPriority(workspaceId, transaction);
     const ticket = await db.SupportTicket.create(
       {
         workspaceId,
@@ -148,7 +166,7 @@ async function openTicket(workspaceId, { subject, body, category }, req) {
         subject,
         category: category || 'general',
         status: 'open',
-        priority: 'normal',
+        priority,
         lastMessageAt: now,
         lastMessageBy: 'merchant',
       },
@@ -164,7 +182,7 @@ async function openTicket(workspaceId, { subject, body, category }, req) {
       action: 'support_ticket.create',
       entityType: 'SupportTicket',
       entityId: ticket.id,
-      after: { subject, category: ticket.category, status: 'open', bodyLength: body.length },
+      after: { subject, category: ticket.category, status: 'open', priority, bodyLength: body.length },
       req,
       transaction,
     });
@@ -226,9 +244,13 @@ async function listAllTickets({ status, priority, workspaceId, q, limit = ADMIN_
   const { rows, count } = await db.SupportTicket.findAndCountAll({
     where,
     include: ADMIN_TICKET_INCLUDES,
-    // The queue reads oldest-waiting first within a status tab; across all
-    // tabs the most recently active first is the more useful default.
-    order: status === 'open' ? [['lastMessageAt', 'ASC'], ['id', 'ASC']] : [['lastMessageAt', 'DESC'], ['id', 'DESC']],
+    // Urgent and high tickets first, whatever the filter; then the queue
+    // reads oldest-waiting first within a status tab, and across all tabs
+    // the most recently active first is the more useful default.
+    order: [
+      [PRIORITY_RANK_SQL, 'ASC'],
+      ...(status === 'open' ? [['lastMessageAt', 'ASC'], ['id', 'ASC']] : [['lastMessageAt', 'DESC'], ['id', 'DESC']]),
+    ],
     limit: cappedLimit,
     offset,
     distinct: true,

@@ -225,6 +225,8 @@ async function storeHomeLocals(workspaceId, ref = workspaceId) {
   return {
     title: workspace.name,
     workspace: { name: workspace.name, logoUrl: workspace.logoUrl, tagline: workspace.tagline },
+    // The "Powered by Zimos" line, unless the store hides the branding (storefront/platformBranding.js).
+    removeBranding: await require('../storefront/platformBranding').isHidden(workspace),
     products: products.map((p) => ({
       id: p.id,
       name: p.name,

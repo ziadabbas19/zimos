@@ -150,10 +150,13 @@ async function sendCode(workspace, rawPhone, { strict = false, req = null } = {}
   }
   const code = String(crypto.randomInt(0, 10 ** settings.codeLength)).padStart(settings.codeLength, '0');
   await db.OtpCode.create({ ...row, codeHash: hashCode(code) });
+  // The SMS names the store, not the platform (notify.smsBody); a row loaded without the name reads it.
+  const storeName =
+    workspace.name !== undefined ? workspace.name : ((await db.Workspace.findByPk(workspace.id, { attributes: ['name'] })) || {}).name;
   const message = {
     recipient: phone,
     template: 'otp_checkout',
-    data: { code, purpose: PURPOSE, minutes: 5, locale: String(workspace.defaultLocale || '').startsWith('ar') ? 'ar' : 'en' },
+    data: { code, purpose: PURPOSE, minutes: 5, locale: String(workspace.defaultLocale || '').startsWith('ar') ? 'ar' : 'en', storeName: storeName || '' },
     workspaceId: workspace.id,
   };
   // WhatsApp goes through the authentication template; SMS is the fallback when it cannot be sent.
