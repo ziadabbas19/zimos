@@ -56,6 +56,13 @@ pays Fawaterak's fees) the dashboard shows a warning.
    different amount or currency is recorded and flagged
    `payment_amount_mismatch`, like any gateway. A `pay_load` naming another
    attempt, or a total that cannot be read, is never recorded as paid.
+5. A payment on an attempt that is no longer open (the order expired, or the
+   shopper retried or switched to cash on delivery) is found even when its
+   webhook was refused or met Fawaterak unreachable: the sweep asks about
+   such attempts for a day after they started, every two hours, and the
+   merchant's "Sync payment status" asks at once
+   (`paymentSweepService.inquireLateAttempts`). The order is then reopened,
+   or flagged for a refund, as for any late payment.
 
 ## Refunds
 

@@ -21,13 +21,14 @@ const RETURN_URL = 'http://localhost:3001/store/x/pay/{orderId}';
 const original = { ...env.payments };
 const originalFawaterak = { ...env.payments.fawaterak };
 let fw;
+let paymob;
 
 beforeEach(() => {
   env.payments.onlineEnabled = true;
   env.payments.credentialsKey = fakePaymob.newKey();
   Object.assign(env.payments.fawaterak, { enabled: true, betaWorkspaces: [] });
   fawaterak.clearTokenCache();
-  fakePaymob.install();
+  paymob = fakePaymob.install();
   fw = fake.install();
 });
 
@@ -531,6 +532,109 @@ describe('Fawaterak return page and expiry', () => {
     fw.dataAnswer = null;
     result = await sweepService.sweep();
     expect(result.last.expired.outcomes.expired).toBe(1);
+  });
+});
+
+describe('Fawaterak late payments whose webhook never counted', () => {
+  const dataCalls = () => fw.callsTo('/api/v3/getTransactionData').length;
+  const askedHoursAgo = (orderId, hours) =>
+    db.Payment.update({ lastInquiredAt: new Date(Date.now() - hours * 60 * 60 * 1000) }, { where: { orderId }, silent: true });
+
+  it('the sweep finds a payment made on an expired attempt, and reopens the order', async () => {
+    const ctx = await store({ stock: 3 });
+    const placed = await placeOnline(ctx);
+    await overdue(placed);
+    await sweepService.sweep();
+    expect((await attemptOf(placed.order.id)).status).toBe('expired');
+
+    // Paid on the card page after that; no webhook ever arrives.
+    fw.pay(placed.intentKey);
+    await askedHoursAgo(placed.order.id, 3);
+    const result = await sweepService.sweep();
+    expect(result.last.late).toEqual({ attempts: 1, unknown: 0 });
+    const o = await order(placed.order.id);
+    expect(o.cancelledAt).toBeNull();
+    expect(o.financialState).toBe('paid');
+  });
+
+  it('Sync finds it at once, after a webhook refused for a wrong key', async () => {
+    const ctx = await store({ stock: 1 });
+    const placed = await placeOnline(ctx);
+    await overdue(placed);
+    await request(app).get(`/api/v1/store/${ctx.wid}/orders/${placed.order.id}/payment`).set('X-Payment-Token', placed.token);
+    expect((await buyNow(ctx, { paymentMethod: 'cod' })).status).toBe(201);
+
+    fw.pay(placed.intentKey);
+    // The merchant pasted another account's API key: every webhook is refused.
+    expect((await hook(ctx, fw.paidWebhook(placed.intentKey, { key: 'a-wrong-vendor-key-0000' }))).status).toBe(401);
+    expect((await order(placed.order.id)).financialState).toBe('pending');
+
+    const sync = await request(app).post(`/api/v1/workspaces/${ctx.wid}/orders/${placed.order.id}/payments/sync`).set(bearer(ctx.token));
+    expect(sync.status).toBe(200);
+    expect(sync.body.timeline.unreachable).toBe(false);
+    const o = await order(placed.order.id);
+    expect(o.financialState).toBe('paid');
+    expect(o.riskFlags).toContain('paid_after_expiry');
+  });
+
+  it('a replaced attempt is asked too: the shopper paid the first card page after retrying', async () => {
+    const ctx = await store({ stock: 3 });
+    const first = await placeOnline(ctx);
+    const retry = await request(app)
+      .post(`/api/v1/store/${ctx.wid}/orders/${first.order.id}/payment/retry`)
+      .set('X-Payment-Token', first.token)
+      .send({});
+    expect(retry.status).toBe(200);
+    expect((await db.Payment.findOne({ where: { providerOrderId: first.intentKey } })).status).toBe('cancelled');
+
+    fw.pay(first.intentKey);
+    await db.Payment.update({ lastInquiredAt: null }, { where: { providerOrderId: first.intentKey }, silent: true });
+    const result = await sweepService.sweep();
+    expect(result.last.late.attempts).toBe(1);
+    expect((await order(first.order.id)).financialState).toBe('paid');
+  });
+
+  it('asks every two hours for a day, then stops', async () => {
+    const ctx = await store();
+    const placed = await placeOnline(ctx);
+    await overdue(placed);
+    await sweepService.sweep();
+    let before = dataCalls();
+
+    await sweepService.sweep(); // asked just now, at expiry
+    expect(dataCalls()).toBe(before);
+
+    await askedHoursAgo(placed.order.id, 3);
+    await sweepService.sweep();
+    expect(dataCalls()).toBe(before + 1);
+
+    before = dataCalls();
+    await askedHoursAgo(placed.order.id, 3);
+    await db.Payment.update({ createdAt: new Date(Date.now() - 25 * 60 * 60 * 1000) }, { where: { orderId: placed.order.id }, silent: true });
+    await sweepService.sweep();
+    expect(dataCalls()).toBe(before);
+  });
+
+  it('never asks Paymob about its expired attempts: its webhook carries the outcome', async () => {
+    const setup = await setupWorkspaceWithProduct();
+    const res = await request(app)
+      .put(`${gatewaysUrl(setup.workspace.id)}/paymob`)
+      .set(bearer(setup.auth.accessToken))
+      .send({ credentials: fakePaymob.credentials('live'), settings: { cardIntegrationId: 111 } });
+    expect(res.status).toBe(200);
+    const ctx = { wid: setup.workspace.id, variant: setup.variant };
+    const placed = await buyNow(ctx);
+    expect(placed.status).toBe(201);
+    await overdue({ order: placed.body.order });
+    await sweepService.sweep();
+    expect((await attemptOf(placed.body.order.id)).status).toBe('expired');
+
+    await askedHoursAgo(placed.body.order.id, 3);
+    const inquiries = () => paymob.calls.filter((c) => c.url.endsWith('/transaction_inquiry')).length;
+    const before = inquiries();
+    const result = await sweepService.sweep();
+    expect(result.last.late.attempts).toBe(0);
+    expect(inquiries()).toBe(before);
   });
 });
 
