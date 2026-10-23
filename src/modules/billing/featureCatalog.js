@@ -31,14 +31,17 @@ const FEATURE_CATALOG = Object.freeze(
     { key: 'abandoned_cart', available: true, label: { en: 'Abandoned cart recovery', ar: 'استرجاع السلات المتروكة' } },
     // Stock is one number per variant; there are no warehouses.
     { key: 'multi_warehouse', available: false, label: { en: 'Multiple warehouses', ar: 'مستودعات متعددة' } },
-    // The api_keys table exists, but no route accepts a key.
-    { key: 'api_access', available: false, label: { en: 'API access', ar: 'الوصول عبر API' } },
+    // The public API (modules/publicApi) and its keys (modules/apiKeys).
+    // Minting a new key needs it while the gate is on; a key already minted
+    // keeps working on any plan (apiKeys/apiKeyRoutes).
+    { key: 'api_access', available: true, label: { en: 'API access', ar: 'الوصول عبر API' } },
     { key: 'staff_accounts', available: true, label: { en: 'Staff accounts', ar: 'حسابات الفريق' } },
     { key: 'advanced_analytics', available: true, label: { en: 'Advanced analytics', ar: 'تحليلات متقدمة' } },
-    // Every store shows "Powered by ZIMOS"; nothing hides it.
-    { key: 'remove_branding', available: false, label: { en: 'Remove platform branding', ar: 'إزالة شعار المنصة' } },
-    // Every ticket opens at normal priority, whatever the plan.
-    { key: 'priority_support', available: false, label: { en: 'Priority support', ar: 'دعم ذو أولوية' } },
+    // The store's "Hide ZIMOS branding" setting takes effect only while the
+    // store has this (storefront/platformBranding.js).
+    { key: 'remove_branding', available: true, label: { en: 'Remove platform branding', ar: 'إزالة شعار المنصة' } },
+    // A ticket the store opens starts at high priority (support/supportService).
+    { key: 'priority_support', available: true, label: { en: 'Priority support', ar: 'دعم ذو أولوية' } },
   ].map((f) => Object.freeze({ ...f, type: 'boolean', label: Object.freeze(f.label) }))
 );
 

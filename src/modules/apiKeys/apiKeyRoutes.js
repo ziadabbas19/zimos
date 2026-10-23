@@ -6,6 +6,7 @@ const { authenticate } = require('../../core/middleware/authenticate');
 const { resolveTenant } = require('../../core/middleware/tenantContext');
 const { requirePermission } = require('../../core/middleware/rbac');
 const { PERMISSIONS } = require('../../core/security/permissions');
+const { requirePlanFeature } = require('../billing/planFeatureGate');
 const controller = require('./apiKeyController');
 const schemas = require('./apiKeyValidation');
 
@@ -16,7 +17,11 @@ const router = Router({ mergeParams: true });
 router.use(authenticate, resolveTenant, requirePermission(PERMISSIONS.API_KEYS_MANAGE));
 
 router.get('/', validate(schemas.list), controller.list);
-router.post('/', validate(schemas.create), controller.create);
+// Minting a key needs api_access while PLAN_FEATURE_ENFORCEMENT is on
+// (billing/planFeatureGate). Only minting: listing and revoking stay open,
+// and a key already minted keeps working on any plan — the public API
+// (apiKeyAuth) never asks about the plan.
+router.post('/', validate(schemas.create), requirePlanFeature('api_access'), controller.create);
 router.delete('/:keyId', validate(schemas.revoke), controller.revoke);
 
 module.exports = router;

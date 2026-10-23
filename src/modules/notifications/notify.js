@@ -52,6 +52,27 @@ function loggable(data) {
   return { ...data, code: '[REDACTED]' };
 }
 
+// A store's emails to its own shoppers (the rest are the platform's to its
+// merchants). Their sender name is EMAIL_FROM_NAME unless the data carries
+// one: the order emails pass the store's (orderEmailSender.senderFor), the
+// others don't. While the store hides the platform branding
+// (storefront/platformBranding.js) every one of them takes the store's
+// sender name and Reply-To, so the shopper never reads the platform's name.
+const SHOPPER_TEMPLATES = new Set(['order_email', 'automation_message', 'back_in_stock', 'question_answered', 'gift_card', 'shopper_login_code']);
+
+async function storeSender({ template, data, workspaceId }) {
+  if (!workspaceId || !SHOPPER_TEMPLATES.has(template) || (data && data.fromName)) return null;
+  try {
+    const workspace = await db.Workspace.findByPk(workspaceId, { attributes: ['id', 'settings'] });
+    if (!(await require('../storefront/platformBranding').isHidden(workspace))) return null;
+    return await require('./orderEmailSender').senderFor(workspaceId);
+  } catch (err) {
+    // The email still goes, under the platform's name as before.
+    logger.warn(`[notification:email] ${template}: the store's sender name could not be read: ${err.message}`);
+    return null;
+  }
+}
+
 // `orderId`: a message to a customer about an order — logged with it and its line, for the order's timeline.
 // `providerMessageId`: the provider's id for the message, so its status webhook finds the row (deliveryStatus/).
 async function persist({ workspaceId, channel, provider, recipient, template, status, error, attempts, orderId = null, subject = null, providerMessageId = null, deliveryStatus: delivery = null, statusReason = null }) {
@@ -100,8 +121,11 @@ async function sendEmail({ recipient, template, data, workspaceId = null, orderI
       // A store's own sender name first; on the platform's own emails only, the console's; else EMAIL_FROM_NAME.
       // A store's email to its shopper never takes the console's name, so a shopper never sees it on a store's email.
       const platformEmail = emailTemplates.PLATFORM_TEMPLATES.has(template);
-      const fromName = data && data.fromName ? String(data.fromName).slice(0, 100) : branding && platformEmail ? branding.senderName : undefined;
-      const sent = await brevoEmailProvider.sendEmail({ to: recipient, subject, html, text, fromName, replyTo: data && data.replyTo ? String(data.replyTo) : undefined });
+      const own = await storeSender({ template, data, workspaceId });
+      const fromName =
+        data && data.fromName ? String(data.fromName).slice(0, 100) : own ? own.fromName : branding && platformEmail ? branding.senderName : undefined;
+      const replyTo = data && data.replyTo ? String(data.replyTo) : own && own.replyTo ? own.replyTo : undefined;
+      const sent = await brevoEmailProvider.sendEmail({ to: recipient, subject, html, text, fromName, replyTo });
       attempts = sent.attempts || attempts;
       messageId = sent.messageId ? String(sent.messageId).trim().replace(/^<|>$/g, '') : null;
     } else {

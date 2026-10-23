@@ -140,11 +140,9 @@ async function getStorefront(workspaceId) {
     headerCollections: await headerCollections(w.id),
     // general, social, floatingWhatsapp, seo (storefront/generalSettings.js).
     ...publicGeneralSettings(w.settings),
-    // "Powered by ZIMOS" stays unless the store's plan removes it
-    // (Plan.features.remove_branding). A failed lookup keeps the branding.
-    removeBranding: await require('../billing/entitlementsService')
-      .hasFeature(w.id, 'remove_branding')
-      .catch(() => false),
+    // "Powered by ZIMOS" and the fallback logo stay unless the merchant hid
+    // them AND the store has remove_branding (storefront/platformBranding.js).
+    removeBranding: await require('./platformBranding').isHidden(w),
     // The product listing's sidebar, filters and default sort.
     catalog: resolveCatalogSettings(w.settings),
     // The "add to your order" card the store's checkout offers, or null

@@ -28,6 +28,10 @@ In the dashboard: **Settings → Developers → API keys → New key**. Pick the
 scopes, copy the key — it is shown **once** and never again (only its SHA-256
 is stored). Lost it? Revoke it and create another.
 
+Creating a key needs the **API access** feature on the store's plan; the
+dashboard says so and points to the plans when it is missing. A key that
+already exists keeps working whatever the plan.
+
 | Scope          | Lets the key                                                                  |
 | -------------- | ----------------------------------------------------------------------------- |
 | `orders:read`  | list and read orders and their shipments                                      |

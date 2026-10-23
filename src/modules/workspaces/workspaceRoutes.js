@@ -35,6 +35,11 @@ router.patch(
 // who can hit the creation lock should be told why.
 router.get('/:workspaceId/access', validate(schemas.listMembers), resolveTenant, controller.getAccess);
 
+// The store's plan features and whether the gate is on, so a screen can show
+// itself locked before a write is refused (billing/planFeatureGate). Any
+// member: the plan's features are on the pricing page anyway.
+router.get('/:workspaceId/plan-features', validate(schemas.listMembers), resolveTenant, controller.getPlanFeatures);
+
 // Taking a draft store live (billing/goLiveService): its plan's free trial, or
 // a plan that costs nothing. Whoever manages the store's billing.
 router.post(
