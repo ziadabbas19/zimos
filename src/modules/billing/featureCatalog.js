@@ -35,6 +35,10 @@ const FEATURE_CATALOG = Object.freeze(
     { key: 'api_access', available: false, label: { en: 'API access', ar: 'الوصول عبر API' } },
     { key: 'staff_accounts', available: true, label: { en: 'Staff accounts', ar: 'حسابات الفريق' } },
     { key: 'advanced_analytics', available: true, label: { en: 'Advanced analytics', ar: 'تحليلات متقدمة' } },
+    // On top of advanced_analytics: the Visitors section's visits and each
+    // visit in order, outcomes per governorate, and campaigns with spend and
+    // cost per order (analytics/traffic/visitorRoutes.js).
+    { key: 'visitor_insights', available: true, label: { en: 'Visitor insights', ar: 'تحليلات الزوار المفصّلة' } },
     // Every store shows "Powered by ZIMOS"; nothing hides it.
     { key: 'remove_branding', available: false, label: { en: 'Remove platform branding', ar: 'إزالة شعار المنصة' } },
     // Every ticket opens at normal priority, whatever the plan.
