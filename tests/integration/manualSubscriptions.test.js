@@ -196,15 +196,15 @@ describe('feature overrides', () => {
     const admin = await makePlatformUser('admin');
 
     expect(byKey(await featuresOf(admin, wid), 'funnels')).toMatchObject({ enabled: true, source: 'plan' });
-    expect((await add(admin, wid, { featureKey: 'api_access', mode: 'grant', reason: 'Integration pilot' })).status).toBe(201);
+    expect((await add(admin, wid, { featureKey: 'multi_warehouse', mode: 'grant', reason: 'Warehouse pilot' })).status).toBe(201);
     expect((await add(admin, wid, { featureKey: 'funnels', mode: 'deny', reason: 'Abuse report' })).status).toBe(201);
 
     const res = await featuresOf(admin, wid);
-    expect(byKey(res, 'api_access')).toMatchObject({ enabled: true, source: 'override', inPlan: false });
+    expect(byKey(res, 'multi_warehouse')).toMatchObject({ enabled: true, source: 'override', inPlan: false });
     expect(byKey(res, 'funnels')).toMatchObject({ enabled: false, source: 'override', inPlan: true });
     const billing = await request(app).get(`/api/v1/workspaces/${wid}/billing`).set(H);
     // The merchant sees only features that exist today (billing/featureCatalog):
-    // the api_access grant applies (the console row above) but isn't listed to them.
+    // the multi_warehouse grant applies (the console row above) but isn't listed to them.
     expect(billing.body.billing.features.sort()).toEqual(['custom_domain']);
   });
 
