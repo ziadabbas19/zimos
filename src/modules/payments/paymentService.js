@@ -191,6 +191,17 @@ async function processRefund(workspaceId, orderId, { amount, reason, paymentId }
     }
 
     const payment = await pickPaymentToRefund(gatewayPayments, { amount, paymentId }, transaction);
+    // Refunded in the gateway's own dashboard (Fawaterak): refused before any
+    // row is written, so nothing here claims a refund that was never sent.
+    const adapter = gateways.getAdapter(payment.providerCode);
+    if (adapter.refundsInGatewayDashboard) {
+      throw new AppError(
+        'REFUND_IN_GATEWAY_DASHBOARD',
+        `${adapter.name} payments are refunded in your ${adapter.name} dashboard. Nothing was refunded here.`,
+        422,
+        [{ field: 'paymentId', message: `Refund this payment in your ${adapter.name} dashboard` }]
+      );
+    }
 
     const refund = await db.Refund.create(
       {

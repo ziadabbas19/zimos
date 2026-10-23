@@ -157,7 +157,12 @@ async function timeline(workspaceId, orderId) {
   }
   const perPayment = attempts
     .filter((p) => ['captured', 'partially_refunded'].includes(p.status) && gateways.isGateway(p.providerCode))
-    .map((p) => ({ paymentId: p.id, refundable: Math.max(0, Number(p.amount) - (used.get(p.id) || 0)) }));
+    .map((p) => ({
+      paymentId: p.id,
+      refundable: Math.max(0, Number(p.amount) - (used.get(p.id) || 0)),
+      // Refunded in the gateway's own dashboard, never from here (Fawaterak).
+      refundInGatewayDashboard: Boolean(gateways.getAdapter(p.providerCode).refundsInGatewayDashboard),
+    }));
   const pending = refundRows.filter((r) => r.status === 'pending').reduce((s, r) => s + Number(r.amount), 0);
   const gatewayPaid = perPayment.length > 0;
 
