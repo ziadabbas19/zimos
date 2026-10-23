@@ -70,8 +70,9 @@ async function screenshot() {
 
 /** Opens the charge, sends its transfer proof, and has the console approve it. */
 async function payByTransfer(store, admin) {
+  // res.json (200): the pending charge, or the quote of the next one under the id `next`.
   const opened = await request(app).post(`/api/v1/workspaces/${store.wid}/billing/invoices/open`).set(store.H).send({});
-  expect(opened.status).toBe(201);
+  expect(opened.status).toBe(200);
   const invoice = opened.body.invoice;
   const sent = await request(app)
     .post(`/api/v1/workspaces/${store.wid}/billing/invoices/${invoice.id}/payment-proofs`)
