@@ -7,7 +7,11 @@ const env = require('../../config/env');
 const { AppError, ValidationError } = require('../../core/errors/AppError');
 const { createIpMinuteLimiter } = require('../../core/middleware/rateLimiters');
 const { notFoundHandler } = require('../../core/middleware/errorHandler');
-const { isBot } = require('../analytics/clientDetect');
+const { isBot, getLocation } = require('../analytics/clientDetect');
+const { classify } = require('../analytics/traffic/botClassifier');
+const trafficCounters = require('../analytics/traffic/trafficCounters');
+const { hashIp } = require('../analytics/traffic/ipHash');
+const { clientIp } = require('../../core/middleware/clientIp');
 const siteTraffic = require('./siteTrafficService');
 
 /**
@@ -19,6 +23,13 @@ const siteTraffic = require('./siteTrafficService');
  * The client sends text/plain so the browser makes no preflight; CORS headers
  * go only to SITE_ANALYTICS_ORIGINS (core/middleware/cors.js), and a request
  * from any other origin, or with none, is refused here as well.
+ *
+ * With SITE_TRAFFIC_DETAILS_ENABLED (env.siteAnalytics.detailsEnabled) the
+ * store events guard's pieces are used here too (analytics/traffic): bots are
+ * classified by family and counted, and every refused request (rate limit,
+ * size, origin, body) is counted per day — scope "site" in
+ * traffic_filter_days, never stored as a visit. A cta_click may say which link
+ * it was (cta: register | login). Off, all of this is skipped exactly.
  */
 
 const MAX_BODY_BYTES = 2 * 1024;
@@ -39,6 +50,8 @@ const eventSchema = Joi.object({
   utmMedium: short.optional(),
   utmCampaign: short.optional(),
 }).unknown(false);
+// The same, with the details on: a cta_click may say which dashboard link it was.
+const detailedSchema = eventSchema.keys({ cta: Joi.string().valid('register', 'login').optional() });
 
 const jsonParser = express.json({ limit: MAX_BODY_BYTES, type: ['application/json', 'text/plain'] });
 
@@ -66,13 +79,27 @@ function allowedOrigin(req, res, next) {
   return next();
 }
 
-// Known crawlers are answered as if stored, and nothing is kept.
+const countryOf = (req) => getLocation((name) => req.get(name), env.analytics.geoHeaders).country || '';
+
+// Known crawlers are answered as if stored, and nothing is kept. With the
+// details on they are classified (good crawler or not) and counted.
 function ignoreBots(req, res, next) {
-  return isBot(req.get('user-agent')) ? res.status(204).end() : next();
+  if (!env.siteAnalytics.detailsEnabled) return isBot(req.get('user-agent')) ? res.status(204).end() : next();
+  const bot = classify(req.get('user-agent'));
+  if (!bot.bot) return next();
+  trafficCounters.recordFiltered({
+    scope: 'site',
+    kind: 'bot',
+    reason: bot.good ? 'good_bot' : 'bad_bot',
+    label: `${bot.kind}:${bot.label}`,
+    country: countryOf(req),
+  });
+  return res.status(204).end();
 }
 
 function strictBody(req, res, next) {
-  const { error, value } = eventSchema.validate(req.body, { abortEarly: false, stripUnknown: false });
+  const schema = env.siteAnalytics.detailsEnabled ? detailedSchema : eventSchema;
+  const { error, value } = schema.validate(req.body, { abortEarly: false, stripUnknown: false });
   if (error) {
     return next(new ValidationError(error.details.map((d) => ({ field: d.path.join('.'), message: d.message })), 'Invalid body'));
   }
@@ -81,6 +108,43 @@ function strictBody(req, res, next) {
 }
 
 const defaultLimiter = createIpMinuteLimiter('site-events', PER_IP_PER_MINUTE, { skip: () => env.isTest });
+
+const REFUSED = {
+  RATE_LIMITED: 'rate_ip',
+  PAYLOAD_TOO_LARGE: 'too_large',
+  INVALID_BODY: 'invalid_json',
+  ORIGIN_NOT_ALLOWED: 'origin_mismatch',
+  VALIDATION_ERROR: 'invalid_body',
+};
+
+// With the details on, a refused request is counted (per day, by reason, the
+// origin's host or the hashed IP as its label) before the usual error answer.
+function countRefused(err, req, res, next) {
+  const reason = env.siteAnalytics.detailsEnabled && err && REFUSED[err.code];
+  if (!reason) return next(err);
+  const record = (label = '') => trafficCounters.recordFiltered({ scope: 'site', kind: 'rejected', reason, label, country: countryOf(req) });
+  if (reason === 'origin_mismatch') {
+    let host = '';
+    try {
+      host = new URL(String(req.get('origin') || '')).hostname;
+    } catch {
+      host = '';
+    }
+    record(host);
+    return next(err);
+  }
+  if (reason === 'rate_ip') {
+    return hashIp(clientIp(req)).then(
+      (label) => {
+        record(label || '');
+        next(err);
+      },
+      () => next(err)
+    );
+  }
+  record();
+  return next(err);
+}
 
 function createSiteEventsRouter({ limiter = defaultLimiter } = {}) {
   const router = express.Router();
@@ -97,6 +161,7 @@ function createSiteEventsRouter({ limiter = defaultLimiter } = {}) {
       res.status(204).end();
     })
   );
+  router.use(countRefused);
   return router;
 }
 

@@ -812,6 +812,13 @@ const env = {
   siteAnalytics: {
     enabled: process.env.NODE_ENV !== 'test' && process.env.SITE_ANALYTICS_ENABLED === 'true',
     origins: csvList(process.env.SITE_ANALYTICS_ORIGINS, ''),
+    // SITE_TRAFFIC_DETAILS_ENABLED (exactly "true"): each visit also keeps its
+    // browser, its governorate (Cloudflare's region header, through
+    // ANALYTICS_GEO_HEADERS) and which dashboard link a click was; bots and
+    // refused requests are counted per day (analytics/traffic); and the
+    // console's detailed Site visits endpoints answer. Off: today's behaviour
+    // exactly, and those endpoints answer 404. Starts off under NODE_ENV=test.
+    detailsEnabled: process.env.NODE_ENV !== 'test' && process.env.SITE_TRAFFIC_DETAILS_ENABLED === 'true',
   },
 
   // The storefront events guard (analytics/traffic). Off unless exactly
