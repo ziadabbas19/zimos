@@ -20,14 +20,17 @@ const consoleMessageId = () => `console-${require('crypto').randomUUID()}`;
 
 // Minimal SMS bodies. OTP flows pass { code } (and, for the sign-up code,
 // { minutes, locale }); anything else falls back to a terse template-name +
-// data dump so nothing sends blank.
+// data dump so nothing sends blank. A code sent on a store's behalf to its
+// shopper (the checkout code) carries { storeName }, and the text names the
+// store instead of the platform; the platform's own codes name the platform.
 function smsBody(template, data = {}) {
   // A ready text (automations' SMS step): sent as written.
   if (typeof data.body === 'string' && data.body.trim()) return data.body;
   if (data.code) {
     const minutes = Number(data.minutes) || 5;
-    if (data.locale === 'ar') return `رمز التحقق في Zimos: ${data.code}. صالح لمدة ${minutes} دقائق.`;
-    return `Your Zimos verification code is ${data.code}. It expires in ${minutes} minutes.`;
+    const brand = typeof data.storeName === 'string' && data.storeName.trim() ? data.storeName.trim().slice(0, 60) : 'Zimos';
+    if (data.locale === 'ar') return `رمز التحقق في ${brand}: ${data.code}. صالح لمدة ${minutes} دقائق.`;
+    return `Your ${brand} verification code is ${data.code}. It expires in ${minutes} minutes.`;
   }
   const extra = Object.entries(data)
     .map(([k, v]) => `${k}: ${v}`)
@@ -53,18 +56,16 @@ function loggable(data) {
 }
 
 // A store's emails to its own shoppers (the rest are the platform's to its
-// merchants). Their sender name is EMAIL_FROM_NAME unless the data carries
-// one: the order emails pass the store's (orderEmailSender.senderFor), the
-// others don't. While the store hides the platform branding
-// (storefront/platformBranding.js) every one of them takes the store's
-// sender name and Reply-To, so the shopper never reads the platform's name.
+// merchants). Every one of them goes out under the store's sender name and
+// Reply-To (orderEmailSender.senderFor: the name the merchant set for order
+// emails, else the store's name), whatever the plan — a shopper never reads
+// the platform's name on a store's email. The order emails pass it
+// themselves; the others are given it here.
 const SHOPPER_TEMPLATES = new Set(['order_email', 'automation_message', 'back_in_stock', 'question_answered', 'gift_card', 'shopper_login_code']);
 
 async function storeSender({ template, data, workspaceId }) {
   if (!workspaceId || !SHOPPER_TEMPLATES.has(template) || (data && data.fromName)) return null;
   try {
-    const workspace = await db.Workspace.findByPk(workspaceId, { attributes: ['id', 'settings'] });
-    if (!(await require('../storefront/platformBranding').isHidden(workspace))) return null;
     return await require('./orderEmailSender').senderFor(workspaceId);
   } catch (err) {
     // The email still goes, under the platform's name as before.

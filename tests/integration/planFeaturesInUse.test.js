@@ -11,9 +11,13 @@
 jest.mock('../../src/modules/notifications/brevoEmailProvider', () => ({
   sendEmail: jest.fn().mockResolvedValue({ messageId: 'brevo-mock-1' }),
 }));
+jest.mock('../../src/modules/notifications/twilioSmsProvider', () => ({
+  sendSms: jest.fn().mockResolvedValue({ sid: 'SM_mock' }),
+}));
 
 const crypto = require('crypto');
 const brevo = require('../../src/modules/notifications/brevoEmailProvider');
+const twilioSms = require('../../src/modules/notifications/twilioSmsProvider');
 const { app, request, registerAndActivate, createWorkspace, makePlatformUser } = require('../helpers/factories');
 const db = require('../../src/db/models');
 const env = require('../../src/config/env');
@@ -230,57 +234,77 @@ describe('remove_branding', () => {
     expect((await store(ctx)).body.store.removeBranding).toBe(false);
   });
 
-  describe("the sender name on a store's emails to its shoppers", () => {
-    const ORIGINAL_PROVIDER = env.notifications.emailProvider;
-    beforeEach(() => {
-      brevo.sendEmail.mockClear();
-      env.notifications.emailProvider = 'brevo';
-      env.notifications.brevo.apiKey = 'test-key';
-      env.notifications.brevo.fromAddress = 'store@example.com';
-      env.notifications.brevo.fromName = 'Zimos';
+});
+
+describe("a store's messages to its shoppers name the store, not the platform — on every plan", () => {
+  const ORIGINAL_EMAIL = env.notifications.emailProvider;
+  const ORIGINAL_SMS = env.notifications.smsProvider;
+  beforeEach(() => {
+    brevo.sendEmail.mockClear();
+    twilioSms.sendSms.mockClear();
+    env.notifications.emailProvider = 'brevo';
+    env.notifications.brevo.apiKey = 'test-key';
+    env.notifications.brevo.fromAddress = 'store@example.com';
+    env.notifications.brevo.fromName = 'Zimos';
+    env.notifications.smsProvider = 'twilio';
+  });
+  afterAll(() => {
+    env.notifications.emailProvider = ORIGINAL_EMAIL;
+    env.notifications.smsProvider = ORIGINAL_SMS;
+  });
+
+  const backInStock = (ctx) =>
+    notify.email({
+      recipient: 'shopper@example.com',
+      template: 'back_in_stock',
+      data: { productName: 'Thing', url: 'https://shop.example.com/products/thing', storeName: 'Nile Store', locale: 'en' },
+      workspaceId: ctx.wid,
     });
-    afterAll(() => {
-      env.notifications.emailProvider = ORIGINAL_PROVIDER;
-    });
+  const lastEmail = () => brevo.sendEmail.mock.calls[brevo.sendEmail.mock.calls.length - 1][0];
+  const lastSms = () => twilioSms.sendSms.mock.calls[twilioSms.sendSms.mock.calls.length - 1][0];
 
-    const backInStock = (ctx) =>
-      notify.email({
-        recipient: 'shopper@example.com',
-        template: 'back_in_stock',
-        data: { productName: 'Thing', url: 'https://shop.example.com/products/thing', storeName: 'Nile Store', locale: 'en' },
-        workspaceId: ctx.wid,
-      });
-    const lastSend = () => brevo.sendEmail.mock.calls[brevo.sendEmail.mock.calls.length - 1][0];
+  it("emails: the store's sender name (and Reply-To), whatever the plan or the branding setting", async () => {
+    const ctx = await storeWith([], 'Nile Store');
+    expect((await backInStock(ctx)).status).toBe('sent');
+    expect(lastEmail().fromName).toBe('Nile Store');
+    expect(lastEmail().replyTo).toBeUndefined();
 
-    it("takes the store's name (and Reply-To) only while the branding is hidden", async () => {
-      const ctx = await storeWith(['remove_branding'], 'Nile Store');
-      expect((await backInStock(ctx)).status).toBe('sent');
-      // As before: no name of its own, so the provider's EMAIL_FROM_NAME.
-      expect(lastSend().fromName).toBeUndefined();
-      expect(lastSend().replyTo).toBeUndefined();
+    // The name and Reply-To the merchant set for order emails apply to these too.
+    await request(app).put(`/api/v1/workspaces/${ctx.wid}/order-emails/sender`).set(ctx.H).send({ fromName: 'Nile Team', replyTo: 'hello@nile.example' }).expect(200);
+    await backInStock(ctx);
+    expect(lastEmail().fromName).toBe('Nile Team');
+    expect(lastEmail().replyTo).toBe('hello@nile.example');
 
-      await hide(ctx, true);
-      await backInStock(ctx);
-      expect(lastSend().fromName).toBe('Nile Store');
-      expect(lastSend().replyTo).toBeUndefined();
+    // A name the caller passes (the order emails) is kept as given.
+    await notify.email({ recipient: 'shopper@example.com', template: 'gift_card', data: { code: 'ABCD', amount: '100.00', currency: 'EGP', storeName: 'Nile Store', fromName: 'Given Name', locale: 'en' }, workspaceId: ctx.wid });
+    expect(lastEmail().fromName).toBe('Given Name');
+  });
 
-      // The name and Reply-To the merchant set for order emails apply to these too.
-      await request(app).put(`/api/v1/workspaces/${ctx.wid}/order-emails/sender`).set(ctx.H).send({ fromName: 'Nile Team', replyTo: 'hello@nile.example' }).expect(200);
-      await backInStock(ctx);
-      expect(lastSend().fromName).toBe('Nile Team');
-      expect(lastSend().replyTo).toBe('hello@nile.example');
+  it("emails: the platform's own emails are left alone", async () => {
+    const ctx = await storeWith([], 'Nile Store');
+    await notify.email({ recipient: 'owner@example.com', template: 'merchant_notification', data: { title: 'Hi', body: 'There' }, workspaceId: ctx.wid });
+    expect(lastEmail().fromName).toBeUndefined();
+  });
 
-      // A downgrade puts the platform's name back on its own.
-      await moveTo(ctx, []);
-      await backInStock(ctx);
-      expect(lastSend().fromName).toBeUndefined();
-    });
+  it("SMS: a code sent for a store names the store; the platform's own codes still name the platform", async () => {
+    const ctx = await storeWith([], 'Nile Store');
+    expect((await notify.sms({ recipient: '01010101010', template: 'otp_checkout', data: { code: '1234', minutes: 5, locale: 'ar', storeName: 'Nile Store' }, workspaceId: ctx.wid })).status).toBe('sent');
+    expect(lastSms().body).toBe('رمز التحقق في Nile Store: 1234. صالح لمدة 5 دقائق.');
+    await notify.sms({ recipient: '01010101010', template: 'otp_checkout', data: { code: '1234', minutes: 5, locale: 'en', storeName: 'Nile Store' }, workspaceId: ctx.wid });
+    expect(lastSms().body).toBe('Your Nile Store verification code is 1234. It expires in 5 minutes.');
 
-    it("leaves the platform's own emails alone", async () => {
-      const ctx = await storeWith(['remove_branding'], 'Nile Store');
-      await hide(ctx, true);
-      await notify.email({ recipient: 'owner@example.com', template: 'merchant_notification', data: { title: 'Hi', body: 'There' }, workspaceId: ctx.wid });
-      expect(lastSend().fromName).toBeUndefined();
-    });
+    await notify.sms({ recipient: '01010101010', template: 'otp_signup_verification', data: { code: '5678', minutes: 10, locale: 'en' } });
+    expect(lastSms().body).toBe('Your Zimos verification code is 5678. It expires in 10 minutes.');
+  });
+
+  it("SMS: the checkout code goes out with the store's name", async () => {
+    const ctx = await storeWith([], 'Nile Store');
+    // The checkout code goes by WhatsApp unless the store chose SMS (risk/checkoutOtp settingsOf).
+    await db.Workspace.update({ settings: { fraud_rules: { checkout_otp: { enabled: true, channel: 'sms' } } } }, { where: { id: ctx.wid } });
+    const workspace = await db.Workspace.findByPk(ctx.wid);
+    const { sent } = await require('../../src/modules/risk/checkoutOtp').sendCode(workspace, '01099999999');
+    expect(sent).toBe(true);
+    expect(lastSms().body).toContain('Nile Store');
+    expect(lastSms().body).not.toContain('Zimos');
   });
 });
