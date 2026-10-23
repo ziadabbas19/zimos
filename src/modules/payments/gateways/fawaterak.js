@@ -172,17 +172,21 @@ async function send(opts, what) {
 
 // ------------------------------------------------------------------- tokens
 //
-// One access token per OAuth client and host, in this process's memory only:
-// never stored, never logged, never part of an error. Reused until
-// min(expires_in, 1 hour) less a minute; concurrent callers share one token
-// request; a 401 from the API drops it and the call is tried once more with
-// a new one (a 401 is refused before anything ran, so even a create is safe
-// to repeat).
+// One access token per OAuth client — its id AND its secret — and host, in
+// this process's memory only: never stored, never logged, never part of an
+// error. Reused until min(expires_in, 1 hour) less a minute; concurrent
+// callers with the same keys share one token request; a 401 from the API
+// drops it and the call is tried once more with a new one (a 401 is refused
+// before anything ran, so even a create is safe to repeat). The secret is in
+// the key so that the right Client ID with a wrong secret never reads, nor
+// waits on, another merchant's token; connecting never reads the cache at all
+// (freshTokenOn).
 
 const tokens = new Map(); // key -> { token, expiresAt }
 const inFlight = new Map(); // key -> Promise<string|null>
 
-const tokenKey = (host, creds) => crypto.createHash('sha256').update(`${host} ${creds.clientId}`).digest('hex');
+const sha256 = (text) => crypto.createHash('sha256').update(String(text)).digest('hex');
+const tokenKey = (host, creds) => sha256(`${host}\n${creds.clientId}\n${sha256(creds.clientSecret)}`);
 
 /** A new token from `host`, or null when the host refuses these credentials. */
 async function requestToken(host, creds) {
@@ -221,6 +225,18 @@ async function tokenOn(host, creds) {
     );
   }
   return inFlight.get(key);
+}
+
+/**
+ * A token Fawaterak issues now for these exact keys — never one from the
+ * cache, never a request shared with another caller — then kept for the
+ * calls that follow. Null when the host refuses the keys.
+ */
+async function freshTokenOn(host, creds) {
+  const fresh = await requestToken(host, creds);
+  if (!fresh) return null;
+  tokens.set(tokenKey(host, creds), fresh);
+  return fresh.token;
 }
 
 function dropToken(host, creds, token) {
@@ -268,10 +284,14 @@ function connectionNotices(settings = {}) {
   return settings.customerPaysFees ? ['customer_pays_fees'] : [];
 }
 
-/** The OAuth client works on exactly one of the two hosts: staging first. */
+/**
+ * The OAuth client works on exactly one of the two hosts: staging first.
+ * Always a new token: the keys being connected are proven by Fawaterak
+ * itself, never by a token cached for someone else.
+ */
 async function detectMode(creds) {
-  if (await tokenOn(BASE_URLS.staging, creds)) return 'test';
-  if (await tokenOn(BASE_URLS.live, creds)) return 'live';
+  if (await freshTokenOn(BASE_URLS.staging, creds)) return 'test';
+  if (await freshTokenOn(BASE_URLS.live, creds)) return 'live';
   throw new GatewayAuthError(name);
 }
 

@@ -203,6 +203,32 @@ describe('connecting Fawaterak', () => {
     expect(await db.PaymentGatewayAccount.count({ where: { workspaceId: w } })).toBe(0);
   });
 
+  it('another store with the same Client ID and a different secret is refused, and borrows nothing', async () => {
+    const lines = [];
+    for (const level of ['error', 'warn', 'info', 'debug']) {
+      jest.spyOn(logger, level).mockImplementation((...args) => lines.push(JSON.stringify(args)));
+    }
+    const a = await store(); // A's token is now cached in this process
+    const b = await setupWorkspaceWithProduct();
+    const wrong = { ...fake.credentials('live'), clientSecret: 'another-merchants-guess-0000', vendorKey: 'store-b-vendor-key-00000' };
+
+    const res = await connect(b.auth.accessToken, b.workspace.id, wrong);
+    expect(res.status).toBe(422);
+    expect(res.body.error.code).toBe('GATEWAY_AUTH_FAILED');
+    expect(await db.PaymentGatewayAccount.count({ where: { workspaceId: b.workspace.id } })).toBe(0);
+    // The wrong secret was put to Fawaterak itself, on both hosts.
+    expect(fw.callsTo('/oauth/token').filter((c) => c.body.client_secret === wrong.clientSecret)).toHaveLength(2);
+
+    // A is untouched: its checkout still runs on its own keys.
+    const placed = await placeOnline(a);
+    expect(placed.res.status).toBe(201);
+
+    const text = `${JSON.stringify(res.body)}\n${lines.join('\n')}`;
+    for (const secret of [wrong.clientSecret, wrong.vendorKey, fake.credentials('live').clientSecret, fake.credentials('live').vendorKey]) {
+      expect(text).not.toContain(secret);
+    }
+  });
+
   it('warns when the shopper pays Fawaterak\'s fees', async () => {
     fw.methods[0].commission_on_customer = 1;
     const ctx = await store();

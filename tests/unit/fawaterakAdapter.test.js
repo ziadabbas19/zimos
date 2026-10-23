@@ -76,6 +76,45 @@ describe('connect', () => {
   });
 });
 
+describe('two merchants with one Client ID and different secrets', () => {
+  const wrong = () => ({ ...stored('live'), clientSecret: 'another-merchants-guess-0000', vendorKey: 'another-vendor-key-000000' });
+  const unknownIntent = { payment: { id: attempt.id, providerOrderId: 'unknown' } };
+
+  it('a wrong secret is refused at connect even while the right one\'s token is cached', async () => {
+    await fawaterak.verifyCredentials(fake.credentials('live'));
+    const { mode, ...keys } = wrong();
+    const refused = await fawaterak.verifyCredentials(keys).catch((err) => err);
+    expect(refused).toMatchObject({ code: 'GATEWAY_AUTH_FAILED' });
+    expect(refused.message).not.toContain(keys.clientSecret);
+    expect(refused.message).not.toContain(fake.credentials('live').clientSecret);
+  });
+
+  it('calls with a wrong secret never borrow the cached token, and the right keys keep theirs', async () => {
+    await fawaterak.verifyCredentials(fake.credentials('live'));
+    await expect(fawaterak.inquire(wrong(), unknownIntent)).rejects.toMatchObject({ code: 'GATEWAY_AUTH_FAILED' });
+    const before = fw.tokensIssued;
+    expect(await fawaterak.inquire(stored('live'), unknownIntent)).toEqual({ found: false });
+    expect(fw.tokensIssued).toBe(before);
+  });
+
+  it('a wrong secret asking at the same moment never makes the right one fail', async () => {
+    const [right, other] = await Promise.allSettled([fawaterak.inquire(stored('live'), unknownIntent), fawaterak.inquire(wrong(), unknownIntent)]);
+    expect(right).toEqual({ status: 'fulfilled', value: { found: false } });
+    expect(other.status).toBe('rejected');
+    expect(other.reason.code).toBe('GATEWAY_AUTH_FAILED');
+    // Each set of keys made its own token request.
+    const secrets = fw.callsTo('/oauth/token').map((c) => c.body.client_secret);
+    expect(secrets).toEqual(expect.arrayContaining([fake.credentials('live').clientSecret, wrong().clientSecret]));
+  });
+
+  it('connecting always asks Fawaterak for a new token', async () => {
+    await fawaterak.verifyCredentials(fake.credentials('live'));
+    const before = fw.tokensIssued;
+    await fawaterak.verifyCredentials(fake.credentials('live'));
+    expect(fw.tokensIssued).toBe(before + 1);
+  });
+});
+
 describe('createPayment', () => {
   it('sends a direct card payment in major units and returns the card page', async () => {
     const result = await fawaterak.createPayment(stored(), paymentArgs());
