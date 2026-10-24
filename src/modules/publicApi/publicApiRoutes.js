@@ -5,7 +5,7 @@ const validate = require('../../core/middleware/validate');
 const { requirePermission } = require('../../core/middleware/rbac');
 const { PERMISSIONS } = require('../../core/security/permissions');
 const env = require('../../config/env');
-const { authenticateApiKey, apiKeyLimiter, requireScope } = require('../apiKeys/apiKeyAuth');
+const { authenticateApiKey, apiKeyLimiter, feedLimiter, requireScope } = require('../apiKeys/apiKeyAuth');
 const controller = require('./publicOrderController');
 const schemas = require('./publicOrderValidation');
 
@@ -38,7 +38,7 @@ router.get('/orders', readOrders, controller.listAliases, validate(schemas.list)
 // order's status in the till. Off, `next('route')` lets each path answer
 // exactly as it did before these routes existed. Before '/orders/:orderId'.
 const ackOn = (req, res, next) => (env.publicApi.ack === true ? next() : next('route'));
-router.get('/orders/accepted', ackOn, feedScope, validate(schemas.accepted), read, controller.accepted);
+router.get('/orders/accepted', ackOn, feedScope, feedLimiter, validate(schemas.accepted), read, controller.accepted);
 router.post('/orders/ack', ackOn, feedScope, validate(schemas.ack), read, controller.ack);
 router.post('/orders/:orderId/ack', ackOn, feedScope, validate(schemas.get), read, controller.ackOne);
 // The scope by name: a note in the till is not an order update, and orders:write does not grant it.

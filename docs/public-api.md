@@ -224,7 +224,10 @@ it existed: 404, and 422 for `GET /orders/accepted` (read as
 { "orders": [ { "…the order object…": "", "acceptedAt": "2026-10-24T12:30:05.000Z", "acceptedVia": "confirmation" } ], "nextCursor": null, "since": "2026-10-17T12:31:00.000Z" }
 ```
 
-- Ask every few seconds; take each order, then acknowledge it. An order you
+- Ask every 5–15 seconds — at most 20 times a minute per key (429 past it).
+  Send back the `ETag` of the last answer as `If-None-Match`: while nothing
+  changed the answer is 304 with no body.
+- Take each order, then acknowledge it. An order you
   did not acknowledge (your till crashed) is offered again; one you did is
   never offered to this key again. Each key keeps its own receipts: a till and
   a kitchen screen with two keys both get every order.

@@ -6,7 +6,9 @@
 // note that never moves the order's stage. Off, the paths answer as before.
 // Every store sees and acknowledges only its own orders.
 
+const express = require('express');
 const { app, request, setupWorkspaceWithProduct, confirmCodOrder } = require('../helpers/factories');
+const { createFeedLimiter } = require('../../src/modules/apiKeys/apiKeyAuth');
 const db = require('../../src/db/models');
 const env = require('../../src/config/env');
 
@@ -99,6 +101,45 @@ describe('accepted orders feed: on', () => {
 
     expect(ids(await feed(till))).toEqual([second.id]);
     expect(ids(await feed(kitchen))).toEqual([first.id, second.id]);
+  });
+
+  it('answers 304 to a till that already has this answer, and a new ETag once an order is accepted', async () => {
+    const ctx = await store();
+    const till = await mint(ctx);
+    const first = await placeOrder(ctx);
+    await confirmCodOrder(ctx.auth.accessToken, ctx.ws, first.id);
+
+    const one = await feed(till);
+    expect(one.status).toBe(200);
+    expect(one.headers.etag).toMatch(/^W\/"/);
+    const same = await request(app).get('/api/v1/public/orders/accepted').set(till.H).set('If-None-Match', one.headers.etag);
+    expect(same.status).toBe(304);
+    expect(same.text).toBe('');
+
+    const second = await placeOrder(ctx);
+    await confirmCodOrder(ctx.auth.accessToken, ctx.ws, second.id);
+    const changed = await request(app).get('/api/v1/public/orders/accepted').set(till.H).set('If-None-Match', one.headers.etag);
+    expect(changed.status).toBe(200);
+    expect(ids(changed)).toEqual([first.id, second.id]);
+    expect(changed.headers.etag).not.toBe(one.headers.etag);
+  });
+
+  it('tells a till that asks too often to slow down (per key)', async () => {
+    const mini = express();
+    mini.use((req, res, next) => {
+      req.apiKey = { id: req.headers['x-key'] };
+      next();
+    });
+    mini.use(createFeedLimiter({ perMinute: 2, skip: () => false }));
+    mini.get('/', (req, res) => res.json({ ok: true }));
+    mini.use(require('../../src/core/middleware/errorHandler').errorHandler);
+    expect((await request(mini).get('/').set('x-key', 'a')).status).toBe(200);
+    expect((await request(mini).get('/').set('x-key', 'a')).status).toBe(200);
+    const third = await request(mini).get('/').set('x-key', 'a');
+    expect(third.status).toBe(429);
+    expect(third.body.error.code).toBe('RATE_LIMITED');
+    // Another key has its own count.
+    expect((await request(mini).get('/').set('x-key', 'b')).status).toBe(200);
   });
 
   it('pages with a cursor, refuses a broken one, and looks back at most 30 days', async () => {

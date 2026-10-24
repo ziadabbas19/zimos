@@ -1,6 +1,9 @@
 'use strict';
 
 const { guarded } = require('../migrationGuards');
+const { createIndexConcurrently, dropIndexConcurrently } = require('../concurrentIndex');
+
+const FEED_INDEX = 'orders_workspace_updated_at_idx';
 
 /**
  * webhook_endpoints.configured_by_user_id: the teammate who last set an
@@ -15,8 +18,15 @@ const { guarded } = require('../migrationGuards');
  * An endpoint with no such entry stays null and is sent the masked form
  * until an owner saves its address again.
  *
- * Run-twice safe: the column is added once and only nulls are backfilled.
- * Down drops the column (deliveries go back to the old rule: in full).
+ * orders (workspace_id, updated_at), built CONCURRENTLY: the accepted-orders
+ * feed asks every few seconds for one store's orders changed since a moment
+ * (publicApi/acceptedOrdersFeed.js), and so does GET /orders?updated_since=.
+ * Without it each ask walks every order of the store.
+ *
+ * Run-twice safe and without a transaction (CONCURRENTLY): the column is
+ * added once, only nulls are backfilled, a valid index is left alone (an
+ * invalid leftover is rebuilt). Down drops the index CONCURRENTLY and the
+ * column (deliveries go back to the old rule: in full).
  */
 module.exports = {
   up: async (queryInterface, Sequelize) => {
@@ -37,10 +47,12 @@ module.exports = {
         ) a
        WHERE e.configured_by_user_id IS NULL
          AND a.entity_id = e.id::text`);
+    await createIndexConcurrently(queryInterface, { name: FEED_INDEX, table: 'orders', definition: '(workspace_id, updated_at)' });
   },
 
   down: async (queryInterface) => {
     const qi = guarded(queryInterface);
+    await dropIndexConcurrently(queryInterface, FEED_INDEX);
     await qi.removeColumn('webhook_endpoints', 'configured_by_user_id');
   },
 };

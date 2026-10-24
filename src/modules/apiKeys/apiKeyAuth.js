@@ -95,6 +95,27 @@ function createApiKeyLimiter({ skip = () => env.isTest } = {}) {
 const apiKeyLimiter = createApiKeyLimiter();
 
 /**
+ * The accepted-orders feed is asked on a loop by a till: at most `perMinute`
+ * asks per key (20, one every 3 seconds), on top of the key's own limit, so a
+ * till polling too fast is told to slow down before the query runs. Counted
+ * in the shared store when there is one (rateLimitStore.js).
+ */
+function createFeedLimiter({ perMinute = 20, skip = () => env.isTest } = {}) {
+  const sharedRateLimit = require('../../core/middleware/rateLimitStore').withSharedStore(rateLimit);
+  return sharedRateLimit({
+    windowMs: 60 * 1000,
+    limit: perMinute,
+    keyGenerator: (req) => `api_key_feed:${req.apiKey.id}`,
+    standardHeaders: true,
+    legacyHeaders: true,
+    skip,
+    handler: (req, res, next) => next(new RateLimitError('The accepted-orders feed was asked too often: ask every few seconds')),
+  });
+}
+
+const feedLimiter = createFeedLimiter();
+
+/**
  * The key must carry one of these scopes by name. On top of requirePermission:
  * a role permission (orders.manage) covers creating, updating and cancelling
  * alike, and only the scope says which of them this key was made for.
@@ -107,4 +128,4 @@ function requireScope(...scopes) {
   };
 }
 
-module.exports = { authenticateApiKey, apiKeyLimiter, createApiKeyLimiter, requireScope };
+module.exports = { authenticateApiKey, apiKeyLimiter, createApiKeyLimiter, feedLimiter, createFeedLimiter, requireScope };

@@ -83,6 +83,11 @@ async function listUnacked(workspaceId, apiKey, { since, limit = 50, cursor } = 
     `SELECT o.id, ${ACCEPTED_AT_SQL} AS accepted_at, (${ACCEPTED_AT_SQL})::text AS accepted_at_key, ${VIA_SQL} AS via
        FROM orders o
       WHERE o.workspace_id = :workspaceId
+        -- What the index (workspace_id, updated_at) serves (migration 719). Safe as a
+        -- first cut: confirmed_at and completed_at are written by Sequelize updates
+        -- that move updated_at with them, so an order accepted since :from was
+        -- updated since :from.
+        AND o.updated_at >= :from
         AND o.archived_at IS NULL
         AND ${ACCEPTED_SQL}
         AND ${ACCEPTED_AT_SQL} >= :from

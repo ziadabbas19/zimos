@@ -1,5 +1,6 @@
 'use strict';
 
+const crypto = require('crypto');
 const asyncHandler = require('express-async-handler');
 const service = require('./publicOrderService');
 const feed = require('./acceptedOrdersFeed');
@@ -76,7 +77,16 @@ const codCollected = asyncHandler(async (req, res) =>
 // key reads one order (GET /orders/:id) with the full number, and names,
 // emails and addresses are never masked. What a key may read is decided by
 // its scopes and its creator's role.
-const accepted = asyncHandler(async (req, res) => res.json(forViewer(req, await feed.listUnacked(wid(req), req.apiKey, req.query))));
+// An ETag of what the till would take (the orders, their versions, the
+// cursor): a till that sends it back as If-None-Match while nothing changed
+// gets 304 and no body. `since` moves with the clock and is left out of it.
+const accepted = asyncHandler(async (req, res) => {
+  const body = forViewer(req, await feed.listUnacked(wid(req), req.apiKey, req.query));
+  const version = JSON.stringify([body.orders.map((o) => [o.id, o.updatedAt, o.pos ? o.pos.updatedAt : null]), body.nextCursor]);
+  res.set('ETag', `W/"${crypto.createHash('sha256').update(version).digest('base64url').slice(0, 27)}"`);
+  res.set('Cache-Control', 'no-cache');
+  res.json(body);
+});
 
 const ack = asyncHandler(async (req, res) => res.json(await feed.acknowledge(wid(req), req.apiKey, req.body.orderIds)));
 
