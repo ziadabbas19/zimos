@@ -751,6 +751,21 @@ const env = {
     controlConnection: process.env.NODE_ENV !== 'test' && process.env.QUEUE_CONTROL_CONNECTION === 'true',
   },
 
+  // Live updates to the dashboard and the console over Socket.IO
+  // (modules/realtime). Off unless exactly "true": no socket server is
+  // attached, the outbox has no realtime consumer and no event is recorded for
+  // it — today's behaviour exactly. On: websocket only (no long polling, which
+  // would need sticky sessions), the session checked at the handshake, rooms
+  // from the account's memberships and console permissions, messages carrying
+  // ids only. Under NODE_ENV=test it starts off; a test flips it on this object.
+  //   maxConnectionsPerUser  open sockets one account may hold on one server
+  //   handshakesPerMinute    connection attempts one IP may make a minute, per server
+  realtime: {
+    enabled: process.env.NODE_ENV !== 'test' && process.env.REALTIME_ENABLED === 'true',
+    maxConnectionsPerUser: positiveInt('REALTIME_MAX_CONNECTIONS_PER_USER', 10),
+    handshakesPerMinute: positiveInt('REALTIME_HANDSHAKES_PER_MINUTE', 60),
+  },
+
   // ALLOW_DEMO_SEED_IN_PRODUCTION=true lets the demo seeder run under
   // NODE_ENV=production. Off (the default) it refuses there: it creates an
   // owner account with a public password, and its `down` empties whole tables.

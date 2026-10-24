@@ -3,6 +3,7 @@
 const { QueryTypes } = require('sequelize');
 const db = require('../../db/models');
 const { STAGE_SQL, ORDERS_WITH_STAGE_FROM, latestShipmentJoin } = require('./orderStage');
+const realtimeEvents = require('../realtime/realtimeEvents');
 
 /**
  * The record of an order's moves between pipeline stages.
@@ -76,6 +77,8 @@ async function sync(workspaceId, orderId, { transaction = null, actorType = 'sys
     transaction ? { transaction } : undefined
   );
   // the platform-wide delivery numbers follow every stage move (never throws).
+  // A move (not the order's first stage) is a live update to the dashboard, with REALTIME_ENABLED only.
+  if (from) await realtimeEvents.record(transaction, 'order.stage_changed', { workspaceId, orderId });
   return row;
 }
 
