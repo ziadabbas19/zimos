@@ -15,7 +15,8 @@ const gateways = require('../payments/gateways');
  * Read-only by design. Which adapters exist on a server is decided by the
  * environment and nothing else — CARRIERS_ENABLED / CARRIERS_BETA /
  * CARRIERS_BETA_WORKSPACES for couriers, PAYMENTS_ONLINE_ENABLED and
- * GATEWAY_CREDENTIALS_KEY for gateways — so there is no switch here, and
+ * GATEWAY_CREDENTIALS_KEY for gateways, plus a gateway's own switch where it
+ * has one (PAYMENTS_FAWATERAK_*) — so there is no switch here, and
  * nothing in this file is read by the code that decides availability.
  *
  * The health check is a reachability probe that uses NO merchant's
@@ -47,10 +48,11 @@ function carrierProbeUrl(adapter) {
   return null;
 }
 
-/** Where a gateway's live API lives — both are configurable per server. */
+/** Where a gateway's live API lives — Paymob's and Kashier's are configurable per server. */
 const GATEWAY_PROBE_URLS = {
   paymob: () => env.payments.paymobBaseUrl,
   kashier: () => env.payments.kashier.liveApiUrl,
+  fawaterak: () => require('../billing/fawaterak/config').BASE_URLS.live,
 };
 
 function gatewayProbeUrl(adapter) {
@@ -235,8 +237,8 @@ async function checkCarrier(code) {
 // -------------------------------------------------------------------- gateways
 
 /**
- * There is no per-gateway switch in the environment: every registered gateway
- * is offered alike, and what varies is the server as a whole.
+ * The server as a whole: what every gateway without a switch of its own
+ * shares (gatewayAvailabilityFor narrows it for one that has one).
  */
 function gatewayAvailability() {
   const key = credentialsKeyState(env.payments.credentialsKey);
@@ -262,6 +264,28 @@ function gatewayAvailability() {
   };
 }
 
+/** The server's availability for one gateway, narrowed by its own switch (Fawaterak). */
+function gatewayAvailabilityFor(adapter, base) {
+  const rollout = gateways.describeRollout(adapter.code);
+  if (!rollout || base.availability === 'off') return base;
+  if (rollout.state === 'off') {
+    return {
+      availability: 'off',
+      availabilityDetail: `${rollout.enabledVar} is off — no store sees ${adapter.name}; payments already started through it are still settled.`,
+    };
+  }
+  if (rollout.state === 'beta') {
+    const ignored = rollout.ignoredBetaEntries.length
+      ? ` Ignored, not workspace ids: ${rollout.ignoredBetaEntries.join(', ')}.`
+      : '';
+    return {
+      ...base,
+      availabilityDetail: `${base.availabilityDetail} Only the stores in ${rollout.betaVar} see ${adapter.name}: ${rollout.betaWorkspaces.join(', ') || 'none'}.${ignored}`,
+    };
+  }
+  return base;
+}
+
 function describeGateway(adapter, counts, availability) {
   const probeUrl = gatewayProbeUrl(adapter);
   return {
@@ -272,7 +296,8 @@ function describeGateway(adapter, counts, availability) {
     capabilities: {
       methods: [...adapter.methods],
       currencies: [...adapter.currencies],
-      refunds: typeof adapter.refund === 'function',
+      // Refunds sent from here; a gateway refunded in its own dashboard sends none (Fawaterak).
+      refunds: typeof adapter.refund === 'function' && !adapter.refundsInGatewayDashboard,
       statusInquiry: typeof adapter.inquire === 'function',
       webhook: adapter.webhookSetup ? { automatic: Boolean(adapter.webhookSetup.automatic) } : null,
       methodsFromAccount: adapter.settingFields.length === 0,
@@ -286,7 +311,7 @@ async function listGateways() {
   const counts = await connectionCounts('payment_gateway_accounts', 'provider_code', { withMode: true });
   const availability = gatewayAvailability();
   const adapters = gateways.listAdapters();
-  const rows = adapters.map((adapter) => describeGateway(adapter, counts, availability));
+  const rows = adapters.map((adapter) => describeGateway(adapter, counts, gatewayAvailabilityFor(adapter, availability)));
   const orphans = orphanRows(counts, new Set(adapters.map((a) => a.code)), true, {
     availability: 'off',
     availabilityDetail: 'No gateway with this code is registered any more; these accounts cannot be used.',

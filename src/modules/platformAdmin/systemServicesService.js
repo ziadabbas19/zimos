@@ -161,7 +161,8 @@ const PROBES = [
 ];
 
 function gatewayNames() {
-  const names = gateways.listAdapters().map((a) => a.name);
+  // A gateway switched off for every store (Fawaterak's own flag) is not named.
+  const names = gateways.listOfferedAdapters().map((a) => a.name);
   return names.length > 0 ? names.join(', ') : 'none';
 }
 
@@ -188,7 +189,7 @@ async function probePaymentGateways() {
     };
   }
 
-  const adapters = gateways.listAdapters();
+  const adapters = gateways.listOfferedAdapters();
   if (adapters.length === 0) {
     return { status: 'down', detail: 'PAYMENTS_ONLINE_ENABLED is on, but no payment gateway is registered.' };
   }

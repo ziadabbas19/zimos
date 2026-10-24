@@ -22,7 +22,10 @@ const gateways = require('./gateways');
  *                  stock is released (onlinePaymentService.expireOrder, row
  *                  locked FOR UPDATE SKIP LOCKED so two sweeps, or a sweep and
  *                  a shopper, never wait on each other)
- *   4. refunds     refunds still pending are looked up by their gateway id
+ *   4. late        attempts no longer open (expired, or replaced by a retry or
+ *                  a switch to cash on delivery) of a gateway whose webhook
+ *                  only names the payment (Fawaterak), asked again for a day
+ *   5. refunds     refunds still pending are looked up by their gateway id
  *
  * Run by scripts/sweep-payments.js (a Railway cron service), and in part by
  * the merchant's "Sync payment status" button (syncOrder).
@@ -84,12 +87,54 @@ async function expireOverdue({ limit = 50 } = {}) {
   return { seen: rows.length, outcomes };
 }
 
+// A payment that lands on an attempt no longer open is recorded when the
+// gateway is asked: the order is reopened or flagged for a refund
+// (onlinePaymentService.recordPaymentTransaction). Paymob's and Kashier's
+// webhooks carry the outcome, and a failed one stays in the inbox for a retry.
+// A gateway whose webhook only names the payment (webhookConfirmsByInquiry:
+// Fawaterak) leaves nothing to retry once that webhook was refused (a wrong
+// webhook key cannot be caught at connect) or met the gateway unreachable, so
+// its attempts are asked again: for a day after they started, every two hours.
+const LATE_ASK_FOR_MS = 24 * 60 * 60 * 1000;
+const LATE_ASK_EVERY_MS = 2 * 60 * 60 * 1000;
+const NOT_OPEN = ['expired', 'cancelled'];
+
+/**
+ * Asks about late attempts of webhookConfirmsByInquiry gateways. With
+ * `orderId` (the merchant's Sync), that order's, at once and whatever their
+ * age. Returns { attempts, unknown }.
+ */
+async function inquireLateAttempts({ limit = 50, orderId = null } = {}) {
+  const codes = gateways.listAdapters().filter((a) => a.webhookConfirmsByInquiry).map((a) => a.code);
+  if (codes.length === 0) return { attempts: 0, unknown: 0 };
+  const { Op } = db.Sequelize;
+  const where = { providerCode: codes, status: NOT_OPEN, providerOrderId: { [Op.ne]: null } };
+  if (orderId) {
+    where.orderId = orderId;
+  } else {
+    where.createdAt = { [Op.gte]: new Date(Date.now() - LATE_ASK_FOR_MS) };
+    where[Op.or] = [{ lastInquiredAt: null }, { lastInquiredAt: { [Op.lt]: new Date(Date.now() - LATE_ASK_EVERY_MS) } }];
+  }
+  const attempts = await db.Payment.findAll({ where, order: [['createdAt', 'ASC']], limit });
+  let unknown = 0;
+  for (const attempt of attempts) {
+    try {
+      await online.inquireAttempt(attempt);
+    } catch (err) {
+      unknown += 1;
+      logger.warn('Late payment inquiry failed', { attemptId: attempt.id, providerCode: attempt.providerCode, reason: err.message });
+    }
+  }
+  return { attempts: attempts.length, unknown };
+}
+
 /** One pass of every step. Safe to run concurrently with itself. */
 async function sweepOnce({ limit = 50 } = {}) {
   const result = {};
   result.events = await events.reprocessPending({ limit });
   result.inquired = await inquireStaleAttempts({ limit });
   result.expired = await expireOverdue({ limit });
+  result.late = await inquireLateAttempts({ limit });
   result.refunds = await refunds.settlePendingRefunds({ limit });
   return result;
 }
@@ -157,7 +202,12 @@ async function timeline(workspaceId, orderId) {
   }
   const perPayment = attempts
     .filter((p) => ['captured', 'partially_refunded'].includes(p.status) && gateways.isGateway(p.providerCode))
-    .map((p) => ({ paymentId: p.id, refundable: Math.max(0, Number(p.amount) - (used.get(p.id) || 0)) }));
+    .map((p) => ({
+      paymentId: p.id,
+      refundable: Math.max(0, Number(p.amount) - (used.get(p.id) || 0)),
+      // Refunded in the gateway's own dashboard, never from here (Fawaterak).
+      refundInGatewayDashboard: Boolean(gateways.getAdapter(p.providerCode).refundsInGatewayDashboard),
+    }));
   const pending = refundRows.filter((r) => r.status === 'pending').reduce((s, r) => s + Number(r.amount), 0);
   const gatewayPaid = perPayment.length > 0;
 
@@ -184,15 +234,28 @@ async function timeline(workspaceId, orderId) {
 
 /**
  * "Sync payment status": ask the gateway about this order now — open
- * attempts, pending refunds — and expire it if it is overdue.
+ * attempts, late ones of a gateway whose webhook only names the payment,
+ * pending refunds — and expire it if it is overdue.
  */
 async function syncOrder(workspaceId, orderId) {
   const order = await db.Order.findOne({ where: { id: orderId, workspaceId }, attributes: ['id'] });
   if (!order) throw new NotFoundError('Order');
   const { unknown } = await online.inquireOpenAttempts(order.id);
+  const late = await inquireLateAttempts({ orderId: order.id });
   await refunds.settlePendingRefunds({ olderThanMs: 0, where: { orderId: order.id } });
   if (unknown === 0) await online.expireOrder(order.id);
-  return { ...(await timeline(workspaceId, orderId)), unreachable: unknown > 0 };
+  return { ...(await timeline(workspaceId, orderId)), unreachable: unknown + late.unknown > 0 };
 }
 
-module.exports = { sweep, sweepOnce, inquireStaleAttempts, expireOverdue, timeline, syncOrder, INQUIRE_AFTER_MS };
+module.exports = {
+  sweep,
+  sweepOnce,
+  inquireStaleAttempts,
+  expireOverdue,
+  inquireLateAttempts,
+  timeline,
+  syncOrder,
+  INQUIRE_AFTER_MS,
+  LATE_ASK_FOR_MS,
+  LATE_ASK_EVERY_MS,
+};

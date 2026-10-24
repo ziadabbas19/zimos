@@ -138,23 +138,53 @@ async function reprocessPending({ limit = 50 } = {}) {
 }
 
 /**
- * POST /webhooks/payments/:code/:token. The token in the path names the
- * merchant's account; the signature is checked with that account's secret.
- * Resolves { statusCode, body }:
- *   404  unknown gateway or token (nothing said about which) — thrown
+ * For a gateway whose webhook signature does not cover the outcome
+ * (adapter.webhookConfirmsByInquiry — Fawaterak): the verified webhook only
+ * names the payment, so the gateway is asked about it now, through the same
+ * inbox as any inquiry. Never throws: a gateway that cannot be asked leaves
+ * the attempt to the return page and the sweep.
+ *
+ * @returns {object|null} the gateway's transaction, or null
+ */
+async function confirmByInquiry(account, transaction) {
+  if (!transaction || !transaction.providerOrderId) return null;
+  const attempt = await db.Payment.findOne({
+    where: { workspaceId: account.workspaceId, providerCode: account.providerCode, providerOrderId: transaction.providerOrderId },
+  });
+  if (!attempt || ['captured', 'partially_refunded', 'refunded'].includes(attempt.status)) return null;
+  try {
+    return await require('./onlinePaymentService').inquireAttempt(attempt);
+  } catch (err) {
+    logger.warn('Payment inquiry after a webhook failed; the sweep will ask again', {
+      workspaceId: account.workspaceId,
+      providerCode: account.providerCode,
+      attemptId: attempt.id,
+      reason: err.message,
+    });
+    return null;
+  }
+}
+
+/**
+ * POST /webhooks/payments/:code/:token[/:variant]. The token in the path
+ * names the merchant's account; the signature is checked with that account's
+ * secret. `variant` is a last path segment the adapter asked for
+ * (webhookVariants: Fawaterak's `paid_json`). Resolves { statusCode, body }:
+ *   404  unknown gateway, token or variant (nothing said about which) — thrown
  *   401  WEBHOOK_SIGNATURE_INVALID — thrown
  *   200  { received: true } — stored (and processed, or queued for a retry),
  *        or a callback type we do not act on
  *   409  { received: true, outcome: 'duplicate' } — a callback already
  *        processed, for a gateway that asks for that (Kashier); others get 200
  */
-async function acceptWebhook(code, token, req) {
+async function acceptWebhook(code, token, req, variant = null) {
   const gateways = require('./gateways');
   const accounts = require('./gatewayAccountService');
   const { AppError, NotFoundError } = require('../../core/errors/AppError');
 
   const adapter = gateways.getAdapter(code);
   if (!adapter) throw new NotFoundError('Webhook');
+  if (variant !== null && !(adapter.webhookVariants || []).includes(variant)) throw new NotFoundError('Webhook');
   accounts.assertConfigured();
   const account = await accounts.findByWebhookToken(code, token);
   if (!account) throw new NotFoundError('Webhook');
@@ -169,6 +199,12 @@ async function acceptWebhook(code, token, req) {
 
   await db.PaymentGatewayAccount.update({ lastWebhookAt: new Date() }, { where: { id: account.id } });
   const result = await ingest(account, parsed, 'webhook');
+  if (adapter.webhookConfirmsByInquiry) {
+    // Asked even for a repeat: the first delivery's inquiry may have found
+    // the gateway unreachable, and recording is idempotent.
+    const confirmed = await confirmByInquiry(account, parsed.transaction);
+    return { statusCode: 200, body: { received: true, outcome: result.outcome, confirmed: confirmed ? confirmed.status : null } };
+  }
   const statusCode = result.outcome === 'duplicate' && adapter.webhookDuplicateStatus ? adapter.webhookDuplicateStatus : 200;
   return { statusCode, body: { received: true, outcome: result.outcome } };
 }

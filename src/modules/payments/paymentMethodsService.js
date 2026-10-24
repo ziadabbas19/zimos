@@ -63,7 +63,7 @@ async function allMethods(workspace, accounts = null) {
   for (const account of byAge) {
     if (account.status !== 'active') continue;
     const adapter = gateways.getAdapter(account.providerCode);
-    if (!adapter) continue;
+    if (!adapter || !gateways.isOfferedTo(account.providerCode, workspace)) continue;
     for (const method of adapter.availableMethods(account.settings || {})) {
       available.set(methodId(account.providerCode, method), { provider: account.providerCode, method, mode: account.mode });
     }
@@ -76,6 +76,8 @@ async function allMethods(workspace, accounts = null) {
     seen.add(entry.id);
     const info = available.get(entry.id);
     const { provider, method } = parseId(entry.id);
+    // A gateway this store may not see (Fawaterak with its flag off) is not listed at all.
+    if (provider && gateways.getAdapter(provider) && !gateways.isOfferedTo(provider, workspace)) continue;
     out.push({
       id: entry.id,
       provider: info ? info.provider : provider,
@@ -150,16 +152,17 @@ async function listForDashboard(workspaceId) {
  * gateway's integration really takes (its adapter's `methods`: card and
  * wallet for Paymob and Kashier today), listed once; at most one gateway may
  * take each method. Whether the method is available with the store's
- * connected account is checked separately (updateForDashboard).
+ * connected account is checked separately (updateForDashboard). `isOffered`
+ * (gateway code -> boolean): a gateway the store may not see is unknown.
  */
-function methodListProblems(methods) {
+function methodListProblems(methods, { isOffered = () => true } = {}) {
   const problems = [];
   const seen = new Set();
   const onFor = new Map();
   methods.forEach((m, i) => {
     const { provider, method } = parseId(m.id);
     const adapter = m.id === COD ? null : gateways.getAdapter(provider);
-    const known = m.id === COD || Boolean(adapter && adapter.methods.includes(method));
+    const known = m.id === COD || Boolean(adapter && isOffered(provider) && adapter.methods.includes(method));
     if (!known) problems.push({ field: `methods.${i}.id`, message: `Unknown payment method "${m.id}"` });
     if (seen.has(m.id)) problems.push({ field: `methods.${i}.id`, message: `"${m.id}" is listed twice` });
     seen.add(m.id);
@@ -185,7 +188,7 @@ async function updateForDashboard(workspaceId, { methods }, req) {
     const workspace = await db.Workspace.findByPk(workspaceId, { transaction, lock: transaction.LOCK.UPDATE });
     if (!workspace) throw new NotFoundError('Workspace');
 
-    const problems = methodListProblems(methods);
+    const problems = methodListProblems(methods, { isOffered: (code) => gateways.isOfferedTo(code, workspace) });
     if (problems.length) throw new ValidationError(problems, 'Invalid body');
 
     const current = await allMethods(workspace);

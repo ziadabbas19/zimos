@@ -587,6 +587,18 @@ const env = {
       testFepUrl: (process.env.KASHIER_TEST_FEP_URL || 'https://test-fep.kashier.io').trim().replace(/\/+$/, ''),
       liveFepUrl: (process.env.KASHIER_LIVE_FEP_URL || 'https://fep.kashier.io').trim().replace(/\/+$/, ''),
     },
+    // Fawaterak as a store gateway (payments/gateways/fawaterak.js). No store
+    // sees it — not in the dashboard, not at checkout, not through the API —
+    // unless PAYMENTS_FAWATERAK_ENABLED is exactly "true"; then
+    // PAYMENTS_FAWATERAK_BETA_WORKSPACES (workspace ids, comma-separated —
+    // never slugs, which merchants can change), when set, limits it to those
+    // stores. A payment already started through it
+    // is still settled with the flag off: that money moved. Under
+    // NODE_ENV=test it starts off; a test sets it on this object.
+    fawaterak: {
+      enabled: process.env.NODE_ENV !== 'test' && process.env.PAYMENTS_FAWATERAK_ENABLED === 'true',
+      betaWorkspaces: csvList(process.env.PAYMENTS_FAWATERAK_BETA_WORKSPACES, ''),
+    },
   },
 
   // Shared secret the billing gateway signs its webhook bodies with

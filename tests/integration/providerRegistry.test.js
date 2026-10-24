@@ -17,6 +17,7 @@ const saved = {
   onlineEnabled: env.payments.onlineEnabled,
   gatewayKey: env.payments.credentialsKey,
   paymobBaseUrl: env.payments.paymobBaseUrl,
+  fawaterak: { ...env.payments.fawaterak },
 };
 
 afterEach(() => {
@@ -24,6 +25,7 @@ afterEach(() => {
   env.payments.onlineEnabled = saved.onlineEnabled;
   env.payments.credentialsKey = saved.gatewayKey;
   env.payments.paymobBaseUrl = saved.paymobBaseUrl;
+  Object.assign(env.payments.fawaterak, saved.fawaterak);
   jest.restoreAllMocks();
 });
 
@@ -214,7 +216,7 @@ describe('provider registry — payment gateways', () => {
     const res = await request(app).get('/api/v1/admin/payment-gateways').set(admin.H);
     expect(res.status).toBe(200);
     const byCode = Object.fromEntries(res.body.gateways.map((g) => [g.code, g]));
-    expect(Object.keys(byCode).sort()).toEqual(['kashier', 'paymob']);
+    expect(Object.keys(byCode).sort()).toEqual(['fawaterak', 'kashier', 'paymob']);
     expect(byCode.paymob).toMatchObject({
       name: expect.any(String),
       registered: true,
@@ -222,6 +224,32 @@ describe('provider registry — payment gateways', () => {
       capabilities: { refunds: true, statusInquiry: true, methods: expect.arrayContaining(['card']) },
     });
     expect(res.body.environment).toEqual({ onlineEnabled: true, credentialsKey: 'present' });
+  });
+
+  it('shows Fawaterak\'s own switch: off, for the beta stores only, then for every store', async () => {
+    const admin = await setupAdmin();
+    env.payments.credentialsKey = newKey();
+    env.payments.onlineEnabled = true;
+    const fawaterak = async () =>
+      (await request(app).get('/api/v1/admin/payment-gateways').set(admin.H)).body.gateways.find((g) => g.code === 'fawaterak');
+
+    env.payments.fawaterak.enabled = false;
+    let row = await fawaterak();
+    expect(row).toMatchObject({ availability: 'off', capabilities: { methods: ['card'], currencies: ['EGP'], refunds: false, statusInquiry: true } });
+    expect(row.availabilityDetail).toMatch(/PAYMENTS_FAWATERAK_ENABLED is off/);
+    expect(row.healthCheck).toEqual({ checkable: true, target: 'app.fawaterk.com' });
+
+    const ids = ['3f0c2a9e-1b7d-4c55-9a10-2b6d8e4f7a01', '8a1e5c33-6f2b-4d0e-b7c9-0d4e2f1a9b02'];
+    Object.assign(env.payments.fawaterak, { enabled: true, betaWorkspaces: [...ids, 'shop-a'] });
+    row = await fawaterak();
+    expect(row.availability).toBe('enabled');
+    expect(row.availabilityDetail).toContain(`PAYMENTS_FAWATERAK_BETA_WORKSPACES see Fawaterak: ${ids.join(', ')}.`);
+    // A slug is no workspace id: named as ignored.
+    expect(row.availabilityDetail).toContain('Ignored, not workspace ids: shop-a.');
+
+    env.payments.fawaterak.betaWorkspaces = [];
+    row = await fawaterak();
+    expect(row.availabilityDetail).not.toMatch(/FAWATERAK/);
   });
 
   it('distinguishes connect-only (online payments off) from off (no key)', async () => {
