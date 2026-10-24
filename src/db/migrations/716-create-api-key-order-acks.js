@@ -1,5 +1,7 @@
 'use strict';
 
+const { withLockTimeout, addForeignKey } = require('../lockTimeout');
+
 /**
  * api_key_order_acks: which accepted orders each API key has confirmed it
  * received (publicApi/acceptedOrdersFeed.js, PUBLIC_API_ACK_ENABLED). A till
@@ -15,22 +17,43 @@
  * The primary key (api_key_id, order_id) is what the feed's NOT EXISTS reads;
  * the order_id index serves the cascade when an order is deleted.
  *
- * A new table only: nothing existing changes. Run-twice safe; down drops it
- * (each key's feed would offer its acknowledged orders again).
+ * The table is created bare, then each foreign key is added NOT VALID and
+ * validated in its own step, every step under a lock_timeout with retries
+ * (db/lockTimeout.js): a foreign key to `orders` locks that busy table, and
+ * must never leave its writes queued behind a long transaction.
+ *
+ * Nothing existing changes. Run-twice safe; down drops the table (each key's
+ * feed would offer its acknowledged orders again).
  */
 module.exports = {
   up: async (queryInterface) => {
-    await queryInterface.sequelize.query(`
-      CREATE TABLE IF NOT EXISTS api_key_order_acks (
-        api_key_id UUID NOT NULL REFERENCES api_keys (id) ON DELETE CASCADE,
-        order_id UUID NOT NULL REFERENCES orders (id) ON DELETE CASCADE,
-        acked_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        PRIMARY KEY (api_key_id, order_id)
-      )`);
-    await queryInterface.sequelize.query('CREATE INDEX IF NOT EXISTS api_key_order_acks_order_id_idx ON api_key_order_acks (order_id)');
+    const { sequelize } = queryInterface;
+    await withLockTimeout(sequelize, async (transaction) => {
+      await sequelize.query(
+        `CREATE TABLE IF NOT EXISTS api_key_order_acks (
+           api_key_id UUID NOT NULL,
+           order_id UUID NOT NULL,
+           acked_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+           PRIMARY KEY (api_key_id, order_id)
+         )`,
+        { transaction }
+      );
+      await sequelize.query('CREATE INDEX IF NOT EXISTS api_key_order_acks_order_id_idx ON api_key_order_acks (order_id)', { transaction });
+    });
+    await addForeignKey(sequelize, {
+      table: 'api_key_order_acks',
+      name: 'api_key_order_acks_api_key_id_fkey',
+      definition: 'FOREIGN KEY (api_key_id) REFERENCES api_keys (id) ON DELETE CASCADE',
+    });
+    await addForeignKey(sequelize, {
+      table: 'api_key_order_acks',
+      name: 'api_key_order_acks_order_id_fkey',
+      definition: 'FOREIGN KEY (order_id) REFERENCES orders (id) ON DELETE CASCADE',
+    });
   },
 
   down: async (queryInterface) => {
-    await queryInterface.sequelize.query('DROP TABLE IF EXISTS api_key_order_acks');
+    const { sequelize } = queryInterface;
+    await withLockTimeout(sequelize, (transaction) => sequelize.query('DROP TABLE IF EXISTS api_key_order_acks', { transaction }));
   },
 };
