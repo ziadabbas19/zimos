@@ -7,7 +7,6 @@ const logger = require('../../core/utils/logger');
 const sessionGate = require('../../core/security/sessionGate');
 const { verifyAccessToken } = require('../../core/security/tokens');
 const { clientIpOfUpgrade } = require('../../core/middleware/clientIp');
-const { userRoom } = require('./catalog');
 const { roomsByUser } = require('./rooms');
 const { CHANNEL_PREFIX } = require('./publisher');
 
@@ -25,8 +24,13 @@ const { CHANNEL_PREFIX } = require('./publisher');
  *    minute on this server.
  *  - The handshake: the access token from the client's `auth.token` (never
  *    the URL), checked as core/middleware/authenticate does — signature and
- *    expiry, a session that still stands (sessionGate), an active account —
- *    and at most REALTIME_MAX_CONNECTIONS_PER_USER sockets per account here.
+ *    expiry, a session that still stands (sessionGate), an active account.
+ *    Right after the signature, before any database query, the account takes
+ *    one of its REALTIME_MAX_CONNECTIONS_PER_USER places on this server (open
+ *    sockets and handshakes in progress alike), given back when the websocket
+ *    closes. One websocket runs one handshake at a time, at most
+ *    CONNECTS_PER_SOCKET_PER_MINUTE a minute, and none once a socket is open
+ *    on it. Any refusal closes the websocket.
  *  - The rooms come from the database alone (rooms.js). The client never
  *    names one, and sends nothing: any event from it ends the connection.
  *
@@ -44,6 +48,8 @@ const CONNECT_TIMEOUT_MS = 10 * 1000;
 const SESSION_CHECK_MS = 15 * 1000;
 const ROOMS_CHECK_MS = 60 * 1000;
 const WINDOW_MS = 60 * 1000;
+const CONNECTS_PER_SOCKET_PER_MINUTE = 5;
+const ATTEMPTS = Symbol('realtime handshake attempts');
 const MAX_TRACKED_IPS = 10000;
 
 const MAX_TOKEN_LENGTH = 4096;
@@ -55,6 +61,35 @@ function refused(code) {
   const err = new Error(code);
   err.data = { code };
   return err;
+}
+
+/** Calls `fn` the first time only. */
+function once(fn) {
+  let done = false;
+  return () => {
+    if (done) return;
+    done = true;
+    fn();
+  };
+}
+
+/** Each account's places on this server: open sockets and handshakes in progress. */
+function connectionSlots() {
+  const taken = new Map();
+  return {
+    take(userId) {
+      const n = taken.get(userId) || 0;
+      if (n >= env.realtime.maxConnectionsPerUser) return false;
+      taken.set(userId, n + 1);
+      return true;
+    },
+    give(userId) {
+      const n = (taken.get(userId) || 0) - 1;
+      if (n > 0) taken.set(userId, n);
+      else taken.delete(userId);
+    },
+    held: (userId) => taken.get(userId) || 0,
+  };
 }
 
 /** Connection attempts per IP, per fixed minute, on this server. */
@@ -105,6 +140,7 @@ function throttledWarn(prefix, everyMs = 30 * 1000) {
  */
 function createRealtimeServer(httpServer, { app, connections }) {
   const limiter = handshakeLimiter();
+  const slots = connectionSlots();
 
   const allowRequest = (req, callback) => {
     const origin = req.headers.origin;
@@ -129,34 +165,68 @@ function createRealtimeServer(httpServer, { app, connections }) {
     }),
   });
 
+  // Ends the websocket under a refused handshake, once the refusal is on its way.
+  const closeAfter = (socket) => setImmediate(() => socket.conn.close());
+
   io.use(async (socket, next) => {
+    const { conn } = socket;
+    const now = Date.now();
+    const attempts = conn[ATTEMPTS] || (conn[ATTEMPTS] = { count: 0, since: now, busy: false });
+    if (now - attempts.since >= WINDOW_MS) {
+      attempts.count = 0;
+      attempts.since = now;
+    }
+    attempts.count += 1;
+    const refuse = (code) => {
+      closeAfter(socket);
+      return next(refused(code));
+    };
+    // CONNECT packets sent together on one websocket: the first is handled, the rest end it.
+    if (attempts.busy || attempts.count > CONNECTS_PER_SOCKET_PER_MINUTE || socket.client.sockets.size > 0) return refuse('too_many_attempts');
+
+    const token = socket.handshake.auth && socket.handshake.auth.token;
+    if (typeof token !== 'string' || token === '' || token.length > MAX_TOKEN_LENGTH) return refuse('unauthorized');
+    let payload;
     try {
-      const token = socket.handshake.auth && socket.handshake.auth.token;
-      if (typeof token !== 'string' || token === '' || token.length > MAX_TOKEN_LENGTH) return next(refused('unauthorized'));
-      let payload;
-      try {
-        payload = verifyAccessToken(token);
-      } catch {
-        return next(refused('unauthorized'));
+      payload = verifyAccessToken(token);
+    } catch {
+      return refuse('unauthorized');
+    }
+    // The account's place, taken before anything asks the database.
+    const userId = payload.sub;
+    if (!userId || !slots.take(userId)) return refuse('too_many_connections');
+    const giveBack = once(() => slots.give(userId));
+    conn.once('close', giveBack);
+
+    attempts.busy = true;
+    try {
+      if (!(await sessionGate.isActive(payload.sid))) {
+        giveBack();
+        return refuse('session_ended');
       }
-      if (!(await sessionGate.isActive(payload.sid))) return next(refused('session_ended'));
-      const rooms = (await roomsByUser([payload.sub])).get(payload.sub);
-      if (!rooms) return next(refused('unauthorized'));
-      const open = io.of('/').adapter.rooms.get(userRoom(payload.sub));
-      if (open && open.size >= env.realtime.maxConnectionsPerUser) return next(refused('too_many_connections'));
-      socket.data.userId = payload.sub;
+      const rooms = (await roomsByUser([userId])).get(userId);
+      if (!rooms) {
+        giveBack();
+        return refuse('unauthorized');
+      }
+      socket.data.userId = userId;
       socket.data.sid = payload.sid || null;
       socket.data.expiresAt = payload.exp ? payload.exp * 1000 : null;
       socket.data.rooms = rooms;
+      socket.data.giveBack = giveBack;
       return next();
     } catch (err) {
       logger.warn(`[realtime] handshake failed: ${err.message}`);
-      return next(refused('unavailable'));
+      giveBack();
+      return refuse('unavailable');
+    } finally {
+      attempts.busy = false;
     }
   });
 
   io.on('connection', (socket) => {
     socket.join(socket.data.rooms);
+    socket.once('disconnect', socket.data.giveBack);
     // Nothing comes from the client but the built-in ping: any event of its own ends the connection.
     socket.onAny(() => socket.disconnect(true));
     if (socket.data.expiresAt) {
@@ -219,7 +289,7 @@ function createRealtimeServer(httpServer, { app, connections }) {
     io.engine.close();
   }
 
-  return { io, stop, checkSessions, syncRooms, resetLimits: limiter.reset };
+  return { io, stop, checkSessions, syncRooms, resetLimits: limiter.reset, slotsHeld: slots.held };
 }
 
-module.exports = { createRealtimeServer, PATH, SESSION_CHECK_MS, ROOMS_CHECK_MS };
+module.exports = { createRealtimeServer, PATH, SESSION_CHECK_MS, ROOMS_CHECK_MS, CONNECTS_PER_SOCKET_PER_MINUTE };

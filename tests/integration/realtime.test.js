@@ -19,6 +19,7 @@ const { Server } = require('socket.io');
 const { Adapter } = require('socket.io-adapter');
 const { PostgresAdapter } = require('@socket.io/postgres-adapter');
 const { io: connectSocket } = require('socket.io-client');
+const WebSocket = require('ws');
 const {
   app,
   request,
@@ -46,6 +47,7 @@ let server;
 let realtime;
 let base;
 const clients = [];
+const raws = [];
 
 function listen(httpServer) {
   return new Promise((resolve) => httpServer.listen(0, '127.0.0.1', () => resolve(`http://127.0.0.1:${httpServer.address().port}`)));
@@ -60,6 +62,7 @@ beforeAll(async () => {
 
 afterEach(() => {
   for (const socket of clients.splice(0)) socket.disconnect();
+  for (const ws of raws.splice(0)) ws.terminate();
   realtime.resetLimits();
   env.realtime.maxConnectionsPerUser = 10;
   env.realtime.handshakesPerMinute = 60;
@@ -111,6 +114,24 @@ async function refusal(auth, opts) {
     },
     (err) => err
   );
+}
+
+/** A bare websocket to the socket server, past the engine's OPEN packet: socket.io packets are sent on it by hand. */
+async function rawSocket() {
+  const ws = new WebSocket(`${base.replace('http', 'ws')}${PATH}/?EIO=4&transport=websocket`);
+  raws.push(ws);
+  let closed = false;
+  const frames = [];
+  ws.on('message', (data) => frames.push(String(data)));
+  ws.on('close', () => {
+    closed = true;
+  });
+  await new Promise((resolve, reject) => {
+    ws.once('open', resolve);
+    ws.once('error', reject);
+  });
+  await waitFor(() => frames.some((f) => f.startsWith('0')), "the engine's OPEN packet");
+  return { ws, frames, isClosed: () => closed };
 }
 
 async function waitFor(check, what, ms = 5000) {
@@ -195,6 +216,33 @@ describe('handshake', () => {
     // Another account is not counted against it.
     const other = await registerAndActivate();
     await connected(other.accessToken);
+  });
+
+  it('a burst of CONNECT packets on one websocket runs one handshake, then the websocket is ended', async () => {
+    const owner = await registerAndActivate();
+    const findAll = jest.spyOn(db.User, 'findAll');
+    try {
+      const raw = await rawSocket();
+      for (let i = 0; i < 50; i += 1) raw.ws.send(`40${JSON.stringify({ token: owner.accessToken })}`);
+      await waitFor(raw.isClosed, 'the server to end the websocket');
+      // The second CONNECT was refused as such (a socket.io CONNECT_ERROR, "44"), before the database.
+      expect(raw.frames.some((f) => f.startsWith('44') && f.includes('too_many_attempts'))).toBe(true);
+      // Only the first CONNECT reached the database (rooms.js reads the account with User.findAll).
+      expect(findAll.mock.calls.length).toBeLessThanOrEqual(1);
+      await waitFor(() => realtime.slotsHeld(owner.userId) === 0, 'the place to be given back');
+      expect(realtime.io.of('/').adapter.rooms.get(`u:${owner.userId}`)).toBeUndefined();
+    } finally {
+      findAll.mockRestore();
+    }
+  });
+
+  it('the per-account limit holds against handshakes in flight together', async () => {
+    env.realtime.maxConnectionsPerUser = 2;
+    const owner = await registerAndActivate();
+    const attempts = Array.from({ length: 6 }, () => open({ token: owner.accessToken }));
+    const results = await Promise.allSettled(attempts.map((c) => c.ready));
+    expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(2);
+    expect(results.filter((r) => r.status === 'rejected').map((r) => r.reason.message)).toEqual(Array(4).fill('too_many_connections'));
   });
 
   it('limits connection attempts per IP (REALTIME_HANDSHAKES_PER_MINUTE)', async () => {
