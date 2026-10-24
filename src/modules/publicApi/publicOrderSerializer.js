@@ -16,8 +16,13 @@
 
 const money = (value) => (value === null || value === undefined ? null : Number(value));
 
-function serializeItem(item) {
-  return {
+/**
+ * `optionCodes` (choiceId → external code) is passed only while
+ * ORDER_PAYLOAD_OPTIONS_ENABLED is on (publicOrderOptions.serializeOrders):
+ * then the line also carries its menu options and custom-field answers.
+ */
+function serializeItem(item, { optionCodes } = {}) {
+  const out = {
     id: item.id,
     productId: item.productId,
     variantId: item.variantId,
@@ -32,6 +37,8 @@ function serializeItem(item) {
     isOrderBump: Boolean(item.isOrderBump),
     isUpsell: Boolean(item.isUpsell),
   };
+  if (optionCodes) Object.assign(out, require('./publicOrderOptions').itemExtras(item, optionCodes));
+  return out;
 }
 
 function serializeShipment(shipment) {
@@ -49,7 +56,7 @@ function serializeShipment(shipment) {
   };
 }
 
-function serializeOrder(order) {
+function serializeOrder(order, { optionCodes } = {}) {
   const out = {
     id: order.id,
     orderNumber: order.orderNumber,
@@ -71,7 +78,7 @@ function serializeOrder(order) {
     contact: order.contactSnapshot || null,
     shippingAddress: order.shippingAddressSnapshot || null,
     notes: order.notes || null,
-    items: (order.items || []).map(serializeItem),
+    items: (order.items || []).map((item) => serializeItem(item, { optionCodes })),
     confirmedAt: order.confirmedAt || null,
     cancelledAt: order.cancelledAt || null,
     cancellationReason: order.cancellationReason || null,

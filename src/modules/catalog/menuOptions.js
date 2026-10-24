@@ -152,7 +152,7 @@ const viewGroup = (g) => ({
   minSelect: g.minSelect,
   maxSelect: g.maxSelect,
   active: g.active,
-  choices: (g.choices || []).map((c) => ({ id: c.id, name: c.name, priceDeltaAmount: Number(c.priceDeltaAmount), active: c.active })),
+  choices: (g.choices || []).map((c) => ({ id: c.id, name: c.name, priceDeltaAmount: Number(c.priceDeltaAmount), active: c.active, externalCode: c.externalCode || null })),
 });
 
 const groupsBodySchema = Joi.object({
@@ -172,6 +172,8 @@ const groupsBodySchema = Joi.object({
               name: Joi.string().trim().min(1).max(100).required(),
               priceDeltaAmount: Joi.number().integer().min(0).max(100000000).default(0),
               active: Joi.boolean().default(true),
+              // The choice's code in the merchant's till / kitchen system (migration 715). Left out: kept as it is.
+              externalCode: Joi.string().trim().max(120).allow(null, '').optional(),
             })
           )
           .min(1)
@@ -232,6 +234,8 @@ async function replaceForProduct(workspaceId, productId, body, req) {
       for (const [ci, c] of g.choices.entries()) {
         if (c.id && !choicesById.has(c.id)) throw new AppError('OPTION_CHOICE_NOT_FOUND', 'A choice is not this group’s', 422);
         const cv = { name: c.name, priceDeltaAmount: c.priceDeltaAmount, active: c.active, sortOrder: ci };
+        // Only when sent: a client that does not know the field never clears it.
+        if (c.externalCode !== undefined) cv.externalCode = c.externalCode || null;
         const choice = c.id
           ? await choicesById.get(c.id).update(cv, { transaction })
           : await db.ProductOptionChoice.create({ ...cv, workspaceId, groupId: group.id }, { transaction });

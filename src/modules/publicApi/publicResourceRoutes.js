@@ -29,7 +29,8 @@ const analyticsController = require('../analytics/analyticsController');
 const analyticsSchemas = require('../analytics/analyticsValidation');
 const inventoryService = require('../inventory/inventoryService');
 const { recordAudit } = require('../audit/auditService');
-const { serializeOrder, serializeShipment } = require('./publicOrderSerializer');
+const { serializeShipment } = require('./publicOrderSerializer');
+const publicOrderService = require('./publicOrderService');
 const orderService = require('../orders/orderService');
 
 /**
@@ -73,7 +74,7 @@ router.post(
   idempotent('order.create')(
     asyncHandler(async (req, res) => {
       const { order } = await orderService.createOrder(req.tenant.workspaceId, req.body, req);
-      res.status(201).json({ order: serializeOrder(await orderService.getOrder(req.tenant.workspaceId, order.id)) });
+      res.status(201).json({ order: await publicOrderService.getOrder(req.tenant.workspaceId, order.id) });
     })
   )
 );
@@ -88,7 +89,7 @@ router.patch(
     // eslint-disable-next-line global-require
     const stageChange = require('../orders/orderStageChange');
     await stageChange.changeStage(req.tenant.workspaceId, req.params.orderId, req.body, req);
-    res.json({ order: serializeOrder(await orderService.getOrder(req.tenant.workspaceId, req.params.orderId)) });
+    res.json({ order: await publicOrderService.getOrder(req.tenant.workspaceId, req.params.orderId) });
   })
 );
 

@@ -17,6 +17,7 @@ const { capPayload } = require('./webhookPayloadCap');
 // Required lazily: the public order serializer pulls in the orders module.
 const orders = () => require('../orders/orderService');
 const serializers = () => require('../publicApi/publicOrderSerializer');
+const orderAccepted = () => require('../orders/orderAccepted');
 
 async function orderSubject(workspaceId, orderId) {
   const order = await db.Order.findOne({ where: { id: orderId, workspaceId }, attributes: ['id', 'funnelId'] });
@@ -35,7 +36,9 @@ const lock = () => require('../orders/orderLock');
 /** The order as the public API sends it, or null while it is locked (orders/orderLock): nothing is sent then. */
 async function orderData(workspaceId, orderId) {
   const order = await orders().getOrder(workspaceId, orderId);
-  return order.contactLocked ? null : serializers().serializeOrder(order);
+  if (order.contactLocked) return null;
+  const [serialized] = await require('../publicApi/publicOrderOptions').serializeOrders(workspaceId, [order]);
+  return serialized;
 }
 
 /**
@@ -136,21 +139,46 @@ async function fanOut(workspaceId, topic, { eventId, data, subject = {}, endpoin
   return rows.length;
 }
 
-/** The outbox consumer: a domain event → its webhook topic, if it has one. */
+/**
+ * order.accepted (orders/orderAccepted.js) rides on two domain events: an
+ * order that goes through confirmation is accepted when it is confirmed, one
+ * paid online when it is paid. Each event checks that the order is accepted
+ * now and in that way — so a cash-on-delivery order collected later, or a
+ * manual transfer approved before its confirmation, sends nothing. The event
+ * id is the order's: an endpoint hears it once per order, however many times
+ * it is confirmed again.
+ */
+const ACCEPTED_VIA = { 'order.confirmed': 'confirmation', 'order.paid': 'payment' };
+
+async function acceptedData(event, built) {
+  const acceptance = await orderAccepted().acceptanceOf(event.workspaceId, event.payload.orderId);
+  if (!acceptance || !acceptance.accepted || acceptance.via !== ACCEPTED_VIA[event.type]) return null;
+  return { order: built.data.order, acceptedVia: acceptance.via, acceptedAt: acceptance.acceptedAt };
+}
+
+/** The outbox consumer: a domain event → its webhook topics, if it has any. */
 async function handleDomainEvent(event) {
-  const topic = DOMAIN_TO_TOPIC[event.type];
-  if (!topic || !event.workspaceId) return 0;
+  const topics = [DOMAIN_TO_TOPIC[event.type], ACCEPTED_VIA[event.type] && 'order.accepted'].filter(Boolean);
+  if (topics.length === 0 || !event.workspaceId) return 0;
   // Cheap way out for the many stores with no endpoint at all.
   const any = await db.WebhookEndpoint.findOne({ where: { workspaceId: event.workspaceId, isActive: true }, attributes: ['id'] });
   if (!any) return 0;
-  const built = await build(topic, event);
+  // Every topic of one event is about the same thing (order.accepted only joins order.* ones): built once.
+  const built = await build(topics[0], event);
   if (!built) return 0;
-  return fanOut(event.workspaceId, topic, {
-    eventId: `${topic}:${event.id || crypto.randomUUID()}`,
-    data: built.data,
-    subject: built.subject,
-    occurredAt: event.occurredAt,
-  });
+  let deliveries = 0;
+  for (const topic of topics) {
+    const accepted = topic === 'order.accepted';
+    const data = accepted ? await acceptedData(event, built) : built.data;
+    if (!data) continue;
+    deliveries += await fanOut(event.workspaceId, topic, {
+      eventId: accepted ? `order.accepted:${event.payload.orderId}` : `${topic}:${event.id || crypto.randomUUID()}`,
+      data,
+      subject: built.subject,
+      occurredAt: event.occurredAt,
+    });
+  }
+  return deliveries;
 }
 
 /**

@@ -16,6 +16,9 @@ const TOPICS = Object.freeze({
   'order.cancelled': 'An order was cancelled.',
   'order.uncancelled': 'A cancelled order was reopened.',
   'order.paid': 'An order was paid in full.',
+  // Fed by order.confirmed and order.paid (webhookFanout.js, orders/orderAccepted.js); not in '*'.
+  'order.accepted':
+    "An order was accepted: a cash-on-delivery or manually paid order was confirmed, or an online order was paid. Sent once per order, with acceptedVia and acceptedAt. Only to endpoints that list it: '*' does not include it.",
   'order.refunded': 'An order was refunded, fully or in part.',
   'order.item_added': 'A product was added to an order after it was placed (an upsell, or an edit by the team).',
   'shipment.status_changed': 'A shipment moved to another status (old_status and new_status are in the payload).',

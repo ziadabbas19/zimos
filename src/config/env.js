@@ -845,6 +845,16 @@ const env = {
     maxPayloadBytes: /^\d+$/.test((process.env.WEBHOOKS_MAX_PAYLOAD_BYTES || '').trim()) ? parseInt(process.env.WEBHOOKS_MAX_PAYLOAD_BYTES, 10) : 262144,
   },
 
+  // The order as integrations see it (public API, webhooks) and the pull
+  // integrations of tills and kitchens. Each off unless exactly "true"; under
+  // NODE_ENV=test each starts off and a test sets it.
+  publicApi: {
+    // ORDER_PAYLOAD_OPTIONS_ENABLED: order lines carry their menu options
+    // (with each choice's external code) and custom-field answers
+    // (publicApi/publicOrderOptions.js). Off: the order as before.
+    orderOptions: process.env.NODE_ENV !== 'test' && process.env.ORDER_PAYLOAD_OPTIONS_ENABLED === 'true',
+  },
+
   // Merchant courier accounts (modules/shipping/carriers). The key encrypts
   // the credentials each merchant connects (AES-256-GCM, see
   // core/utils/credentialsCipher.js): 32 bytes, base64. Unset or malformed

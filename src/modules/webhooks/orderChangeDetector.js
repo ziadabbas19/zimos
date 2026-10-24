@@ -5,7 +5,7 @@ const { QueryTypes } = require('sequelize');
 const db = require('../../db/models');
 const { STAGE_SQL, ORDERS_WITH_STAGE_FROM } = require('../orders/orderStage');
 const orderService = require('../orders/orderService');
-const { serializeOrder } = require('../publicApi/publicOrderSerializer');
+const { serializeOrders } = require('../publicApi/publicOrderOptions');
 const { subscribes } = require('./webhookEvents');
 const orderLock = require('../orders/orderLock');
 const { capPayload } = require('./webhookPayloadCap');
@@ -268,7 +268,8 @@ async function processPage(candidates, now, transaction) {
     const row = rows.find((r) => r.id === orderId);
     const order = await orderService.getOrder(row.workspace_id, orderId);
     if (!order.contactLocked) {
-      orders.set(orderId, serializeOrder(order));
+      const [serialized] = await serializeOrders(row.workspace_id, [order]);
+      orders.set(orderId, serialized);
       continue;
     }
     holds.push({ orderId, workspaceId: row.workspace_id, heldAt: now, checkedAt: now });

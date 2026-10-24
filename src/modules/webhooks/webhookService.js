@@ -7,7 +7,7 @@ const { recordAudit } = require('../audit/auditService');
 const { checkUrl } = require('./webhookUrlGuard');
 const { generateSecret } = require('./webhookSigning');
 const secretStore = require('./signingSecretStore');
-const { EVENT_TYPES, TEST_EVENT, WILDCARD } = require('./webhookEvents');
+const { EVENT_TYPES, TEST_EVENT, WILDCARD, EXPLICIT_ONLY } = require('./webhookEvents');
 const { attemptDelivery } = require('./webhookDispatcher');
 const { normaliseFilter } = require('./webhookFilter');
 
@@ -67,13 +67,20 @@ async function findEndpoint(workspaceId, endpointId, transaction) {
   return endpoint;
 }
 
-/** '*' stands alone: an endpoint listening to everything lists nothing else. */
-const normaliseEvents = (events) => (events.includes(WILDCARD) ? [WILDCARD] : [...new Set(events)]);
+/**
+ * '*' stands alone: an endpoint listening to everything lists nothing else —
+ * but the events '*' leaves out (order.accepted, webhookEvents.js), which it
+ * keeps beside it.
+ */
+const normaliseEvents = (events) =>
+  events.includes(WILDCARD) ? [WILDCARD, ...new Set(events.filter((e) => EXPLICIT_ONLY.has(e)))] : [...new Set(events)];
 
 function eventCatalogue() {
   return {
     events: Object.entries(EVENT_TYPES).map(([name, description]) => ({ name, description })),
     wildcard: WILDCARD,
+    // Events '*' does not bring: an endpoint lists them by name, beside '*' if it likes.
+    explicitOnly: [...EXPLICIT_ONLY],
   };
 }
 
