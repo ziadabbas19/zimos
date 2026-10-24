@@ -2,7 +2,7 @@
 
 const { QueryTypes } = require('sequelize');
 const db = require('../../db/models');
-const { NotFoundError, ValidationError } = require('../../core/errors/AppError');
+const { AppError, NotFoundError, ValidationError } = require('../../core/errors/AppError');
 const orderService = require('../orders/orderService');
 const { ACCEPTED_SQL, ACCEPTED_AT_SQL, VIA_SQL } = require('../orders/orderAccepted');
 const { serializeOrders } = require('./publicOrderOptions');
@@ -35,15 +35,34 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 
 const encodeCursor = (row) => Buffer.from(JSON.stringify({ at: row.accepted_at_key, id: row.id })).toString('base64url');
 
+// Postgres' own text of a timestamptz: 2026-10-24 12:30:05.123456+00 (or +05:30).
+const PG_TIME = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})(?:\.\d{1,6})?(?:[+-](\d{2})(?::?(\d{2}))?|Z)$/;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** A time Postgres will cast without an error: real calendar date, real clock time, real offset. */
+function validTime(text) {
+  const m = PG_TIME.exec(text);
+  if (!m) return false;
+  const [year, month, day, hour, minute, second, offHour = '0', offMinute = '0'] = m.slice(1).map((v) => (v === undefined ? undefined : Number(v)));
+  const date = new Date(Date.UTC(year, month - 1, day));
+  if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) return false;
+  return hour < 24 && minute < 60 && second < 60 && Number(offHour) < 16 && Number(offMinute) < 60;
+}
+
+/**
+ * The cursor handed out by a previous answer, or 400 INVALID_CURSOR. Checked
+ * whole here, so a cursor someone edited is refused before the database ever
+ * casts it (a time like 2026-13-45 would otherwise fail inside Postgres).
+ */
 function decodeCursor(cursor) {
   try {
     const value = JSON.parse(Buffer.from(String(cursor), 'base64url').toString('utf8'));
     // `at` is Postgres' own text of the time (microseconds and all), handed back as it was given.
-    if (typeof value.at === 'string' && /^\d{4}-\d{2}-\d{2}[ T][\d:.]+([+-]\d{2}(:?\d{2})?|Z)?$/.test(value.at) && /^[0-9a-f-]{36}$/i.test(value.id)) return value;
+    if (value && typeof value.at === 'string' && validTime(value.at) && typeof value.id === 'string' && UUID.test(value.id)) return value;
   } catch {
     // fall through
   }
-  throw new ValidationError([{ field: 'cursor', message: 'Invalid cursor' }]);
+  throw new AppError('INVALID_CURSOR', 'Invalid cursor: use nextCursor exactly as a previous answer gave it', 400);
 }
 
 function windowStart(apiKey, since, now) {
@@ -113,4 +132,4 @@ async function acknowledgeOne(workspaceId, apiKey, orderId) {
   return result.acked[0];
 }
 
-module.exports = { listUnacked, acknowledge, acknowledgeOne, MAX_LOOKBACK_DAYS, DEFAULT_LOOKBACK_DAYS };
+module.exports = { listUnacked, acknowledge, acknowledgeOne, decodeCursor, MAX_LOOKBACK_DAYS, DEFAULT_LOOKBACK_DAYS };

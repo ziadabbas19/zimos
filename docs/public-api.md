@@ -209,7 +209,9 @@ For a system that cannot receive webhooks — a till on a shop's local network �
 pull the **accepted** orders with the key and acknowledge each one you took.
 *Accepted* means: a cash-on-delivery (or manually paid) order once it is
 confirmed, an online order once it is paid; never a cancelled one. Available
-when the platform turns it on (otherwise these paths answer 404).
+when the platform turns it on. Until then each path answers as it did before
+it existed: 404, and 422 for `GET /orders/accepted` (read as
+`GET /orders/{orderId}` with a value that is not an id).
 
 | Method & path                             | Scope               |                                                         |
 | ----------------------------------------- | ------------------- | ------------------------------------------------------- |
@@ -228,11 +230,16 @@ when the platform turns it on (otherwise these paths answer 404).
   a kitchen screen with two keys both get every order.
 - `since` (ISO time) is how far back the feed looks: by default the later of
   the key's creation and 7 days ago, at most 30 days back. `limit` 1–100
-  (default 50); `cursor=<nextCursor>` pages through one answer.
+  (default 50); `cursor=<nextCursor>` pages through one answer. A cursor that
+  was edited answers 400 `INVALID_CURSOR`: send it back exactly as given.
 - `POST /orders/ack` answers `{ "acked": [{ "orderId", "ackedAt" }], "unknown": ["…"] }`:
   ids that are not this store's orders are listed as unknown, and nothing is written for them.
-- Phones are partly hidden in the feed, as in `GET /orders`, unless the key
-  also has `customers:read` and its creator may see full numbers.
+- Phones are partly hidden in the feed, as in `GET /orders` (full numbers
+  when the key also has `customers:read` and its creator may see them). This
+  is a convenience, **not a privacy boundary**: the same key reads one order
+  with `GET /orders/{orderId}` and gets the full number, and names, emails,
+  addresses and notes are never hidden. What a key can read is set by its
+  scopes and its creator's role — give a till's key only what the till needs.
 - `pos-status` is set only on an accepted order (409 `ORDER_NOT_ACCEPTED`
   otherwise). It is a note: "ready" does not ship and "completed" does not
   deliver — those stay the shipment's and the courier's.

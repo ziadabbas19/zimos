@@ -114,7 +114,17 @@ describe('accepted orders feed: on', () => {
     expect(ids(page2)).toEqual([orders[2].id]);
     expect(page2.body.nextCursor).toBeNull();
 
-    expect((await feed(till, '?cursor=not-a-cursor')).status).toBe(422);
+    // An edited cursor is refused before Postgres casts it: 400, never a 500.
+    const bad = await feed(till, '?cursor=not-a-cursor');
+    expect(bad.status).toBe(400);
+    expect(bad.body.error.code).toBe('INVALID_CURSOR');
+    const edit = (at) => Buffer.from(JSON.stringify({ at, id: orders[0].id })).toString('base64url');
+    for (const at of ['2026-13-45 99:99:99+00', '2026-02-30 10:00:00+00', '2026-10-24 24:00:00+00', "2026-10-24 10:00:00+00'; --"]) {
+      const res = await feed(till, `?cursor=${edit(at)}`);
+      expect([at, res.status, res.body.error && res.body.error.code]).toEqual([at, 400, 'INVALID_CURSOR']);
+    }
+    // The cursor the API itself gave still works after a round trip.
+    expect((await feed(till, `?limit=2&cursor=${page1.body.nextCursor}`)).status).toBe(200);
     const tooOld = new Date(Date.now() - 31 * 24 * 3600 * 1000).toISOString();
     expect((await feed(till, `?since=${tooOld}`)).status).toBe(422);
   });

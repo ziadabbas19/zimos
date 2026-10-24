@@ -72,8 +72,10 @@ const codCollected = asyncHandler(async (req, res) =>
 );
 
 // PUBLIC_API_ACK_ENABLED (acceptedOrdersFeed.js, posStatus.js). The feed masks
-// phones as the orders list does: full numbers need customers:read and a
-// creator who may see them.
+// phones as the orders list does — a convenience, not a boundary: the same
+// key reads one order (GET /orders/:id) with the full number, and names,
+// emails and addresses are never masked. What a key may read is decided by
+// its scopes and its creator's role.
 const accepted = asyncHandler(async (req, res) => res.json(forViewer(req, await feed.listUnacked(wid(req), req.apiKey, req.query))));
 
 const ack = asyncHandler(async (req, res) => res.json(await feed.acknowledge(wid(req), req.apiKey, req.body.orderIds)));
