@@ -9,7 +9,7 @@ const { verifyAccessToken } = require('../../core/security/tokens');
 const { clientIpOfUpgrade } = require('../../core/middleware/clientIp');
 const { userRoom } = require('./catalog');
 const { roomsByUser } = require('./rooms');
-const { ATTACHMENTS_TABLE } = require('./publisher');
+const { CHANNEL_PREFIX } = require('./publisher');
 
 /**
  * The Socket.IO server of the live updates, on the API's own HTTP server.
@@ -47,6 +47,8 @@ const WINDOW_MS = 60 * 1000;
 const MAX_TRACKED_IPS = 10000;
 
 const MAX_TOKEN_LENGTH = 4096;
+// The adapter's table for messages too big for a NOTIFY (migration 708). Ours never are (publisher.js).
+const ATTACHMENTS_TABLE = 'socket_io_attachments';
 
 /** A refused handshake: the client's connect_error carries `code` and nothing else. */
 function refused(code) {
@@ -121,6 +123,7 @@ function createRealtimeServer(httpServer, { app, connections }) {
     connectTimeout: CONNECT_TIMEOUT_MS,
     allowRequest,
     adapter: createAdapter(connections.forAdapter, {
+      channelPrefix: CHANNEL_PREFIX,
       tableName: ATTACHMENTS_TABLE,
       errorHandler: throttledWarn('[realtime] adapter'),
     }),

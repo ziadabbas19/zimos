@@ -18,10 +18,9 @@ module.exports = {
       get events() {
         return env.realtime.enabled ? EVENTS : [];
       },
-      handle: async (event) => {
-        // eslint-disable-next-line global-require
-        require('./publisher').publish(event);
-      },
+      // A failed NOTIFY rejects: the job is retried by the queue's policy, never sent to a browser.
+      // eslint-disable-next-line global-require
+      handle: (event) => require('./publisher').publish(event),
     },
   ],
 };

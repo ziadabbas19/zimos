@@ -12,7 +12,12 @@
  * same event, so a silent socket means filtered, not slow.
  */
 
+const fs = require('fs');
 const http = require('http');
+const path = require('path');
+const { Server } = require('socket.io');
+const { Adapter } = require('socket.io-adapter');
+const { PostgresAdapter } = require('@socket.io/postgres-adapter');
 const { io: connectSocket } = require('socket.io-client');
 const {
   app,
@@ -397,7 +402,7 @@ describe('the LISTEN connection', () => {
     const probeId = '33333333-3333-4333-8333-333333333333';
     const got = await (async () => {
       for (let i = 0; i < 20; i += 1) {
-        await publisher.publish({ id: probeId, type: 'order.created', workspaceId: A.workspace.id, payload: { orderId: probeId } });
+        await publisher.publish({ id: probeId, type: 'order.created', workspaceId: A.workspace.id, payload: { orderId: probeId } }).catch(() => {});
         await sleep(500);
         const found = named(a, 'order.created', (m) => m.entity.id === probeId)();
         if (found) return found;
@@ -446,15 +451,91 @@ describe('catalog', () => {
     expect(route({ id, type: 'order.created', workspaceId: null, payload: { orderId: id } })).toBe(null);
     expect(route({ id, type: 'customer.updated', workspaceId, payload: { customerId: id } })).toBe(null);
   });
+});
 
-  it("puts the namespace on the emitter's NOTIFY, which the adapter drops without it, and leaves other queries alone", async () => {
-    const calls = [];
-    const pool = publisher.withNamespace({ query: async (text, values) => calls.push([text, values]) });
-    const sent = JSON.stringify({ uid: 'emitter', type: 3, data: { packet: { type: 2, data: ['order.created', {}], nsp: '/' }, opts: { rooms: ['r'] } } });
-    await pool.query('SELECT pg_notify($1, $2)', ['socket.io#/', sent]);
-    await pool.query('SELECT 1', []);
-    expect(JSON.parse(calls[0][1][1])).toEqual({ ...JSON.parse(sent), nsp: '/' });
-    expect(calls[0][1][0]).toBe('socket.io#/');
-    expect(calls[1]).toEqual(['SELECT 1', []]);
+describe('the publisher', () => {
+  const ROOM = 'w:11111111-1111-4111-8111-111111111111:orders.view';
+
+  /** A real postgres adapter on a namespace of its own, fed by hand: the format this file publishes must be what it reads. */
+  function adapterOnItsOwn() {
+    const io = new Server();
+    const nsp = io.of('/');
+    const adapter = new PostgresAdapter(nsp, {}, { publish: async () => {} });
+    return { io, nsp, adapter };
+  }
+
+  it("is read by the pinned adapter: a broadcast to a room, a disconnect of a room, an event for the servers", () => {
+    const { nsp, adapter } = adapterOnItsOwn();
+    const broadcast = jest.spyOn(Adapter.prototype, 'broadcast').mockImplementation(() => {});
+    const disconnect = jest.spyOn(Adapter.prototype, 'disconnectSockets').mockImplementation(() => {});
+    const serverEvent = jest.spyOn(nsp, '_onServerSideEmit').mockImplementation(() => {});
+    try {
+      const body = { v: 1, id: 'e1', type: 'order.created', workspaceId: 'w1', entity: { type: 'order', id: 'o1' }, at: 'now' };
+      const wire = (message) => JSON.parse(JSON.stringify(message));
+      adapter.onMessage(wire(publisher.messages.broadcast(ROOM, 'order.created', body)));
+      expect(broadcast).toHaveBeenCalledTimes(1);
+      const [packet, opts] = broadcast.mock.calls[0];
+      expect(packet).toEqual({ type: 2, data: ['order.created', body], nsp: '/' });
+      expect([...opts.rooms]).toEqual([ROOM]);
+      expect([...opts.except]).toEqual([]);
+
+      adapter.onMessage(wire(publisher.messages.disconnect('u:42')));
+      expect(disconnect).toHaveBeenCalledTimes(1);
+      expect([...disconnect.mock.calls[0][0].rooms]).toEqual(['u:42']);
+      expect(disconnect.mock.calls[0][1]).toBe(true);
+
+      adapter.onMessage(wire(publisher.messages.serverEvent(publisher.RESYNC_EVENT)));
+      expect(serverEvent).toHaveBeenCalledWith([publisher.RESYNC_EVENT]);
+    } finally {
+      broadcast.mockRestore();
+      disconnect.mockRestore();
+      serverEvent.mockRestore();
+      adapter.close();
+    }
+  });
+
+  it('is pinned: an upgrade of the adapter or its cluster protocol must come through this file and the test above', () => {
+    const pkg = require('../../package.json');
+    const installed = (name) => JSON.parse(fs.readFileSync(path.join(__dirname, '../../node_modules', name, 'package.json'), 'utf8')).version;
+    expect(pkg.dependencies['@socket.io/postgres-adapter']).toBe('0.5.0');
+    expect(pkg.dependencies['socket.io-adapter']).toBe('2.5.8');
+    expect(pkg.dependencies['socket.io']).toBe('4.8.4');
+    expect(installed('@socket.io/postgres-adapter')).toBe('0.5.0');
+    expect(installed('socket.io-adapter')).toBe('2.5.8');
+    expect(installed('socket.io')).toBe('4.8.4');
+    expect(pkg.dependencies['@socket.io/postgres-emitter']).toBeUndefined();
+  });
+
+  it('never sends a message too big for a NOTIFY', async () => {
+    const query = jest.spyOn(pgPool.get().pool, 'query');
+    try {
+      const sent = await publisher.send(publisher.messages.broadcast(ROOM, 'order.created', { padding: 'x'.repeat(publisher.MAX_PAYLOAD_BYTES) }));
+      expect(sent).toBe(false);
+      expect(query).not.toHaveBeenCalled();
+    } finally {
+      query.mockRestore();
+    }
+  });
+
+  it('a failed NOTIFY reaches no browser, says nothing about the database, and pauses publishing', async () => {
+    const A = await store('Store A');
+    const a = await connected(A.auth.accessToken);
+    const failure = Object.assign(new Error('connect ECONNREFUSED 10.0.0.5:5432'), { code: 'ECONNREFUSED', address: '10.0.0.5', port: 5432 });
+    const query = jest.spyOn(pgPool.get().pool, 'query').mockRejectedValueOnce(failure);
+    try {
+      const event = { id: '44444444-4444-4444-8444-444444444444', type: 'order.created', workspaceId: A.workspace.id, payload: { orderId: '55555555-5555-4555-8555-555555555555' } };
+      const first = await publisher.publish(event).catch((err) => err);
+      expect(first.message).toBe('live updates: publish failed');
+      expect(JSON.stringify(first)).not.toMatch(/10\.0\.0\.5|5432|ECONNREFUSED/);
+      // Paused: the next one does not even ask the database.
+      const second = await publisher.publish(event).catch((err) => err);
+      expect(second.message).toBe('live updates: publishing paused after a failure');
+      expect(query).toHaveBeenCalledTimes(1);
+      await sleep(500);
+      expect(a.received).toEqual([]);
+    } finally {
+      query.mockRestore();
+      publisher.reset();
+    }
   });
 });
