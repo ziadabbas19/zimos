@@ -117,6 +117,10 @@ describe('order.accepted', () => {
     await handleDomainEvent({ ...event, type: 'order.paid' });
     expect(await acceptedRows(listing.id)).toHaveLength(0);
 
+    // Paid with no completed_at (no moment to stand on): not counted as accepted.
+    await db.Order.update({ financialState: 'paid', completedAt: null }, { where: { id: order.id } });
+    expect((await acceptanceOf(ctx.workspace.id, order.id)).accepted).toBe(false);
+
     await db.Order.update({ financialState: 'paid', completedAt: new Date() }, { where: { id: order.id } });
     await handleDomainEvent({ ...event, type: 'order.confirmed' });
     expect(await acceptedRows(listing.id)).toHaveLength(0);

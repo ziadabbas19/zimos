@@ -14,7 +14,9 @@ const db = require('../../db/models');
  *   paid                 an order paid online (a gateway, or a transfer staff
  *                        recorded) once it is paid in full, refunds after
  *                        that included: at completed_at, when the payment
- *                        made it a sale (orderCompletion.js)
+ *                        made it a sale (orderCompletion.js). One with no
+ *                        completed_at is not counted: its moment would be
+ *                        a guess that moves with every edit
  *
  * A cancelled order is not accepted, whatever it was before. One definition
  * for the webhook event order.accepted (webhooks/webhookFanout.js), the
@@ -31,10 +33,10 @@ const THROUGH_CONFIRMATION_SQL = `(o.payment_method = 'cod' OR EXISTS (SELECT 1 
 
 const ACCEPTED_SQL = `(o.cancelled_at IS NULL AND (
     (o.confirmation_state = 'confirmed' AND ${THROUGH_CONFIRMATION_SQL})
-    OR (NOT ${THROUGH_CONFIRMATION_SQL} AND o.financial_state IN ${PAID_SQL})
+    OR (NOT ${THROUGH_CONFIRMATION_SQL} AND o.financial_state IN ${PAID_SQL} AND o.completed_at IS NOT NULL)
   ))`;
 
-const ACCEPTED_AT_SQL = `(CASE WHEN ${THROUGH_CONFIRMATION_SQL} THEN o.confirmed_at ELSE COALESCE(o.completed_at, o.updated_at) END)`;
+const ACCEPTED_AT_SQL = `(CASE WHEN ${THROUGH_CONFIRMATION_SQL} THEN o.confirmed_at ELSE o.completed_at END)`;
 
 const VIA_SQL = `(CASE WHEN ${THROUGH_CONFIRMATION_SQL} THEN 'confirmation' ELSE 'payment' END)`;
 
