@@ -2,7 +2,7 @@
 
 const Joi = require('joi');
 const orderSchemas = require('./orderValidation');
-const { COLUMN_KEYS } = require('./orderExportService');
+const { COLUMN_KEYS, PRESET_NAMES } = require('./orderExportService');
 
 const uuid = Joi.string().uuid();
 
@@ -27,8 +27,10 @@ module.exports = {
     query: orderSchemas.list.query.keys({
       limit: Joi.forbidden(),
       cursor: Joi.forbidden(),
-      columns: columns.optional(),
-      rowPer: Joi.string().valid('order', 'item').default('order'),
+      // A ready-made export (orderExportService.PRESETS) brings its own columns and rows.
+      preset: Joi.string().valid(...PRESET_NAMES).optional(),
+      columns: columns.optional().when('preset', { is: Joi.exist(), then: Joi.forbidden() }),
+      rowPer: Joi.string().valid('order', 'item').when('preset', { is: Joi.exist(), then: Joi.forbidden(), otherwise: Joi.optional().default('order') }),
       format: Joi.string().valid('csv', 'xlsx').default('csv'),
       lang: Joi.string().valid('en', 'ar').default('en'),
     }),

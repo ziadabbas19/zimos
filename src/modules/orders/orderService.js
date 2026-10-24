@@ -1172,35 +1172,11 @@ async function paymentProviders(orders) {
  * decides where those expressions land. Selecting ids first keeps the
  * filtering explicit and the hydration a plain findAll.
  */
-async function listOrders(
-  workspaceId,
-  { limit = 50, cursor, sort: sortKey, confirmationState, financialState, fulfillmentState, stage, q, from, to, ...filters } = {}
-) {
-  const conditions = ['o.workspace_id = $workspaceId'];
-  const bind = { workspaceId, limit: limit + 1 };
-  applyOrderFilters(conditions, bind, filters);
-  const sort = orderSort(sortKey);
-
-  if (confirmationState) {
-    conditions.push('o.confirmation_state = $confirmationState');
-    bind.confirmationState = confirmationState;
-  }
-  if (financialState) {
-    conditions.push('o.financial_state = $financialState');
-    bind.financialState = financialState;
-  }
-  if (fulfillmentState) {
-    conditions.push('o.fulfillment_state = $fulfillmentState');
-    bind.fulfillmentState = fulfillmentState;
-  }
-  if (stage) {
-    // The same expression the tab counts group by, so a tab's count and the
-    // rows behind the tab can never be two different answers.
-    conditions.push(`${STAGE_SQL} = $stage`);
-    bind.stage = stage;
-  }
+async function listOrders(workspaceId, { limit = 50, cursor, sort: sortKey, ...query } = {}) {
   const lockCtx = await orderLock.contextFor(workspaceId);
-  applySearchAndDates(conditions, bind, { q, from, to }, lockCtx);
+  const { conditions, bind } = listWhere(workspaceId, query, lockCtx);
+  bind.limit = limit + 1;
+  const sort = orderSort(sortKey);
 
   if (cursor) {
     const anchor = await resolveCursor(workspaceId, cursor);
@@ -1227,6 +1203,51 @@ async function listOrders(
   // Locked orders hidden here, so the list, the export and the public API all get the same answer.
   const orders = await orderLock.presentOrders(workspaceId, await hydrateOrders(page), { ctx: lockCtx });
   return { orders, nextCursor: hasMore ? page[page.length - 1].id : null };
+}
+
+/**
+ * How many orders listOrders would page through for this query — the same
+ * conditions, so the two can never disagree (the export's size limits).
+ */
+async function countOrders(workspaceId, { limit, cursor, sort, ...query } = {}) {
+  const { conditions, bind } = listWhere(workspaceId, query, await orderLock.contextFor(workspaceId));
+  const [row] = await db.sequelize.query(
+    `SELECT COUNT(*)::int AS count FROM ${ORDERS_WITH_STAGE_FROM} WHERE ${conditions.join(' AND ')}`,
+    { bind, type: QueryTypes.SELECT }
+  );
+  return row.count;
+}
+
+/**
+ * The list's WHERE: the store, the filters, the three states, the stage, the
+ * search and dates. `lockCtx` (orderLock.contextFor): a locked order is never
+ * found by its customer's name, email or phone.
+ */
+function listWhere(workspaceId, { confirmationState, financialState, fulfillmentState, stage, q, from, to, ...filters } = {}, lockCtx = null) {
+  const conditions = ['o.workspace_id = $workspaceId'];
+  const bind = { workspaceId };
+  applyOrderFilters(conditions, bind, filters);
+
+  if (confirmationState) {
+    conditions.push('o.confirmation_state = $confirmationState');
+    bind.confirmationState = confirmationState;
+  }
+  if (financialState) {
+    conditions.push('o.financial_state = $financialState');
+    bind.financialState = financialState;
+  }
+  if (fulfillmentState) {
+    conditions.push('o.fulfillment_state = $fulfillmentState');
+    bind.fulfillmentState = fulfillmentState;
+  }
+  if (stage) {
+    // The same expression the tab counts group by, so a tab's count and the
+    // rows behind the tab can never be two different answers.
+    conditions.push(`${STAGE_SQL} = $stage`);
+    bind.stage = stage;
+  }
+  applySearchAndDates(conditions, bind, { q, from, to }, lockCtx);
+  return { conditions, bind };
 }
 
 /**
@@ -1538,6 +1559,7 @@ module.exports = {
   getOrderRef,
   applySearchAndDates,
   listOrders,
+  countOrders,
   orderPipeline,
   resolveCursor,
   generateOrderNumber,
