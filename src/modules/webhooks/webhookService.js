@@ -68,6 +68,24 @@ async function findEndpoint(workspaceId, endpointId, transaction) {
 }
 
 /**
+ * An endpoint's address as the activity log keeps it: the scheme and host,
+ * and a short fingerprint of the whole URL so two different addresses on one
+ * host can be told apart. Never the path or the query: a receiver's secret
+ * often lives there (an Apps Script `?token=`, a Zapier or Make hook id), and
+ * anyone with audit_log.view reads the log.
+ */
+function auditUrl(url) {
+  let origin = '';
+  try {
+    origin = new URL(url).origin;
+  } catch {
+    origin = '';
+  }
+  const fingerprint = crypto.createHash('sha256').update(String(url)).digest('hex').slice(0, 8);
+  return `${origin}/… #${fingerprint}`;
+}
+
+/**
  * '*' stands alone: an endpoint listening to everything lists nothing else —
  * but the events '*' leaves out (order.accepted, webhookEvents.js), which it
  * keeps beside it.
@@ -123,7 +141,7 @@ async function createEndpoint(workspaceId, { url, events, isActive = true, filte
       entityType: 'WebhookEndpoint',
       entityId: endpoint.id,
       req,
-      after: { url: endpoint.url, events: endpoint.events, isActive: endpoint.isActive },
+      after: { url: auditUrl(endpoint.url), events: endpoint.events, isActive: endpoint.isActive },
       transaction,
     });
     return { endpoint: serializeEndpoint(endpoint), signingSecret };
@@ -133,7 +151,7 @@ async function createEndpoint(workspaceId, { url, events, isActive = true, filte
 async function updateEndpoint(workspaceId, endpointId, changes, req) {
   return db.sequelize.transaction(async (transaction) => {
     const endpoint = await findEndpoint(workspaceId, endpointId, transaction);
-    const before = { url: endpoint.url, events: endpoint.events, isActive: endpoint.isActive };
+    const before = { url: auditUrl(endpoint.url), events: endpoint.events, isActive: endpoint.isActive };
     const next = {};
     if (changes.url !== undefined) next.url = checkUrl(changes.url);
     if (changes.events !== undefined) next.events = normaliseEvents(changes.events);
@@ -152,7 +170,7 @@ async function updateEndpoint(workspaceId, endpointId, changes, req) {
       entityId: endpoint.id,
       req,
       before,
-      after: { url: endpoint.url, events: endpoint.events, isActive: endpoint.isActive },
+      after: { url: auditUrl(endpoint.url), events: endpoint.events, isActive: endpoint.isActive },
       transaction,
     });
     return serializeEndpoint(endpoint);
@@ -170,7 +188,7 @@ async function deleteEndpoint(workspaceId, endpointId, req) {
       entityType: 'WebhookEndpoint',
       entityId: endpoint.id,
       req,
-      before: { url: endpoint.url, events: endpoint.events },
+      before: { url: auditUrl(endpoint.url), events: endpoint.events },
       transaction,
     });
     await endpoint.destroy({ transaction });
@@ -246,6 +264,7 @@ async function redeliver(workspaceId, endpointId, deliveryId) {
 
 module.exports = {
   MAX_ENDPOINTS_PER_WORKSPACE,
+  auditUrl,
   eventCatalogue,
   listEndpoints,
   createEndpoint,
