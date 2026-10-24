@@ -4,9 +4,10 @@ const env = require('../../config/env');
 
 /**
  * Keeps a delivery's body under WEBHOOKS_MAX_PAYLOAD_BYTES when it is set
- * (unset or 0: no cap, as before; 256 KB is the suggested value). An ordinary order is a few KB; the cap is for the
- * order with hundreds of lines or a very long note, which a receiver behind a
- * body-size limit (Zapier, Apps Script, a proxy) would refuse every retry.
+ * (unset or 0: no cap, as before; 256 KB is the suggested value). An
+ * ordinary order is a few KB; the cap is for the order with hundreds of
+ * lines or a very long note, which a receiver behind a body-size limit
+ * (Zapier, Apps Script, a proxy) would refuse every retry.
  *
  * An event over the cap is sent — and kept in the delivery log — with
  * `truncated: true` and its data reduced to ids: each object that has an id
