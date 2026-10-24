@@ -1,5 +1,6 @@
 'use strict';
 
+const crypto = require('crypto');
 const env = require('../../config/env');
 const cipher = require('../../core/utils/credentialsCipher');
 const { AppError } = require('../../core/errors/AppError');
@@ -29,6 +30,11 @@ const { secretHint } = require('./webhookSigning');
 
 const sealingOn = () => env.webhooks.secretSealing === true;
 const key = () => cipher.parseKey(env.webhooks.secretsKey, 'WEBHOOK_SECRETS_KEY');
+// The key being rotated away from: read only (WEBHOOK_SECRETS_KEY_PREVIOUS).
+const previousKey = () => cipher.parseKey(env.webhooks.secretsKeyPrevious, 'WEBHOOK_SECRETS_KEY_PREVIOUS');
+
+/** 8 hex characters naming a key without revealing it: to tell two keys apart. */
+const fingerprint = (k) => (k ? crypto.createHash('sha256').update(k).digest('hex').slice(0, 8) : null);
 const aad = (workspaceId, endpointId) => `webhook:${workspaceId}:${endpointId}`;
 
 /** The columns to write for a new secret of endpoint `endpointId`. */
@@ -46,15 +52,27 @@ function seal(workspaceId, endpointId, secret, k = key()) {
 }
 
 /**
- * The secret to sign with. Throws when it is sealed and cannot be opened
- * (no key, another key, a value moved from another row).
+ * A sealed secret opened, and which key opened it: 'current' or 'previous'.
+ * Throws when neither opens it (no key, another key, a value moved from
+ * another row) — GCM refuses a wrong key, so trying two is safe.
  */
-function readSecret(endpoint) {
-  if (endpoint.signingSecretSealed) {
-    const k = key();
-    if (!k) throw new Error('WEBHOOK_SECRETS_KEY is not configured');
-    return cipher.decrypt(endpoint.signingSecretSealed, aad(endpoint.workspaceId, endpoint.id), k);
+function openSealed(endpoint) {
+  const keys = [['current', key()], ['previous', previousKey()]].filter(([, k]) => k);
+  if (keys.length === 0) throw new Error('WEBHOOK_SECRETS_KEY is not configured');
+  let last;
+  for (const [which, k] of keys) {
+    try {
+      return { secret: cipher.decrypt(endpoint.signingSecretSealed, aad(endpoint.workspaceId, endpoint.id), k), which };
+    } catch (err) {
+      last = err;
+    }
   }
+  throw last;
+}
+
+/** The secret to sign with. Throws when it is sealed and opens with no key here. */
+function readSecret(endpoint) {
+  if (endpoint.signingSecretSealed) return openSealed(endpoint).secret;
   return endpoint.signingSecret;
 }
 
@@ -68,4 +86,4 @@ function hintFor(endpoint) {
   }
 }
 
-module.exports = { storedFields, seal, readSecret, hintFor, sealingOn };
+module.exports = { storedFields, seal, readSecret, openSealed, hintFor, sealingOn, fingerprint, key, previousKey };

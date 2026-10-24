@@ -835,6 +835,10 @@ const env = {
     // starts off; a test sets it.
     secretSealing: process.env.NODE_ENV !== 'test' && process.env.WEBHOOK_SECRET_SEALING === 'true',
     secretsKey: (process.env.WEBHOOK_SECRETS_KEY || '').trim(),
+    // While rotating the key: the old one, read only (a sealed secret that
+    // does not open with WEBHOOK_SECRETS_KEY is tried with it). Empty once
+    // scripts/seal-webhook-secrets.js --reseal has moved every row.
+    secretsKeyPrevious: (process.env.WEBHOOK_SECRETS_KEY_PREVIOUS || '').trim(),
     // WEBHOOKS_REQUIRE_API_ACCESS=true: adding an endpoint needs the plan's
     // api_access, as minting an API key does — refused only while
     // PLAN_FEATURE_ENFORCEMENT is on too (webhooks/webhookPlanGate.js).

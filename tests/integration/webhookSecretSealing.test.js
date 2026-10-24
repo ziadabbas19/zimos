@@ -203,16 +203,18 @@ describe('webhook signing secrets at rest', () => {
 });
 
 describe('scripts/seal-webhook-secrets.js', () => {
+  const cipher = require('../../src/core/utils/credentialsCipher');
+
   it('seals the secrets kept in clear, unseals them back, and changes nothing twice', async () => {
     const { auth, workspace } = await setupWorkspaceWithProduct();
     const { endpoint, signingSecret } = (await addEndpoint(auth.accessToken, workspace.id)).body;
     Object.assign(env.webhooks, { secretsKey: KEY });
-    const key = require('../../src/core/utils/credentialsCipher').parseKey(KEY);
+    const key = cipher.parseKey(KEY);
 
-    const todo = await sealScript.candidates({ unseal: false, workspace: workspace.id });
+    const todo = await sealScript.candidates({ mode: 'seal', workspace: workspace.id });
     expect(todo.map((r) => r.id)).toEqual([endpoint.id]);
-    expect(await sealScript.convert(endpoint.id, { unseal: false, key })).toBe('changed');
-    expect(await sealScript.convert(endpoint.id, { unseal: false, key })).toBe('skipped');
+    expect(await sealScript.convert(endpoint.id, { mode: 'seal', key })).toBe('changed');
+    expect(await sealScript.convert(endpoint.id, { mode: 'seal', key })).toBe('skipped');
     let row = await rawRow(endpoint.id);
     expect(row.signing_secret).toBeNull();
     expect(secretStore.readSecret(await db.WebhookEndpoint.findByPk(endpoint.id))).toBe(signingSecret);
@@ -222,14 +224,50 @@ describe('scripts/seal-webhook-secrets.js', () => {
     expect(test.body.delivery.status).toBe('delivered');
     expect(verifySignature(signingSecret, receiver.received[0].headers['x-zimos-signature'], receiver.received[0].body)).toBe(true);
 
-    expect(await sealScript.convert(endpoint.id, { unseal: true, key })).toBe('changed');
+    expect(await sealScript.convert(endpoint.id, { mode: 'unseal', key })).toBe('changed');
     row = await rawRow(endpoint.id);
     expect(row).toEqual({ signing_secret: signingSecret, signing_secret_sealed: null });
-    expect(await sealScript.convert(endpoint.id, { unseal: true, key })).toBe('skipped');
+    expect(await sealScript.convert(endpoint.id, { mode: 'unseal', key })).toBe('skipped');
   });
 
-  it('reads only the arguments it knows', () => {
-    expect(sealScript.readArgs(['--apply', '--unseal', '--workspace', 'w1'])).toMatchObject({ apply: true, unseal: true, workspace: 'w1' });
+  it('rotates the key: the old one read only meanwhile, --reseal moves every row, the census tells the keys apart', async () => {
+    const OLD = KEY;
+    const NEW = crypto.randomBytes(32).toString('base64');
+    Object.assign(env.webhooks, { secretSealing: true, secretsKey: OLD, secretsKeyPrevious: '' });
+    const { auth, workspace } = await setupWorkspaceWithProduct();
+    const { endpoint, signingSecret } = (await addEndpoint(auth.accessToken, workspace.id)).body;
+    const sealedWithOld = (await rawRow(endpoint.id)).signing_secret_sealed;
+
+    // New key in place, old one as _PREVIOUS: deliveries keep signing.
+    Object.assign(env.webhooks, { secretsKey: NEW, secretsKeyPrevious: OLD });
+    expect(secretStore.readSecret(await db.WebhookEndpoint.findByPk(endpoint.id))).toBe(signingSecret);
+    const rows = await sealScript.candidates({ mode: 'reseal', workspace: workspace.id });
+    expect(sealScript.census(rows)).toEqual({ current: 0, previous: 1, neither: 0 });
+
+    expect(await sealScript.convert(endpoint.id, { mode: 'reseal', key: cipher.parseKey(NEW) })).toBe('changed');
+    expect(await sealScript.convert(endpoint.id, { mode: 'reseal', key: cipher.parseKey(NEW) })).toBe('skipped');
+    const after = await rawRow(endpoint.id);
+    expect(after.signing_secret).toBeNull();
+    expect(after.signing_secret_sealed).not.toBe(sealedWithOld);
+
+    // _PREVIOUS dropped: everything opens with the new key alone.
+    env.webhooks.secretsKeyPrevious = '';
+    expect(secretStore.openSealed(await db.WebhookEndpoint.findByPk(endpoint.id))).toEqual({ secret: signingSecret, which: 'current' });
+    // A run with some other key sees secrets that open with neither: not the API's key.
+    env.webhooks.secretsKey = crypto.randomBytes(32).toString('base64');
+    expect(sealScript.census(await sealScript.candidates({ mode: 'reseal', workspace: workspace.id }))).toEqual({ current: 0, previous: 0, neither: 1 });
+    expect(secretStore.fingerprint(cipher.parseKey(NEW))).toMatch(/^[0-9a-f]{8}$/);
+  });
+
+  it('reads only the arguments it knows, and writes only to the database --confirm-db names', () => {
+    expect(sealScript.readArgs(['--apply', '--unseal', '--workspace', 'w1', '--confirm-db', 'zimos'])).toMatchObject({ apply: true, mode: 'unseal', workspace: 'w1', confirmDb: 'zimos' });
+    expect(sealScript.readArgs(['--reseal']).mode).toBe('reseal');
     expect(() => sealScript.readArgs(['--everything'])).toThrow('Unknown argument');
+    expect(() => sealScript.readArgs(['--confirm-production'])).toThrow('Unknown argument');
+
+    expect(() => sealScript.assertTarget({ apply: false }, 'railway')).not.toThrow();
+    expect(() => sealScript.assertTarget({ apply: true, confirmDb: null }, 'railway')).toThrow('--confirm-db railway');
+    expect(() => sealScript.assertTarget({ apply: true, confirmDb: 'zimos_test' }, 'railway')).toThrow('nothing written');
+    expect(() => sealScript.assertTarget({ apply: true, confirmDb: 'railway' }, 'railway')).not.toThrow();
   });
 });
