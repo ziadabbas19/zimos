@@ -36,7 +36,7 @@ already exists keeps working whatever the plan.
 | -------------- | ----------------------------------------------------------------------------- |
 | `orders:read`  | list and read orders and their shipments; pull the accepted-orders feed and acknowledge what it took (see *Tills and kitchens*) |
 | `orders:write` | everything above, plus confirmation, cancellation, shipments, COD collection |
-| `orders:pos_status` | report the order's status in your till or kitchen (`received`, `preparing`, `ready`, `completed`) — a note beside the order that never moves its stage. Only by this scope's name: `orders:write` does not grant it |
+| `orders:pos_status` | for a till: pull the accepted-orders feed, acknowledge it, and report the order's status in the till (`received`, `preparing`, `ready`, `completed`) — a note that never moves its stage. **Nothing else**: a key with only this scope cannot list or read other orders (403). `orders:write` does not grant it |
 
 A key acts **as the teammate who created it**. A request is allowed only when
 both the key's scopes and that person's role in the store allow it — so a key
@@ -215,9 +215,9 @@ it existed: 404, and 422 for `GET /orders/accepted` (read as
 
 | Method & path                             | Scope               |                                                         |
 | ----------------------------------------- | ------------------- | ------------------------------------------------------- |
-| `GET /orders/accepted`                    | `orders:read`       | accepted orders **this key** has not acknowledged, oldest first |
-| `POST /orders/ack`                        | `orders:read`       | acknowledge up to 100: `{ "orderIds": ["…"] }`           |
-| `POST /orders/{orderId}/ack`              | `orders:read`       | acknowledge one                                         |
+| `GET /orders/accepted`                    | `orders:read`, `orders:write` or `orders:pos_status` | accepted orders **this key** has not acknowledged, oldest first |
+| `POST /orders/ack`                        | the same            | acknowledge up to 100: `{ "orderIds": ["…"] }`           |
+| `POST /orders/{orderId}/ack`              | the same            | acknowledge one                                         |
 | `PUT /orders/{orderId}/pos-status`        | `orders:pos_status` | `{ "status": "preparing", "reference": "T-12" }`        |
 
 ```json

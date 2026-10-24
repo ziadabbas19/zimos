@@ -163,6 +163,38 @@ describe('accepted orders feed: on', () => {
     expect(ids(await feed(tillB))).toEqual([theirs.id]);
   });
 
+  it('a key with only orders:pos_status reads its feed, acknowledges and sets the status — and no other order', async () => {
+    const ctx = await store();
+    const posOnly = await mint(ctx, ['orders:pos_status']);
+    const accepted = await placeOrder(ctx);
+    const notAccepted = await placeOrder(ctx);
+    await confirmCodOrder(ctx.auth.accessToken, ctx.ws, accepted.id);
+
+    expect(ids(await feed(posOnly))).toEqual([accepted.id]);
+    expect((await request(app).put(`/api/v1/public/orders/${accepted.id}/pos-status`).set(posOnly.H).send({ status: 'preparing' })).status).toBe(200);
+    expect((await request(app).post(`/api/v1/public/orders/${accepted.id}/ack`).set(posOnly.H)).status).toBe(200);
+
+    // Not in its feed, and not even the one it took: every general read is refused.
+    for (const path of [
+      '/api/v1/public/orders',
+      `/api/v1/public/orders/${notAccepted.id}`,
+      `/api/v1/public/orders/${accepted.id}`,
+      `/api/v1/public/orders/by-number/${notAccepted.orderNumber}`,
+      `/api/v1/public/orders/${notAccepted.id}/shipments`,
+      `/api/v1/public/orders/${notAccepted.id}/notes`,
+    ]) {
+      const res = await request(app).get(path).set(posOnly.H);
+      expect([path, res.status]).toEqual([path, 403]);
+      expect(JSON.stringify(res.body)).not.toContain('Feed Buyer');
+    }
+    // Nor any write: confirming or cancelling is not a till's note.
+    expect((await request(app).post(`/api/v1/public/orders/${notAccepted.id}/confirmation`).set(posOnly.H).send({ outcome: 'confirmed' })).status).toBe(403);
+    expect((await request(app).post(`/api/v1/public/orders/${notAccepted.id}/cancel`).set(posOnly.H).send({ reason: 'x' })).status).toBe(403);
+    // A key made for something else (orders:create) does not get the feed.
+    const creator = await mint(ctx, ['orders:create']);
+    expect((await feed(creator)).status).toBe(403);
+  });
+
   it('pos-status: needs its own scope, only on an accepted order of the store, and never moves the stage', async () => {
     const ctx = await store();
     const other = await store();
