@@ -47,27 +47,66 @@ const blocked = new net.BlockList();
   ['224.0.0.0', 4],
   ['240.0.0.0', 4],
 ].forEach(([address, prefix]) => blocked.addSubnet(address, prefix, 'ipv4'));
-// IPv6: unspecified, loopback, NAT64, unique-local, link-local, multicast,
-// documentation.
+// IPv6: unspecified, loopback, NAT64 (well-known and local-use), discard-only,
+// Teredo and 6to4 (both carry an IPv4 address inside), unique-local,
+// site-local (deprecated), link-local, multicast, documentation.
 [
   ['::', 128],
   ['::1', 128],
   ['64:ff9b::', 96],
+  ['64:ff9b:1::', 48],
+  ['100::', 64],
+  ['2001::', 32],
+  ['2002::', 16],
   ['fc00::', 7],
+  ['fec0::', 10],
   ['fe80::', 10],
   ['ff00::', 8],
   ['2001:db8::', 32],
 ].forEach(([address, prefix]) => blocked.addSubnet(address, prefix, 'ipv6'));
+
+/**
+ * An IPv6 address as its eight 16-bit groups, or null when it is not one.
+ * Takes every spelling: "::" compression, an IPv4 tail (::ffff:10.0.0.1) and
+ * a zone (%eth0).
+ */
+function ipv6Groups(address) {
+  let text = String(address).toLowerCase();
+  const zone = text.indexOf('%');
+  if (zone !== -1) text = text.slice(0, zone);
+  const dotted = text.match(/(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (dotted) {
+    const b = dotted.slice(1).map(Number);
+    if (b.some((n) => n > 255)) return null;
+    text = `${text.slice(0, -dotted[0].length)}${((b[0] << 8) | b[1]).toString(16)}:${((b[2] << 8) | b[3]).toString(16)}`;
+  }
+  const halves = text.split('::');
+  if (halves.length > 2) return null;
+  const head = halves[0] ? halves[0].split(':') : [];
+  const tail = halves.length === 2 && halves[1] ? halves[1].split(':') : [];
+  const fill = halves.length === 2 ? 8 - head.length - tail.length : 0;
+  if (fill < 0 || (halves.length === 2 && fill < 1)) return null;
+  const parts = [...head, ...Array(fill).fill('0'), ...tail];
+  if (parts.length !== 8 || parts.some((g) => !/^[0-9a-f]{1,4}$/.test(g))) return null;
+  return parts.map((g) => parseInt(g, 16));
+}
 
 /** Whether an IP address is somewhere a webhook must never be sent. */
 function isPrivateAddress(address) {
   const ip = String(address).replace(/^\[|\]$/g, '');
   if (net.isIPv4(ip)) return blocked.check(ip, 'ipv4');
   if (net.isIPv6(ip)) {
-    // An IPv4 address written as IPv6 (::ffff:10.0.0.1) is that IPv4 address.
-    const mapped = ip.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/i);
-    if (mapped) return blocked.check(mapped[1], 'ipv4');
-    return blocked.check(ip, 'ipv6');
+    const g = ipv6Groups(ip);
+    if (!g) return true;
+    // The first 80 bits zero: an IPv4 address in IPv6 clothing, however it is
+    // spelled (::ffff:10.0.0.1, ::ffff:a00:1). Mapped (…:ffff:…): that IPv4
+    // address decides. Compatible (::a.b.c.d, deprecated) or anything else in
+    // ::/96: never a webhook target.
+    if (g.slice(0, 5).every((n) => n === 0)) {
+      if (g[5] === 0xffff) return blocked.check(`${g[6] >> 8}.${g[6] & 255}.${g[7] >> 8}.${g[7] & 255}`, 'ipv4');
+      if (g[5] === 0) return true;
+    }
+    return blocked.check(ip.split('%')[0], 'ipv6');
   }
   // Not an IP at all: nothing to connect to.
   return true;
@@ -96,6 +135,9 @@ function checkUrl(value, field = 'url', { allowHttp = false, label = 'webhook UR
   if (url.username || url.password) throw invalid('Must not contain a username or password');
 
   const host = url.hostname.replace(/^\[|\]$/g, '');
+  // "postgres.railway.internal." is the same host as without the dot, and the
+  // name checks below would not see it: a name ending in a dot is refused.
+  if (host.endsWith('.')) throw invalid('Must not end with a dot');
   if (!allowPrivate) {
     if (net.isIP(host) && isPrivateAddress(host)) throw invalid('Must be a public address');
     if (!net.isIP(host) && (INTERNAL_HOSTNAME.test(host) || !host.includes('.'))) {
@@ -155,4 +197,15 @@ function guardedLookup(hostname, options, callback) {
   });
 }
 
-module.exports = { checkUrl, isPrivateAddress, guardedLookup, BlockedAddressError, UNUSABLE_HOST_MESSAGE };
+/**
+ * A URL whose host is an IP address is never looked up, so guardedLookup
+ * never sees it: the sender asks here before connecting. Returns the error to
+ * report, or null when the address may be used.
+ */
+function literalAddressError(hostname) {
+  const host = String(hostname || '').replace(/^\[|\]$/g, '');
+  if (!net.isIP(host) || env.webhooks.allowPrivateUrls) return null;
+  return isPrivateAddress(host) ? new BlockedAddressError(host) : null;
+}
+
+module.exports = { checkUrl, isPrivateAddress, guardedLookup, literalAddressError, BlockedAddressError, UNUSABLE_HOST_MESSAGE };
