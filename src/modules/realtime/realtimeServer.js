@@ -80,11 +80,28 @@ function handshakeLimiter() {
   };
 }
 
+/** A warning at most every `everyMs`, saying how many were left out: a database that is down fails every few seconds. */
+function throttledWarn(prefix, everyMs = 30 * 1000) {
+  let last = 0;
+  let skipped = 0;
+  return (err) => {
+    const now = Date.now();
+    if (now - last < everyMs) {
+      skipped += 1;
+      return;
+    }
+    last = now;
+    logger.warn(`${prefix}: ${err && err.message}${skipped ? ` (and ${skipped} more since the last warning)` : ''}`);
+    skipped = 0;
+  };
+}
+
 /**
  * Starts the socket server on `httpServer`. `app` is the Express app, whose
- * `trust proxy` reads the client IP; `pool` the database pool of the adapter.
+ * `trust proxy` reads the client IP; `connections` the database connections
+ * of the adapter (pgPool.createConnections: its LISTEN client is its own).
  */
-function createRealtimeServer(httpServer, { app, pool }) {
+function createRealtimeServer(httpServer, { app, connections }) {
   const limiter = handshakeLimiter();
 
   const allowRequest = (req, callback) => {
@@ -103,9 +120,9 @@ function createRealtimeServer(httpServer, { app, pool }) {
     pingTimeout: PING_TIMEOUT_MS,
     connectTimeout: CONNECT_TIMEOUT_MS,
     allowRequest,
-    adapter: createAdapter(pool, {
+    adapter: createAdapter(connections.forAdapter, {
       tableName: ATTACHMENTS_TABLE,
-      errorHandler: (err) => logger.warn(`[realtime] adapter: ${err.message}`),
+      errorHandler: throttledWarn('[realtime] adapter'),
     }),
   });
 

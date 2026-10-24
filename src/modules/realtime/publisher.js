@@ -53,7 +53,7 @@ function publish(event) {
   if (!env.realtime.enabled) return false;
   const routed = route(event);
   if (!routed) return false;
-  if (!emitter) emitter = new Emitter(withNamespace(pgPool.get()), NAMESPACE, { tableName: ATTACHMENTS_TABLE });
+  if (!emitter) emitter = new Emitter(withNamespace(pgPool.get().pool), NAMESPACE, { tableName: ATTACHMENTS_TABLE });
   emitter.to(routed.room).emit(routed.name, routed.message);
   return true;
 }

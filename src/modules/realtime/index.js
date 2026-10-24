@@ -20,7 +20,7 @@ let running = null;
 /** Starts the socket server on `httpServer` while REALTIME_ENABLED is on; otherwise nothing. */
 function attach(httpServer, app) {
   if (!env.realtime.enabled || running) return running;
-  running = createRealtimeServer(httpServer, { app, pool: pgPool.get() });
+  running = createRealtimeServer(httpServer, { app, connections: pgPool.get() });
   logger.info(`Live updates on ${PATH} (websocket only)`);
   return running;
 }

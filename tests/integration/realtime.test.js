@@ -13,7 +13,6 @@
  */
 
 const http = require('http');
-const { Pool } = require('pg');
 const { io: connectSocket } = require('socket.io-client');
 const {
   app,
@@ -50,7 +49,7 @@ function listen(httpServer) {
 beforeAll(async () => {
   env.realtime.enabled = true;
   server = http.createServer(app);
-  realtime = createRealtimeServer(server, { app, pool: pgPool.get() });
+  realtime = createRealtimeServer(server, { app, connections: pgPool.get() });
   base = await listen(server);
 });
 
@@ -361,9 +360,9 @@ describe('console room', () => {
 
 describe('across API processes', () => {
   it('one message published once reaches the sockets of two servers through the database', async () => {
-    const pool2 = new Pool({ host: env.db.host, port: env.db.port, database: env.db.name, user: env.db.user, password: env.db.password, max: 3 });
+    const connections2 = pgPool.createConnections({ name: 'zimos-realtime-test-2' });
     const server2 = http.createServer(app);
-    const realtime2 = createRealtimeServer(server2, { app, pool: pool2 });
+    const realtime2 = createRealtimeServer(server2, { app, connections: connections2 });
     const base2 = await listen(server2);
     try {
       const A = await store('Store A');
@@ -376,8 +375,47 @@ describe('across API processes', () => {
       expect(names(on2).filter((n) => n === 'order.created')).toHaveLength(1);
     } finally {
       await realtime2.stop();
-      await pool2.end();
+      await connections2.end();
       await new Promise((resolve) => server2.close(resolve));
+    }
+  });
+});
+
+describe('the LISTEN connection', () => {
+  it('dropping does not end the process, and messages flow again once it is back', async () => {
+    const A = await store('Store A');
+    const a = await connected(A.auth.accessToken);
+    const [listening] = pgPool.get().listeners();
+    expect(listening).toBeTruthy();
+    // What a database restart or a network reset does to it.
+    await db.sequelize.query('SELECT pg_terminate_backend(:pid)', { replacements: { pid: listening.processID } });
+    await waitFor(() => !pgPool.get().listeners().includes(listening), 'the dead LISTEN connection to go');
+    // An unhandled 'error' from it would have thrown here and failed the test.
+    await waitFor(() => pgPool.get().listeners().length === 1, 'a new LISTEN connection', 15000);
+
+    // Its LISTEN runs right after it connects: probe until a message gets through.
+    const probeId = '33333333-3333-4333-8333-333333333333';
+    const got = await (async () => {
+      for (let i = 0; i < 20; i += 1) {
+        await publisher.publish({ id: probeId, type: 'order.created', workspaceId: A.workspace.id, payload: { orderId: probeId } });
+        await sleep(500);
+        const found = named(a, 'order.created', (m) => m.entity.id === probeId)();
+        if (found) return found;
+      }
+      return null;
+    })();
+    expect(got).toBeTruthy();
+  });
+
+  it('waits longer after each failed attempt, with jitter, up to a cap', () => {
+    expect(pgPool.listenBackoffMs(0)).toBe(0);
+    for (let i = 0; i < 50; i += 1) {
+      const first = pgPool.listenBackoffMs(1);
+      expect(first).toBeGreaterThanOrEqual(500);
+      expect(first).toBeLessThanOrEqual(1500);
+      const late = pgPool.listenBackoffMs(20);
+      expect(late).toBeGreaterThanOrEqual(pgPool.LISTEN_BACKOFF_MAX_MS / 2);
+      expect(late).toBeLessThanOrEqual(pgPool.LISTEN_BACKOFF_MAX_MS * 1.5);
     }
   });
 });
