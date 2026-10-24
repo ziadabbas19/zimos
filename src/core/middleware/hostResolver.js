@@ -12,18 +12,25 @@ function bareHost(hostHeader) {
 function isLocalOrIp(h) {
   return !h || h === 'localhost' || h === '::1' || h.startsWith('[') || /^\d{1,3}(\.\d{1,3}){3}$/.test(h);
 }
+// Railway's private network (`<service>.railway.internal`): the storefront
+// server calling the API directly. Never a store's host — a domain under it
+// can't be added (domainRules BLOCKED_ZONES) — so it is not looked up.
+function isPrivateNetwork(h) {
+  return h.endsWith('.railway.internal');
+}
 
 /**
  * Storefront host routing. If the Host header is `<slug>.${PLATFORM_ROOT_DOMAIN}`
  * or a verified custom `Domain`, the request is internally rewritten to
  * `/shop/:workspaceId<path>` — no redirect, the URL bar stays put.
  *
- * localhost, an IP, the bare root, or an unknown host fall through untouched,
- * so the path-based `/shop/:workspaceId` and `/api/...` routes are unaffected.
+ * localhost, an IP, the bare root, a Railway private host, or an unknown host
+ * fall through untouched, so the path-based `/shop/:workspaceId` and
+ * `/api/...` routes are unaffected.
  */
 const hostResolver = asyncHandler(async (req, res, next) => {
   const host = bareHost(req.headers.host);
-  if (isLocalOrIp(host) || host === ROOT) return next();
+  if (isLocalOrIp(host) || host === ROOT || isPrivateNetwork(host)) return next();
   if (req.url.startsWith('/shop/') || req.url.startsWith('/docs') || req.url === '/health' || req.url.startsWith('/health/')) {
     return next();
   }
