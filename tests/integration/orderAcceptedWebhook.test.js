@@ -128,6 +128,23 @@ describe('order.accepted', () => {
     expect((await acceptanceOf(ctx.workspace.id, order.id)).accepted).toBe(false);
   });
 
+  it('is not sent as accepted when the order was cancelled before the attempt (a receiver that was down)', async () => {
+    const ctx = await setupWorkspaceWithProduct();
+    const listing = await addEndpoint(ctx, '/accepted', ['order.accepted']);
+    const order = await placeOrder(ctx);
+    await confirmCodOrder(ctx.auth.accessToken, ctx.workspace.id, order.id);
+    expect(await eventually(async () => (await acceptedRows(listing.id)).length === 1)).toBe(true);
+
+    const cancel = await request(app).post(`/api/v1/workspaces/${ctx.workspace.id}/orders/${order.id}/cancel`).set(bearer(ctx.auth.accessToken)).send({ reason: 'Customer called to cancel' });
+    expect(cancel.status).toBe(200);
+    await runOnce();
+
+    expect(receiver.received.filter((r) => r.json.type === 'order.accepted')).toEqual([]);
+    const [row] = await acceptedRows(listing.id);
+    expect(row.status).toBe('exhausted');
+    expect(row.lastError).toMatch(/no longer accepted/);
+  });
+
   it("never reaches another store's endpoint", async () => {
     const a = await setupWorkspaceWithProduct();
     const b = await setupWorkspaceWithProduct();

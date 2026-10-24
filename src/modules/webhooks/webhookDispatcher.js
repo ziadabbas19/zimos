@@ -73,6 +73,18 @@ async function attemptDelivery(deliveryId, { now = new Date() } = {}) {
     return delivery;
   }
 
+  // order.accepted is news only while it is still true. A receiver that was
+  // down gets the retry hours later: an order cancelled in between is not
+  // sent as accepted. The row ends (exhausted) saying why; Redeliver asks again.
+  if (delivery.eventType === 'order.accepted') {
+    const order = delivery.payload && delivery.payload.data && delivery.payload.data.order;
+    const acceptance = order && order.id ? await require('../orders/orderAccepted').acceptanceOf(delivery.workspaceId, order.id) : null;
+    if (!acceptance || !acceptance.accepted) {
+      await delivery.update({ status: 'exhausted', nextAttemptAt: null, lastError: 'Not sent: the order is no longer accepted (cancelled since)' });
+      return delivery;
+    }
+  }
+
   // A sealed secret this server cannot open (WEBHOOK_SECRETS_KEY missing or
   // changed): nothing is sent unsigned, and the attempt is not counted
   // against the receiver — it comes due again until the key is back.

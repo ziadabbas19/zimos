@@ -321,7 +321,7 @@ when created and when rotated, never otherwise). **Send test** posts a
 | ---------------------- | ----------------------------------------------------------------------------------------------------------- |
 | `order.created`        | a new order is placed                                                                                       |
 | `order.status_changed` | the order's `stage`, any of its three states, or its latest shipment's status changes — whoever changed it: the dashboard, a courier, your own API calls |
-| `order.accepted`       | the order was **accepted**: a cash-on-delivery (or manually paid) order was confirmed, or an online order was paid. Once per order, with `data.acceptedVia` (`confirmation` / `payment`) and `data.acceptedAt`. The event id is `order.accepted:<orderId>` |
+| `order.accepted`       | the order was **accepted**: a cash-on-delivery (or manually paid) order was confirmed, or an online order was paid. Once per order, with `data.acceptedVia` (`confirmation` / `payment`) and `data.acceptedAt`. The event id is `order.accepted:<orderId>`. Every attempt checks the order first: one cancelled before your server answered is not sent (the delivery ends saying so). Listen to `order.cancelled` too — an order cancelled after you took it is told there |
 | `*`                    | subscribe to everything, including events added later — **except `order.accepted`**, which an endpoint lists by name (beside `*` if it likes) |
 
 Events usually arrive **within about 5 seconds** of the change.
