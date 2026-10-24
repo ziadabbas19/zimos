@@ -34,8 +34,9 @@ already exists keeps working whatever the plan.
 
 | Scope          | Lets the key                                                                  |
 | -------------- | ----------------------------------------------------------------------------- |
-| `orders:read`  | list and read orders and their shipments                                      |
+| `orders:read`  | list and read orders and their shipments; pull the accepted-orders feed and acknowledge what it took (see *Tills and kitchens*) |
 | `orders:write` | everything above, plus confirmation, cancellation, shipments, COD collection |
+| `orders:pos_status` | report the order's status in your till or kitchen (`received`, `preparing`, `ready`, `completed`) — a note beside the order that never moves its stage. Only by this scope's name: `orders:write` does not grant it |
 
 A key acts **as the teammate who created it**. A request is allowed only when
 both the key's scopes and that person's role in the store allow it — so a key
@@ -131,6 +132,26 @@ stored: `12550` with `"currency": "EGP"` is 125.50 EGP.
 `shipments` is included when you read one order, and in webhooks; the list
 endpoint leaves it out (absent means "not loaded", not "none").
 
+### Menu options, custom answers and the till's status
+
+When the platform turns them on, the order carries more for tills and kitchens
+(the fields are absent otherwise — check for them, do not assume them):
+
+- **`items[].options`** — the menu options the line was sold with, as charged,
+  and the code each choice has in your system (set per choice on the product
+  page, *Till code*; `null` when it has none):
+
+  ```json
+  "options": [
+    { "groupId": "…", "group": "Size", "choices": [ { "choiceId": "…", "name": "Large", "priceDelta": 3000, "externalCode": "SZ-L" } ] }
+  ]
+  ```
+- **`items[].customizations`** — the customer's answers to the product's custom
+  fields: `[{ "fieldId", "type", "label": { "ar", "en" }, "value", "priceDelta" }]`.
+  A photo is only named (`"photo": true`, `value: null`): it is on the order page.
+- **`pos`** — what your till last reported (`PUT /orders/{orderId}/pos-status`):
+  `{ "status": "preparing", "reference": "T-12", "updatedAt": "…" }`, or `null`.
+
 ## Order statuses
 
 An order has **three independent states** plus its latest shipment — a
@@ -181,6 +202,40 @@ or email), `from` / `to` (ISO dates, on created time), `sort` (`newest`
 ```json
 { "orders": [ { … }, { … } ], "nextCursor": "7f3a…" }
 ```
+
+### Tills and kitchens: the accepted-orders feed
+
+For a system that cannot receive webhooks — a till on a shop's local network —
+pull the **accepted** orders with the key and acknowledge each one you took.
+*Accepted* means: a cash-on-delivery (or manually paid) order once it is
+confirmed, an online order once it is paid; never a cancelled one. Available
+when the platform turns it on (otherwise these paths answer 404).
+
+| Method & path                             | Scope               |                                                         |
+| ----------------------------------------- | ------------------- | ------------------------------------------------------- |
+| `GET /orders/accepted`                    | `orders:read`       | accepted orders **this key** has not acknowledged, oldest first |
+| `POST /orders/ack`                        | `orders:read`       | acknowledge up to 100: `{ "orderIds": ["…"] }`           |
+| `POST /orders/{orderId}/ack`              | `orders:read`       | acknowledge one                                         |
+| `PUT /orders/{orderId}/pos-status`        | `orders:pos_status` | `{ "status": "preparing", "reference": "T-12" }`        |
+
+```json
+{ "orders": [ { "…the order object…": "", "acceptedAt": "2026-10-24T12:30:05.000Z", "acceptedVia": "confirmation" } ], "nextCursor": null, "since": "2026-10-17T12:31:00.000Z" }
+```
+
+- Ask every few seconds; take each order, then acknowledge it. An order you
+  did not acknowledge (your till crashed) is offered again; one you did is
+  never offered to this key again. Each key keeps its own receipts: a till and
+  a kitchen screen with two keys both get every order.
+- `since` (ISO time) is how far back the feed looks: by default the later of
+  the key's creation and 7 days ago, at most 30 days back. `limit` 1–100
+  (default 50); `cursor=<nextCursor>` pages through one answer.
+- `POST /orders/ack` answers `{ "acked": [{ "orderId", "ackedAt" }], "unknown": ["…"] }`:
+  ids that are not this store's orders are listed as unknown, and nothing is written for them.
+- Phones are partly hidden in the feed, as in `GET /orders`, unless the key
+  also has `customers:read` and its creator may see full numbers.
+- `pos-status` is set only on an accepted order (409 `ORDER_NOT_ACCEPTED`
+  otherwise). It is a note: "ready" does not ship and "completed" does not
+  deliver — those stay the shipment's and the courier's.
 
 ### Write — all `orders:write`
 
@@ -259,7 +314,8 @@ when created and when rotated, never otherwise). **Send test** posts a
 | ---------------------- | ----------------------------------------------------------------------------------------------------------- |
 | `order.created`        | a new order is placed                                                                                       |
 | `order.status_changed` | the order's `stage`, any of its three states, or its latest shipment's status changes — whoever changed it: the dashboard, a courier, your own API calls |
-| `*`                    | subscribe to everything, including events added later                                                      |
+| `order.accepted`       | the order was **accepted**: a cash-on-delivery (or manually paid) order was confirmed, or an online order was paid. Once per order, with `data.acceptedVia` (`confirmation` / `payment`) and `data.acceptedAt`. The event id is `order.accepted:<orderId>` |
+| `*`                    | subscribe to everything, including events added later — **except `order.accepted`**, which an endpoint lists by name (beside `*` if it likes) |
 
 Events usually arrive **within about 5 seconds** of the change.
 
@@ -291,6 +347,10 @@ X-Zimos-Signature: t=1790000000,v1=5d1f0a…
 }
 ```
 
+**Large events.** A body larger than 256 KB is sent with ids only and
+`"truncated": true` — `data.order` becomes `{ "id", "orderNumber" }`; read the
+rest with `GET /orders/{orderId}`. The event id is unchanged.
+
 `order.created` carries `data.order` and `data.current`. An order placed
 **before** the endpoint was added, changing now, arrives as
 `order.status_changed` with `previous: null` — its state is news, its previous
@@ -308,6 +368,9 @@ state isn't known.
   server was slow to answer.
 - Events can arrive out of order after retries. `data.order.updatedAt` tells
   you which is newer — or simply re-read the order.
+- **A redirect is a failure.** A receiver that answers 3xx (a Google Apps Script
+  web app does, to every POST) is retried and, after three days of nothing but
+  failures, switched off. See `docs/webhooks-no-code.md` for Apps Script.
 
 ## Verifying a webhook signature
 
