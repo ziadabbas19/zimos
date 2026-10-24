@@ -853,6 +853,10 @@ const env = {
     // (with each choice's external code) and custom-field answers
     // (publicApi/publicOrderOptions.js). Off: the order as before.
     orderOptions: process.env.NODE_ENV !== 'test' && process.env.ORDER_PAYLOAD_OPTIONS_ENABLED === 'true',
+    // PUBLIC_API_ACK_ENABLED: the accepted-orders feed, its per-key receipts
+    // and the kitchen status (publicApi/acceptedOrdersFeed.js). Off: those
+    // routes answer 404, as before they existed.
+    ack: process.env.NODE_ENV !== 'test' && process.env.PUBLIC_API_ACK_ENABLED === 'true',
   },
 
   // Merchant courier accounts (modules/shipping/carriers). The key encrypts

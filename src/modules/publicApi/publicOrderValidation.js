@@ -12,6 +12,7 @@ const orderSchemas = require('../orders/orderValidation');
 
 const uuid = Joi.string().uuid();
 const orderParam = Joi.object({ orderId: uuid.required() });
+const { STATUSES: POS_STATUSES } = require('./posStatus');
 
 module.exports = {
   list: { query: orderSchemas.list.query },
@@ -34,5 +35,22 @@ module.exports = {
   updateShipment: {
     params: Joi.object({ orderId: uuid.required(), shipmentId: uuid.required() }),
     body: orderSchemas.updateShipment.body,
+  },
+  // PUBLIC_API_ACK_ENABLED (acceptedOrdersFeed.js, posStatus.js).
+  accepted: {
+    query: Joi.object({
+      since: Joi.date().iso().optional(),
+      limit: Joi.number().integer().min(1).max(100).default(50),
+      cursor: Joi.string().max(500).optional(),
+    }),
+  },
+  ack: { body: Joi.object({ orderIds: Joi.array().items(uuid).min(1).max(100).unique().required() }) },
+  posStatus: {
+    params: orderParam,
+    body: Joi.object({
+      status: Joi.string().valid(...POS_STATUSES).required(),
+      // The order's number in the till; null or '' clears it, left out keeps it.
+      reference: Joi.string().trim().max(120).allow(null, '').optional(),
+    }),
   },
 };

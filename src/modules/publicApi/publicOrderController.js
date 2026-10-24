@@ -2,6 +2,8 @@
 
 const asyncHandler = require('express-async-handler');
 const service = require('./publicOrderService');
+const feed = require('./acceptedOrdersFeed');
+const pos = require('./posStatus');
 const { forViewer } = require('../../core/utils/phoneMask');
 
 const wid = (req) => req.tenant.workspaceId;
@@ -69,4 +71,15 @@ const codCollected = asyncHandler(async (req, res) =>
   res.json({ order: await service.markCodCollected(wid(req), req.params.orderId, req) })
 );
 
-module.exports = { listAliases, me, list, get, getByNumber, listShipments, confirmation, cancel, createShipment, updateShipment, codCollected };
+// PUBLIC_API_ACK_ENABLED (acceptedOrdersFeed.js, posStatus.js). The feed masks
+// phones as the orders list does: full numbers need customers:read and a
+// creator who may see them.
+const accepted = asyncHandler(async (req, res) => res.json(forViewer(req, await feed.listUnacked(wid(req), req.apiKey, req.query))));
+
+const ack = asyncHandler(async (req, res) => res.json(await feed.acknowledge(wid(req), req.apiKey, req.body.orderIds)));
+
+const ackOne = asyncHandler(async (req, res) => res.json({ ack: await feed.acknowledgeOne(wid(req), req.apiKey, req.params.orderId) }));
+
+const posStatus = asyncHandler(async (req, res) => res.json({ pos: await pos.setStatus(wid(req), req.params.orderId, req.body, req) }));
+
+module.exports = { listAliases, me, list, get, getByNumber, listShipments, confirmation, cancel, createShipment, updateShipment, codCollected, accepted, ack, ackOne, posStatus };

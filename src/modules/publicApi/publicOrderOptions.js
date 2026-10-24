@@ -76,15 +76,21 @@ function itemExtras(item, codes) {
 }
 
 /**
- * The orders as the public API and the webhooks show them, with the lines'
- * options while the flag is on. Every reader of an order for an integration
- * goes through here. Off: exactly the order as before.
+ * The orders as the public API and the webhooks show them. Every reader of an
+ * order for an integration goes through here:
+ *   ORDER_PAYLOAD_OPTIONS_ENABLED  the lines' options and custom-field answers
+ *   PUBLIC_API_ACK_ENABLED         `pos`: the till's status (posStatus.js), or null
+ * Both off: exactly the order as before.
  */
 async function serializeOrders(workspaceId, orders) {
   const { serializeOrder } = require('./publicOrderSerializer');
-  if (!on()) return orders.map((o) => serializeOrder(o));
-  const codes = await optionCodes(workspaceId, orders);
-  return orders.map((o) => serializeOrder(o, { optionCodes: codes }));
+  const codes = on() ? await optionCodes(workspaceId, orders) : null;
+  const pos = env.publicApi.ack === true ? await require('./posStatus').statusesFor(workspaceId, orders.map((o) => o.id)) : null;
+  return orders.map((o) => {
+    const out = serializeOrder(o, codes ? { optionCodes: codes } : {});
+    if (pos) out.pos = pos.get(o.id) || null;
+    return out;
+  });
 }
 
 module.exports = { serializeOrders, itemExtras, optionCodes, on };
