@@ -47,6 +47,9 @@ const fawaterak = require('./fawaterak');
  *   modeFromCredentials(creds) -> 'test' | 'live'
  *   availableMethods(settings) -> the methods these settings can take
  *   connectionNotices?(settings) -> warning codes the dashboard shows
+ *   accountOf?(creds) -> which gateway account the keys are; with it, new keys
+ *       for ANOTHER account are refused while a payment is still open
+ *       (GATEWAY_SWITCH_HAS_PENDING_PAYMENTS), as disconnect is
  *   verifyCredentials(creds, settings) -> { mode, credentials?, settings? }
  *       `credentials` / `settings`, when returned, are what gets stored (a
  *       gateway whose keys do not show their mode records it there)

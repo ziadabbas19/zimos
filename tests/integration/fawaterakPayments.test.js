@@ -659,6 +659,63 @@ describe('Fawaterak late payments whose webhook never counted', () => {
   });
 });
 
+describe('changing the Fawaterak keys while a payment is open', () => {
+  const another = () => fake.credentials('test'); // another OAuth client: another Fawaterak account
+
+  it('another account is refused, before its keys are sent anywhere, and nothing changes', async () => {
+    const ctx = await store();
+    await placeOnline(ctx);
+    const res = await connect(ctx.token, ctx.wid, another());
+    expect(res.status).toBe(409);
+    expect(res.body.error.code).toBe('GATEWAY_SWITCH_HAS_PENDING_PAYMENTS');
+    expect(res.body.error.message).toMatch(/1 order\(s\) are still waiting on a payment through your current Fawaterak account/);
+    expect(res.body.error.message).toMatch(/same Client ID/);
+    expect(JSON.stringify(res.body)).not.toContain(another().clientSecret);
+    expect(fw.callsTo('/oauth/token').filter((c) => c.body.client_id === another().clientId)).toHaveLength(0);
+    const row = await db.PaymentGatewayAccount.findOne({ where: { workspaceId: ctx.wid, providerCode: 'fawaterak' } });
+    expect(row.mode).toBe('live');
+  });
+
+  it('new keys for the same account are saved at any time, and the open payment still settles', async () => {
+    const ctx = await store();
+    const placed = await placeOnline(ctx);
+    const rotated = { ...fake.credentials('live'), vendorKey: 'a-new-vendor-key-for-the-same-account' };
+    const res = await connect(ctx.token, ctx.wid, rotated);
+    expect(res.status).toBe(200);
+
+    fw.pay(placed.intentKey);
+    expect((await hook(ctx, fw.paidWebhook(placed.intentKey, { key: rotated.vendorKey }))).body.confirmed).toBe('paid');
+    expect((await order(placed.order.id)).financialState).toBe('paid');
+  });
+
+  it('once nothing waits (paid or expired), another account can be connected', async () => {
+    const ctx = await store();
+    const paid = await placeOnline(ctx);
+    fw.pay(paid.intentKey);
+    await hook(ctx, fw.paidWebhook(paid.intentKey));
+    const expired = await placeOnline(ctx);
+    await overdue(expired);
+    await sweepService.sweep();
+    expect((await order(expired.order.id)).cancellationReason).toBe('payment_expired');
+
+    const res = await connect(ctx.token, ctx.wid, another());
+    expect(res.status).toBe(200);
+    expect(res.body.connection.mode).toBe('test');
+  });
+
+  it('Paymob keys can still be replaced with a payment open, as before', async () => {
+    const setup = await setupWorkspaceWithProduct();
+    const put = (mode) =>
+      request(app)
+        .put(`${gatewaysUrl(setup.workspace.id)}/paymob`)
+        .set(bearer(setup.auth.accessToken))
+        .send({ credentials: fakePaymob.credentials(mode), settings: { cardIntegrationId: 111 } });
+    expect((await put('live')).status).toBe(200);
+    expect((await buyNow({ wid: setup.workspace.id, variant: setup.variant })).status).toBe(201);
+    expect((await put('test')).status).toBe(200);
+  });
+});
+
 describe('Fawaterak refunds (stage 1: in the Fawaterak dashboard)', () => {
   it('refuses a refund from here before writing anything, and says where to refund', async () => {
     const ctx = await store();

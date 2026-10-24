@@ -279,6 +279,15 @@ function availableMethods(settings = {}) {
   return settings.cardMethodId ? ['card'] : [];
 }
 
+/**
+ * Which Fawaterak account these keys are: the OAuth Client ID. Payments are
+ * asked about with the account's own keys, so a store with open payments may
+ * not move to another account (gatewayAccountService.connect).
+ */
+function accountOf(creds) {
+  return creds && typeof creds.clientId === 'string' && creds.clientId.trim() ? creds.clientId.trim() : null;
+}
+
 /** Codes the dashboard shows as warnings on the connection. */
 function connectionNotices(settings = {}) {
   return settings.customerPaysFees ? ['customer_pays_fees'] : [];
@@ -616,6 +625,7 @@ module.exports = {
   settingsSchema,
   modeFromCredentials,
   availableMethods,
+  accountOf,
   connectionNotices,
   verifyCredentials,
   createPayment,

@@ -39,6 +39,16 @@ also reads `getTrPaymentmethods`: the account must have Visa / Mastercard
 switched on. When that method has `commission_on_customer = 1` (the shopper
 pays Fawaterak's fees) the dashboard shows a warning.
 
+## Changing the keys
+
+New keys for the same Fawaterak account (the same Client ID: a rotated
+secret or API key) can be saved at any time. Keys for **another** account —
+another Client ID, which includes moving from a staging account to a live
+one — are refused with `409 GATEWAY_SWITCH_HAS_PENDING_PAYMENTS` while an
+order is still waiting on a payment through the current account, as
+disconnecting is: the new account could not answer for those payments. The
+merchant waits until they are paid or expire, then changes the keys.
+
 ## How a payment is believed
 
 1. Checkout: `createTransaction` with the card's `payment_method_id` (the

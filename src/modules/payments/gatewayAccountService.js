@@ -157,6 +157,52 @@ async function loadWithCredentials(where) {
   return db.PaymentGatewayAccount.scope('withCredentials').findOne({ where });
 }
 
+/** Online orders through this gateway still waiting on their payment: what disconnecting waits for. */
+async function pendingPaymentsCount(workspaceId, code, transaction) {
+  return db.Payment.count({
+    where: { workspaceId, providerCode: code, status: 'initialized' },
+    include: [
+      {
+        model: db.Order,
+        as: 'order',
+        required: true,
+        where: { cancelledAt: null, financialState: { [Op.notIn]: ['paid', 'partially_paid', 'refunded', 'partially_refunded'] } },
+      },
+    ],
+    transaction,
+  });
+}
+
+/**
+ * A gateway whose payments are asked about with the account's own keys
+ * (adapter.accountOf — Fawaterak: the Client ID) cannot be moved to another
+ * account while a payment through it is still open, for the reason
+ * disconnect is refused: the new account could not answer for it, so it
+ * could never be recorded or safely expired. New keys for the SAME account
+ * stay allowed: a revoked secret must be replaceable, or its open payments,
+ * which can no longer be asked about, would block the change for ever.
+ */
+async function assertAccountSwitchAllowed(adapter, workspaceId, code, existing, credentials, transaction) {
+  if (!adapter.accountOf || !existing) return;
+  let current = null;
+  try {
+    current = adapter.accountOf(decryptFor(existing));
+  } catch (err) {
+    current = null; // unreadable stored keys: read as another account
+  }
+  if (current !== null && current === adapter.accountOf(credentials)) return;
+  const pending = await pendingPaymentsCount(workspaceId, code, transaction);
+  if (pending > 0) {
+    throw new AppError(
+      'GATEWAY_SWITCH_HAS_PENDING_PAYMENTS',
+      `${pending} order(s) are still waiting on a payment through your current ${adapter.name} account, so it cannot be ` +
+        `replaced by another account yet: those payments could no longer be checked. Wait for them to be paid or expire, ` +
+        `then change the keys. New keys for the same ${adapter.name} account (the same Client ID) can be saved at any time.`,
+      409
+    );
+  }
+}
+
 /**
  * Connect or update. `credentials` is required on first connect; on an update
  * without it the stored keys are re-verified with the new settings.
@@ -183,6 +229,8 @@ async function connect(workspaceId, code, body, req) {
   let credentials = body.credentials
     ? validatePart(adapter.credentialsSchema, body.credentials, 'credentials')
     : decryptFor(existing);
+  // Checked before the new keys are sent anywhere, and again under the lock below.
+  if (body.credentials) await assertAccountSwitchAllowed(adapter, workspaceId, code, existing, credentials);
 
   let mode;
   try {
@@ -218,6 +266,11 @@ async function connect(workspaceId, code, body, req) {
     let before = null;
     if (existing) {
       before = { mode: existing.mode, settings: existing.settings, status: existing.status };
+      if (body.credentials) {
+        // As disconnect does: the account row locked, the open payments counted again.
+        await db.PaymentGatewayAccount.findOne({ where: { id: existing.id }, lock: transaction.LOCK.UPDATE, transaction });
+        await assertAccountSwitchAllowed(adapter, workspaceId, code, existing, credentials, transaction);
+      }
       await existing.update(values, { transaction });
       row = existing;
       action = 'payment_gateway.update';
@@ -260,18 +313,7 @@ async function disconnect(workspaceId, code, req) {
     });
     if (!account) throw new NotFoundError('Payment gateway connection');
 
-    const pending = await db.Payment.count({
-      where: { workspaceId, providerCode: code, status: 'initialized' },
-      include: [
-        {
-          model: db.Order,
-          as: 'order',
-          required: true,
-          where: { cancelledAt: null, financialState: { [Op.notIn]: ['paid', 'partially_paid', 'refunded', 'partially_refunded'] } },
-        },
-      ],
-      transaction,
-    });
+    const pending = await pendingPaymentsCount(workspaceId, code, transaction);
     if (pending > 0) {
       throw new AppError(
         'GATEWAY_HAS_PENDING_PAYMENTS',
