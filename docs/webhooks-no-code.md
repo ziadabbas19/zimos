@@ -163,10 +163,11 @@ function doPost(e) {
   return text('ok');
 }
 
-// Google Sheets يعامل نصًا يبدأ بـ = أو + أو - أو @ كمعادلة: العميل يكتب ما يشاء في اسمه وعنوانه.
+// Google Sheets يعامل نصًا يبدأ بـ = أو + أو - أو @ (ولو بعد مسافات)، أو بـ tab أو CR، كمعادلة:
+// العميل يكتب ما يشاء في اسمه وعنوانه.
 function safe(value) {
   const s = value == null ? '' : String(value);
-  return /^[=+\-@]/.test(s) ? "'" + s : s;
+  return /^\s*[=+\-@]|^[\t\r]/.test(s) ? "'" + s : s;
 }
 
 function text(body) {
@@ -221,7 +222,7 @@ function pullAccepted() {
 
 function safe(value) {
   const s = value == null ? '' : String(value);
-  return /^[=+\-@]/.test(s) ? "'" + s : s;
+  return /^\s*[=+\-@]|^[\t\r]/.test(s) ? "'" + s : s;
 }
 ```
 

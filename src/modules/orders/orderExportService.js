@@ -312,16 +312,26 @@ function columnCatalogue() {
   };
 }
 
+// = + - @ (and their full-width forms) after any spaces or line breaks a
+// spreadsheet may skip, or a tab / carriage return: the start of a formula.
+const FORMULA_START = /^[\s\u3000]*[=+\-@\uFF1D\uFF0B\uFF0D\uFF20]|^[\t\r]/;
+// The same after a ";" — the list separator Excel splits a CSV on in many
+// locales, so the text after it can become a cell of its own.
+const FORMULA_AFTER_SEMICOLON = /;(?=[\s\u3000]*[=+\-@\uFF1D\uFF0B\uFF0D\uFF20])/g;
+
 /**
- * One CSV cell. A value that a spreadsheet would run as a formula (it starts
- * with = + - @, tab or carriage return) is prefixed with an apostrophe: a
- * customer can type anything into a name or an address, and the file is
- * opened in Excel by staff.
+ * One CSV cell. A value that a spreadsheet would run as a formula is
+ * prefixed with an apostrophe (FORMULA_START), and so is every part of it
+ * after a ";" that would start one: a customer can type anything into a
+ * name or an address, and the file is opened in Excel by staff. A plain
+ * number ("-5", "+201001234567") stays a number: it runs nothing. A cell
+ * holding a quote, a comma, a ";", a tab or a line break is quoted.
  */
 function cell(value) {
   let text = value === null || value === undefined ? '' : String(value);
-  if (/^[=+\-@\t\r]/.test(text) && !/^[+-]?\d+(\.\d+)?$/.test(text)) text = `'${text}`;
-  return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+  if (FORMULA_START.test(text) && !/^[+-]?\d+(\.\d+)?$/.test(text)) text = `'${text}`;
+  text = text.replace(FORMULA_AFTER_SEMICOLON, ";'");
+  return /[",;\t\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
 }
 
 const line = (values) => `${values.map(cell).join(',')}\r\n`;
