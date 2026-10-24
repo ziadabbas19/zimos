@@ -78,21 +78,29 @@ async function customerByPhone(workspaceId, phone) {
   if (!phoneNormalized) return null;
   const customer = await db.Customer.findOne({ where: { workspaceId, phoneNormalized } });
   if (!customer) return null;
+  const orderLock = require('./orderLock');
   const lastOrder = await db.Order.findOne({
     where: { workspaceId, customerId: customer.id },
     order: [['createdAt', 'DESC']],
-    attributes: ['id', 'orderNumber', 'shippingAddressSnapshot', 'contactSnapshot', 'createdAt'],
+    attributes: [...new Set([...orderLock.ORDER_ATTRIBUTES, 'orderNumber', 'shippingAddressSnapshot', 'contactSnapshot', 'createdAt'])],
   });
+  // A customer known only from locked orders comes hidden, and so does the
+  // address of a locked last order (orders/orderLock). The typed phone is the merchant's own.
+  const ctx = await orderLock.contextFor(workspaceId);
+  const hidden = (await orderLock.lockedCustomerIds(ctx, workspaceId, [customer.id])).has(customer.id);
+  const lastLocked = lastOrder ? (await orderLock.lockedIds(ctx, [lastOrder])).has(lastOrder.id) : false;
+  const shown = (value) => (hidden && value ? orderLock.MASK : value);
   return {
     id: customer.id,
-    fullName: customer.fullName,
+    fullName: shown(customer.fullName),
     phone: customer.phoneRaw || phone,
-    alternatePhone: customer.alternatePhone,
-    email: customer.email,
+    alternatePhone: shown(customer.alternatePhone),
+    email: shown(customer.email),
     isBlacklisted: customer.isBlacklisted,
     totalOrders: customer.totalOrders || 0,
     totalRejectedOrders: customer.totalRejectedOrders || 0,
-    lastAddress: lastOrder ? lastOrder.shippingAddressSnapshot : null,
+    ...(ctx.enabled ? { contactLocked: hidden } : {}),
+    lastAddress: lastOrder ? (lastLocked ? orderLock.maskAddress(lastOrder.shippingAddressSnapshot) : lastOrder.shippingAddressSnapshot) : null,
     lastOrder: lastOrder ? { id: lastOrder.id, orderNumber: lastOrder.orderNumber, createdAt: lastOrder.createdAt } : null,
   };
 }

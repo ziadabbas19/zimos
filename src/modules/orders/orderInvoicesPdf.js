@@ -6,7 +6,7 @@ const asyncHandler = require('express-async-handler');
 const db = require('../../db/models');
 const { AppError } = require('../../core/errors/AppError');
 const { registerFonts } = require('../../core/pdf/bidiText');
-const { drawInvoice } = require('./orderInvoicePdf');
+const { drawInvoice, shownForInvoice } = require('./orderInvoicePdf');
 
 /**
  * POST /orders/documents/invoices { orderIds } — the selected orders'
@@ -42,7 +42,9 @@ async function invoicesPdf(workspaceId, orderIds) {
   const chunks = [];
   doc.on('data', (c) => chunks.push(c));
   const done = new Promise((resolve) => doc.on('end', () => resolve(Buffer.concat(chunks))));
-  printable.forEach((order, i) => {
+  // Locked orders bill "••••" (orders/orderLock).
+  const shown = await shownForInvoice(workspaceId, printable);
+  shown.forEach((order, i) => {
     if (i > 0) doc.addPage();
     drawInvoice(doc, { order, invoice: latest.get(order.id), workspace });
   });

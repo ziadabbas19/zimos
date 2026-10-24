@@ -81,6 +81,9 @@ function serializeOrder(order) {
   // The list endpoint doesn't load shipments; the single-order read and the
   // webhooks do. Absent means "not loaded here", never "none".
   if (Array.isArray(order.shipments)) out.shipments = order.shipments.map(serializeShipment);
+  // A locked order (orders/orderLock): contact, address and notes come hidden.
+  // Only the API reads one; a webhook never sends it.
+  if (order.contactLocked) out.contactLocked = true;
   return out;
 }
 

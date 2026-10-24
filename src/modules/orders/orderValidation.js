@@ -68,6 +68,8 @@ const address = Joi.object({
 });
 
 module.exports = {
+  lockedSummary: { params: Joi.object({ workspaceId: uuid.required() }) },
+  settleLocked: { params: Joi.object({ workspaceId: uuid.required() }), body: Joi.object({}).default({}) },
   create: {
     params: Joi.object({ workspaceId: uuid.required() }),
     body: Joi.object({

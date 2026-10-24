@@ -32,6 +32,11 @@ router.get('/', validate(schemas.list), requirePermission(PERMISSIONS.ORDERS_VIE
 // Before '/:orderId', or Express matches "pipeline" as an order id and the
 // request dies as a uuid validation error instead of reaching the counts.
 router.get('/pipeline', validate(schemas.pipeline), requirePermission(PERMISSIONS.ORDERS_VIEW), controller.pipeline);
+// Locked orders (orderLock.js, ORDERS_LOCK_ENABLED): the banner's count and
+// worth, and paying the fees of orders paid online while the balance could
+// not (billing/confirmFeeService.settleDue). Before '/:orderId' too.
+router.get('/locked-summary', validate(schemas.lockedSummary), requirePermission(PERMISSIONS.ORDERS_VIEW), controller.lockedSummary);
+router.post('/locked/settle', validate(schemas.settleLocked), requirePermission(PERMISSIONS.ORDERS_MANAGE), controller.settleLocked);
 // The orders list as a CSV file, and the columns it can carry. Before
 // '/:orderId' for the same reason as '/pipeline'.
 router.get('/export/columns', validate(exportSchemas.columns), requirePermission(PERMISSIONS.ORDERS_VIEW), exportController.columns);

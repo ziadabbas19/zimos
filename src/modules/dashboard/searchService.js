@@ -4,6 +4,7 @@ const db = require('../../db/models');
 const { QueryTypes } = require('sequelize');
 const { normalizePhone } = require('../../core/utils/phone');
 const { PERMISSIONS } = require('../../core/security/permissions');
+const orderLock = require('../orders/orderLock');
 
 /**
  * Global search (SPEC §18.6, ⌘K): a few of the best matches from each kind of
@@ -14,19 +15,24 @@ const { PERMISSIONS } = require('../../core/security/permissions');
 const PER_GROUP = 5;
 const like = (text) => `%${text.replace(/[\\%_]/g, '\\$&')}%`;
 
+// Locked orders (orders/orderLock): never found by their customer, and named
+// without them when found by number.
 async function searchOrders(workspaceId, term) {
-  const arms = ['zimos_normalize_search(o.order_number) LIKE zimos_normalize_search(:number)', "o.contact_snapshot->>'fullName' ILIKE :text"];
+  const lockCtx = await orderLock.contextFor(workspaceId);
+  const visible = orderLock.visibleSql(lockCtx, 'o');
+  const customerArm = (sql) => (visible === 'TRUE' ? sql : `(${sql} AND ${visible})`);
+  const arms = ['zimos_normalize_search(o.order_number) LIKE zimos_normalize_search(:number)', customerArm("o.contact_snapshot->>'fullName' ILIKE :text")];
   const replacements = { workspaceId, number: like(term.replace(/^#/, '')), text: like(term), limit: PER_GROUP };
   const digits = term.replace(/\D/g, '');
   if (digits.length >= 4) {
     // Phones are matched on their last digits, so 010… and +2010… both find it.
     const tail = digits.length >= 10 ? (normalizePhone(term) || digits).slice(-10) : digits.replace(/^0+/, '');
-    arms.push("regexp_replace(coalesce(o.contact_snapshot->>'phone', ''), '[^0-9]', '', 'g') LIKE :phone");
+    arms.push(customerArm("regexp_replace(coalesce(o.contact_snapshot->>'phone', ''), '[^0-9]', '', 'g') LIKE :phone"));
     replacements.phone = `%${tail}%`;
   }
   const rows = await db.sequelize.query(
     `SELECT o.id, o.order_number, o.total_amount, o.currency, o.created_at,
-            o.contact_snapshot->>'fullName' AS customer_name
+            o.contact_snapshot->>'fullName' AS customer_name, ${visible} AS visible
        FROM orders o
       WHERE o.workspace_id = :workspaceId AND (${arms.join(' OR ')})
       ORDER BY o.created_at DESC
@@ -36,7 +42,8 @@ async function searchOrders(workspaceId, term) {
   return rows.map((r) => ({
     id: r.id,
     orderNumber: r.order_number,
-    customerName: r.customer_name,
+    customerName: r.visible ? r.customer_name : r.customer_name && orderLock.MASK,
+    ...(lockCtx.enabled ? { contactLocked: !r.visible } : {}),
     totalAmount: String(r.total_amount),
     currency: r.currency,
     createdAt: r.created_at,
@@ -71,10 +78,12 @@ async function searchCustomers(workspaceId, term) {
     parts.push('c.phone_normalized LIKE :phone');
     replacements.phone = `%${digits.replace(/^0+/, '')}%`;
   }
+  // A customer known only from locked orders is never found (orders/orderLock).
+  const visible = orderLock.customerVisibleSql(await orderLock.contextFor(workspaceId), 'c');
   const rows = await db.sequelize.query(
     `SELECT c.id, c.full_name, c.phone_normalized, c.phone_raw, c.total_orders
        FROM customers c
-      WHERE c.workspace_id = :workspaceId AND (${parts.join(' OR ')})
+      WHERE c.workspace_id = :workspaceId AND (${parts.join(' OR ')}) AND ${visible}
       ORDER BY c.total_orders DESC, c.created_at DESC
       LIMIT :limit`,
     { replacements, type: QueryTypes.SELECT }

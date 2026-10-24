@@ -28,7 +28,9 @@ async function orderCreated(workspaceId, orderId) {
     include: [{ model: db.OrderItem, as: 'items', attributes: ['variantId'], required: false }],
   });
   if (!order) return;
-  const customerName = (order.contactSnapshot || {}).fullName || '';
+  // A locked order's customer is not named, here or in the e-mail and WhatsApp alert built from it (orders/orderLock).
+  const orderLock = require('../orders/orderLock');
+  const customerName = (await orderLock.isLocked(order)) ? orderLock.MASK : (order.contactSnapshot || {}).fullName || '';
   const total = `${toDisplay(order.totalAmount)} ${order.currency}`;
   const data = { orderId: order.id, orderNumber: order.orderNumber, customerName, total };
   const link = `/orders/${order.id}`;

@@ -221,14 +221,17 @@ async function processPage(candidates, now, transaction) {
 
   // The order as the public API shows it, once per order however many
   // endpoints hear about it.
+  // A locked order (orders/orderLock) is not sent at all: its customer's
+  // details are hidden. Its snapshot is still kept, as for any order read.
   const orderIds = [...new Set(pending.map((p) => p.row.id))];
   const orders = new Map();
   for (const orderId of orderIds) {
     const row = rows.find((r) => r.id === orderId);
-    orders.set(orderId, serializeOrder(await orderService.getOrder(row.workspace_id, orderId)));
+    const order = await orderService.getOrder(row.workspace_id, orderId);
+    if (!order.contactLocked) orders.set(orderId, serializeOrder(order));
   }
 
-  const deliveries = pending.map(({ endpoint, type, row, previous, current, signature }) => {
+  const deliveries = pending.filter(({ row }) => orders.has(row.id)).map(({ endpoint, type, row, previous, current, signature }) => {
     const eventId =
       type === 'order.created'
         ? `order.created:${row.id}`

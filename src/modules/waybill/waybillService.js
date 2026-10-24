@@ -92,6 +92,9 @@ async function computeWaybillModel(workspaceId, orderId) {
     include: [{ model: db.Shipment, as: 'shipments' }],
   });
   if (!order) throw new NotFoundError('Order');
+  // A waybill is the receiver's name, phone and address: not for a locked
+  // order (402 ORDER_LOCKED, orders/orderLock) — single, batch or its QR code.
+  await require('../orders/orderLock').assertUnlocked(workspaceId, order);
 
   const workspace = await db.Workspace.findByPk(workspaceId);
   // The newest active shipment (not cancelled or returned). Its tracking code

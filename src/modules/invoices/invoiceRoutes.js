@@ -10,6 +10,7 @@ const { authenticate } = require('../../core/middleware/authenticate');
 const { resolveTenant } = require('../../core/middleware/tenantContext');
 const { requirePermission } = require('../../core/middleware/rbac');
 const { PERMISSIONS } = require('../../core/security/permissions');
+const orderLock = require('../orders/orderLock');
 
 /** Customer invoices issued for orders (and their credit notes), newest first. */
 const listInvoices = asyncHandler(async (req, res) => {
@@ -22,10 +23,17 @@ const listInvoices = asyncHandler(async (req, res) => {
     order: [['issuedAt', 'DESC']],
     limit,
     include: [
-      { model: db.Order, as: 'order', attributes: ['id', 'orderNumber', 'contactSnapshot'] },
+      { model: db.Order, as: 'order', attributes: [...new Set([...orderLock.ORDER_ATTRIBUTES, 'orderNumber', 'contactSnapshot'])] },
       { model: db.CreditNote, as: 'creditNotes', required: false },
     ],
   });
+  // A locked order's customer is not named (orders/orderLock).
+  const lockCtx = await orderLock.contextFor(req.tenant.workspaceId);
+  const locked = await orderLock.lockedIds(lockCtx, rows.map((i) => i.order).filter(Boolean));
+  const customerName = (order) => {
+    const name = (order.contactSnapshot || {}).fullName || null;
+    return locked.has(order.id) && name ? orderLock.MASK : name;
+  };
 
   res.json({
     invoices: rows.map((i) => ({
@@ -35,7 +43,7 @@ const listInvoices = asyncHandler(async (req, res) => {
       currency: i.currency,
       totalAmount: Number(i.totalAmount),
       lineItems: i.lineItems,
-      order: i.order ? { id: i.order.id, orderNumber: i.order.orderNumber, customerName: (i.order.contactSnapshot || {}).fullName || null } : null,
+      order: i.order ? { id: i.order.id, orderNumber: i.order.orderNumber, customerName: customerName(i.order), ...(lockCtx.enabled ? { contactLocked: locked.has(i.order.id) } : {}) } : null,
       creditNotes: (i.creditNotes || []).map((c) => ({ id: c.id, creditNoteNumber: c.creditNoteNumber, amount: Number(c.amount), reason: c.reason, issuedAt: c.issuedAt })),
     })),
     nextCursor: rows.length === limit ? rows[rows.length - 1].issuedAt.toISOString() : null,

@@ -31,6 +31,8 @@ const schema = {
 const reveal = asyncHandler(async (req, res) => {
   const session = await db.CheckoutSession.findOne({ where: { id: req.params.sessionId, workspaceId: req.tenant.workspaceId } });
   if (!session) throw new NotFoundError('CheckoutSession');
+  // Hidden while new orders are locked (402 ORDER_LOCKED, orders/orderLock).
+  await require('../orders/orderLock').assertPendingOpen(req.tenant.workspaceId);
   await recordAudit({
     workspaceId: req.tenant.workspaceId,
     actorUserId: req.user.id,

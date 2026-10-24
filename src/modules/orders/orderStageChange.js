@@ -141,6 +141,8 @@ async function reopen(workspaceId, orderId, { reason }, req) {
  * first, so the order has something to carry the status and the dates.
  */
 async function moveShipment(workspaceId, orderId, from, to, { carrierCode, courierId, waybillNumber, trackingUrl }, req) {
+  // A locked order is not shipped by hand either: its address is hidden (orderLock).
+  await require('./orderLock').assertUnlocked(workspaceId, orderId);
   let shipment = await latestLiveShipment(workspaceId, orderId);
   // One of the store's own couriers, picked from its list: carried as its id and, for
   // everything that reads the text, its name.

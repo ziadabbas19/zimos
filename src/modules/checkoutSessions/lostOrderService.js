@@ -196,7 +196,21 @@ async function list(workspaceId, { limit = 30, before, ...filters } = {}) {
   const hasMore = rows.length > limit;
   const page = rows.slice(0, limit);
   await ensureTokens(page);
-  return { sessions: page.map(serialize), nextCursor: hasMore ? page[page.length - 1].id : null, abandonedAfterMinutes: minutes };
+  const shown = await presenter(workspaceId);
+  return { sessions: page.map((row) => shown(serialize(row))), nextCursor: hasMore ? page[page.length - 1].id : null, abandonedAfterMinutes: minutes };
+}
+
+/**
+ * While a new order of this store would be locked (orders/orderLock:
+ * subscription lapsed, or a pay-per-order balance that cannot pay a fee),
+ * lost checkouts come hidden too: they carry the same details.
+ */
+async function presenter(workspaceId) {
+  const orderLock = require('../orders/orderLock');
+  const ctx = await orderLock.contextFor(workspaceId);
+  if (!ctx.enabled) return (session) => session;
+  const locked = orderLock.pendingLocked(ctx);
+  return (session) => (locked ? orderLock.maskLostOrder(session) : { ...session, contactLocked: false });
 }
 
 async function getOne(workspaceId, sessionId) {
@@ -207,7 +221,7 @@ async function getOne(workspaceId, sessionId) {
   });
   if (rows.length === 0) throw new NotFoundError('CheckoutSession');
   await ensureTokens(rows);
-  return serialize(rows[0]);
+  return (await presenter(workspaceId))(serialize(rows[0]));
 }
 
 /**
@@ -315,6 +329,8 @@ async function update(workspaceId, sessionId, { recoveryStatus, reviewStatus }, 
  * the address, the payment method or the items.
  */
 async function convert(workspaceId, sessionId, body, req) {
+  // Not while its details are hidden (402 ORDER_LOCKED, orders/orderLock).
+  await require('../orders/orderLock').assertPendingOpen(workspaceId);
   const session = await db.CheckoutSession.findOne({ where: { id: sessionId, workspaceId } });
   if (!session) throw new NotFoundError('CheckoutSession');
   const converted = () => new AppError('CHECKOUT_SESSION_CONVERTED', 'This checkout already became an order', 409);
@@ -452,8 +468,10 @@ async function exportCsv(workspaceId, filters = {}, opts = {}) {
   );
   const header = ['Date', 'Status', 'Reason', 'Name', 'Phone', 'Email', 'City', 'Address', 'Products', 'Total', 'Currency', 'Recovery', 'Review', 'Source', 'Order'];
   const lines = [header.join(',')];
+  // Hidden as the list hides them (presenter): the file says ••••, never the details.
+  const shown = await presenter(workspaceId);
   for (const row of rows) {
-    const s = serialize(row);
+    const s = shown(serialize(row));
     const address = s.shippingAddress || {};
     lines.push(
       [

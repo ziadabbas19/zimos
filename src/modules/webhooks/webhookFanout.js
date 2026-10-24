@@ -29,11 +29,19 @@ async function orderSubject(workspaceId, orderId) {
   return { funnelId: order.funnelId, productIds: rows.map((r) => r.productId) };
 }
 
+const lock = () => require('../orders/orderLock');
+
+/** The order as the public API sends it, or null while it is locked (orders/orderLock): nothing is sent then. */
 async function orderData(workspaceId, orderId) {
-  return serializers().serializeOrder(await orders().getOrder(workspaceId, orderId));
+  const order = await orders().getOrder(workspaceId, orderId);
+  return order.contactLocked ? null : serializers().serializeOrder(order);
 }
 
-/** What a topic sends and what it is about. Null = the thing is gone; send nothing. */
+/**
+ * What a topic sends and what it is about. Null = the thing is gone, or its
+ * customer's details are locked (orders/orderLock): send nothing, not even
+ * try. A locked order's events are not sent later when it opens.
+ */
 async function build(topic, event) {
   const { workspaceId, payload } = event;
   const [aggregate] = topic.split('.');
@@ -42,7 +50,9 @@ async function build(topic, event) {
     const subject = await orderSubject(workspaceId, payload.orderId);
     if (!subject) return null;
     const { orderId, workspaceId: _ws, ...extra } = payload;
-    return { subject, data: { order: await orderData(workspaceId, payload.orderId), ...extra } };
+    const order = await orderData(workspaceId, payload.orderId);
+    if (!order) return null;
+    return { subject, data: { order, ...extra } };
   }
 
   if (aggregate === 'shipment') {
@@ -80,8 +90,13 @@ async function build(topic, event) {
   if (aggregate === 'customer' && payload.customerId) {
     const customer = await db.Customer.findOne({ where: { id: payload.customerId, workspaceId } });
     if (!customer) return null;
+    const ctx = await lock().contextFor(workspaceId);
+    if ((await lock().lockedCustomerIds(ctx, workspaceId, [customer.id])).size > 0) return null;
     return { subject: {}, data: { customer: customer.toJSON() } };
   }
+
+  // A lost checkout carries what the shopper typed: not while new orders would be locked.
+  if (aggregate === 'checkout' && lock().pendingLocked(await lock().contextFor(workspaceId))) return null;
 
   if (aggregate === 'review' && payload.reviewId) {
     const review = await db.Review.findOne({ where: { id: payload.reviewId, workspaceId } });
@@ -146,22 +161,29 @@ async function handleDomainEvent(event) {
 async function resendOrders(workspaceId, orderIds, { endpointId = null } = {}) {
   let deliveries = 0;
   const missing = [];
+  // Locked orders (orders/orderLock) are not sent: named back so the screen can say why.
+  const locked = [];
   for (const orderId of orderIds) {
     const subject = await orderSubject(workspaceId, orderId);
     if (!subject) {
       missing.push(orderId);
       continue;
     }
+    const order = await orderData(workspaceId, orderId);
+    if (!order) {
+      locked.push(orderId);
+      continue;
+    }
     deliveries += await fanOut(workspaceId, 'order.created', {
       eventId: `order.created:${orderId}:resend:${crypto.randomUUID()}`,
-      data: { order: await orderData(workspaceId, orderId), resent: true },
+      data: { order, resent: true },
       // A resend is an explicit request: the endpoint's filter is not applied
       // when the merchant named the endpoint.
       subject: endpointId ? {} : subject,
       endpointId,
     });
   }
-  return { orders: orderIds.length - missing.length, deliveries, missing };
+  return { orders: orderIds.length - missing.length - locked.length, deliveries, missing, ...(locked.length ? { locked } : {}) };
 }
 
 module.exports = { fanOut, handleDomainEvent, resendOrders, orderSubject };

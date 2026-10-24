@@ -30,9 +30,19 @@ async function invoicePdf(workspaceId, orderId) {
   const chunks = [];
   doc.on('data', (c) => chunks.push(c));
   const done = new Promise((resolve) => doc.on('end', () => resolve({ pdf: Buffer.concat(chunks), invoiceNumber: invoice.invoiceNumber })));
-  drawInvoice(doc, { order, invoice, workspace });
+  // A locked order's invoice bills "••••" (orders/orderLock); its lines and totals print as they are.
+  const [shown] = await shownForInvoice(workspaceId, [order]);
+  drawInvoice(doc, { order: shown, invoice, workspace });
   doc.end();
   return done;
+}
+
+/** The orders as an invoice may show them: a locked one with its customer hidden (orders/orderLock). */
+async function shownForInvoice(workspaceId, orders) {
+  const orderLock = require('./orderLock');
+  const ctx = await orderLock.contextFor(workspaceId);
+  const locked = await orderLock.lockedIds(ctx, orders);
+  return orders.map((o) => (locked.has(o.id) ? orderLock.maskOrder(o.toJSON(), ctx) : o));
 }
 
 /** One invoice, from the top of the current page (several share a document: orderInvoicesPdf.js). */
@@ -148,4 +158,4 @@ function drawInvoice(doc, { order, invoice, workspace }) {
   doc.fillColor('#000');
 }
 
-module.exports = { invoicePdf, drawInvoice };
+module.exports = { invoicePdf, drawInvoice, shownForInvoice };

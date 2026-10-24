@@ -167,10 +167,15 @@ async function manifestRows(workspaceId, { orderIds, date, carrier, courierId } 
   // One row per order: its newest live shipment.
   const byOrder = new Map();
   for (const s of shipments) byOrder.set(s.orderId, s);
+  // A locked order (orders/orderLock) is listed with its customer hidden; the governorate stays.
+  const orderLock = require('./orderLock');
+  const lockCtx = await orderLock.contextFor(workspaceId);
+  const locked = await orderLock.lockedIds(lockCtx, [...byOrder.values()].map((s) => s.order));
   const rows = [...byOrder.values()].map((s) => {
     const o = s.order;
-    const contact = o.contactSnapshot || {};
-    const address = o.shippingAddressSnapshot || {};
+    const hidden = locked.has(o.id);
+    const contact = hidden ? orderLock.maskContact(o.contactSnapshot || {}) : o.contactSnapshot || {};
+    const address = hidden ? orderLock.maskAddress(o.shippingAddressSnapshot || {}) : o.shippingAddressSnapshot || {};
     return {
       orderId: o.id,
       orderNumber: o.orderNumber,

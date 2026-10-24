@@ -107,7 +107,13 @@ router.get(
       { replacements, type: QueryTypes.SELECT }
     );
     const [{ total }] = await db.sequelize.query(`SELECT COUNT(*)::int AS total FROM (${SCORED}) s ${where}`, { replacements, type: QueryTypes.SELECT });
-    res.json({ customers: rows.map(row), total });
+    // A customer known only from locked orders is not named (orders/orderLock).
+    const orderLock = require('../orders/orderLock');
+    const customers = await orderLock.presentCustomers(req.tenant.workspaceId, rows.map(row), {
+      pick: (r) => r.customerId,
+      mask: (r) => ({ ...r, fullName: r.fullName && orderLock.MASK, contactLocked: true }),
+    });
+    res.json({ customers, total });
   })
 );
 

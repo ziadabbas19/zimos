@@ -38,6 +38,7 @@ const { resolveCustomizations, attachUploads } = require('../catalog/customField
 const { presentOrderItems } = require('../customerUploads/customerUploadService');
 const { orderBumpUnavailable } = require('../checkout/orderBump');
 const wallet = require('../billing/walletService');
+const orderLock = require('./orderLock');
 const outbox = require('../../core/outbox/outbox');
 const orderMeta = require('./orderMetaService');
 const { applyOrderFilters } = require('./orderFilters');
@@ -966,7 +967,8 @@ async function getOrder(workspaceId, orderId) {
     ? await db.Order.findOne({ where: { workspaceId, id: order.linkedFromOrderId }, attributes: ['id', 'orderNumber'] })
     : null;
   const stage = await stageForOrder(order.id);
-  return {
+  // Locked orders (orderLock): the customer's details hidden, `contactLocked` set either way.
+  return orderLock.presentOrder(workspaceId, {
     ...json,
     paymentProvider: providers.get(order.id) || null,
     stage,
@@ -975,7 +977,7 @@ async function getOrder(workspaceId, orderId) {
     confirmationTask: await confirmationService.taskSummaryForOrder(workspaceId, order.id),
     linkedOrders: linkedOrders.map((o) => o.toJSON()),
     linkedFromOrder: linkedFrom ? linkedFrom.toJSON() : null,
-  };
+  });
 }
 
 /** The order's id and number, or 404 — the check every per-order endpoint starts with. */
@@ -1024,17 +1026,21 @@ const escapeLike = (value) => value.replace(/[\\%_]/g, (char) => `\\${char}`);
  * here (see platformAdmin/overviewMetricsService) is UTC. Making this one
  * endpoint local time would be the odd one out, not the fix.
  */
-function applySearchAndDates(conditions, bind, { q, from, to }) {
+function applySearchAndDates(conditions, bind, { q, from, to }, lockCtx = null) {
   if (q) {
     const term = q.trim();
     const arms = [];
+    // A locked order is never found by its customer's name, email or phone
+    // (orderLock.visibleSql; TRUE while nothing is locked).
+    const visible = orderLock.visibleSql(lockCtx, 'o');
+    const customerArm = (sql) => (visible === 'TRUE' ? sql : `(${sql} AND ${visible})`);
 
     bind.qNumber = `%${escapeLike(term.replace(/^#/, ''))}%`;
     arms.push('zimos_normalize_search(o.order_number) LIKE zimos_normalize_search($qNumber)');
 
     bind.qText = `%${escapeLike(term)}%`;
-    arms.push("zimos_normalize_search(o.contact_snapshot->>'fullName') LIKE zimos_normalize_search($qText)");
-    arms.push("zimos_normalize_search(o.contact_snapshot->>'email') LIKE zimos_normalize_search($qText)");
+    arms.push(customerArm("zimos_normalize_search(o.contact_snapshot->>'fullName') LIKE zimos_normalize_search($qText)"));
+    arms.push(customerArm("zimos_normalize_search(o.contact_snapshot->>'email') LIKE zimos_normalize_search($qText)"));
 
     // A courier's waybill number, exactly (any case): the store's shipments only.
     bind.qWaybill = term;
@@ -1046,7 +1052,7 @@ function applySearchAndDates(conditions, bind, { q, from, to }) {
     if (digits.length >= 10) {
       bind.qPhone = normalizePhone(term).slice(-10);
       arms.push(
-        "right(regexp_replace(coalesce(o.contact_snapshot->>'phone', ''), '[^0-9]', '', 'g'), 10) = $qPhone"
+        customerArm("right(regexp_replace(coalesce(o.contact_snapshot->>'phone', ''), '[^0-9]', '', 'g'), 10) = $qPhone")
       );
     }
 
@@ -1193,7 +1199,8 @@ async function listOrders(
     conditions.push(`${STAGE_SQL} = $stage`);
     bind.stage = stage;
   }
-  applySearchAndDates(conditions, bind, { q, from, to });
+  const lockCtx = await orderLock.contextFor(workspaceId);
+  applySearchAndDates(conditions, bind, { q, from, to }, lockCtx);
 
   if (cursor) {
     const anchor = await resolveCursor(workspaceId, cursor);
@@ -1217,7 +1224,8 @@ async function listOrders(
 
   const hasMore = rows.length > limit;
   const page = rows.slice(0, limit);
-  const orders = await hydrateOrders(page);
+  // Locked orders hidden here, so the list, the export and the public API all get the same answer.
+  const orders = await orderLock.presentOrders(workspaceId, await hydrateOrders(page), { ctx: lockCtx });
   return { orders, nextCursor: hasMore ? page[page.length - 1].id : null };
 }
 
@@ -1234,7 +1242,8 @@ async function orderPipeline(workspaceId, { q, from, to, ...filters } = {}) {
   const conditions = ['o.workspace_id = $workspaceId'];
   const bind = { workspaceId };
   applyOrderFilters(conditions, bind, filters);
-  applySearchAndDates(conditions, bind, { q, from, to });
+  const lockCtx = q ? await orderLock.contextFor(workspaceId) : null;
+  applySearchAndDates(conditions, bind, { q, from, to }, lockCtx);
 
   const rows = await db.sequelize.query(
     `SELECT ${STAGE_SQL} AS stage, COUNT(*)::int AS count
@@ -1250,15 +1259,15 @@ async function orderPipeline(workspaceId, { q, from, to, ...filters } = {}) {
     stages[row.stage] = row.count;
     total += row.count;
   }
-  return { stages, total, risk: await riskCounts(workspaceId, { q, from, to, ...filters }) };
+  return { stages, total, risk: await riskCounts(workspaceId, { q, from, to, ...filters }, lockCtx) };
 }
 
 /** The risk tabs' counts: every other filter applies, the risk tab itself does not. */
-async function riskCounts(workspaceId, { q, from, to, riskLevel, ...filters }) {
+async function riskCounts(workspaceId, { q, from, to, riskLevel, ...filters }, lockCtx = null) {
   const conditions = ['o.workspace_id = $workspaceId'];
   const bind = { workspaceId };
   applyOrderFilters(conditions, bind, filters);
-  applySearchAndDates(conditions, bind, { q, from, to });
+  applySearchAndDates(conditions, bind, { q, from, to }, lockCtx);
   const rows = await db.sequelize.query(
     `SELECT o.risk_level AS level, COUNT(*)::int AS count FROM orders o WHERE ${conditions.join(' AND ')} GROUP BY 1`,
     { bind, type: QueryTypes.SELECT }
@@ -1382,6 +1391,8 @@ async function updateOrderLimited(workspaceId, orderId, data, req) {
     const order = await db.Order.findOne({ where: { id: orderId, workspaceId }, transaction, lock: transaction.LOCK.UPDATE });
     if (!order) throw new NotFoundError('Order');
     if (order.cancelledAt) throw new AppError('ORDER_CANCELLED', 'This order is cancelled', 409);
+    // Everything this endpoint edits is the customer's details: not on a locked order (402 ORDER_LOCKED).
+    await orderLock.assertUnlocked(workspaceId, order, { transaction });
     await assertNotShipped(order, transaction);
     // The courier delivers to the address and receiver it was given at booking:
     // a real change to either waits for the booking to be cancelled. Notes, the email, or
@@ -1418,6 +1429,10 @@ async function listShipments(workspaceId, orderId) {
 }
 
 async function createShipment(workspaceId, orderId, data, req) {
+  // A locked order is not booked with a courier nor shipped by hand: its
+  // address is hidden (402 ORDER_LOCKED, orderLock). The bulk action, the
+  // batches and the public API come through here or the carrier booking.
+  await orderLock.assertUnlocked(workspaceId, orderId);
   // A carrier this workspace has connected (Bosta, ...) is booked through the
   // merchant's account. Everything else is a manual shipment — a local record
   // only, the merchant types the waybill in; a manual name that spells a

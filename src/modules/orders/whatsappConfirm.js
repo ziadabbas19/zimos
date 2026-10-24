@@ -47,6 +47,8 @@ async function whatsappConfirm(workspaceId, orderId, req) {
   const { order, vars } = subject;
   if (order.cancelledAt || order.confirmationState === 'rejected') throw new AppError('ORDER_CANCELLED', 'This order is cancelled', 409);
   if (order.confirmationState === 'confirmed') throw new AppError('ORDER_ALREADY_CONFIRMED', 'This order is already confirmed', 409);
+  // A locked order's customer is not messaged, nor is their number put in a link (402 ORDER_LOCKED).
+  await require('./orderLock').assertUnlocked(workspaceId, order.id);
   const phone = normalizePhone(subject.phone);
   if (!phone) throw new AppError('INVALID_PHONE', 'The order has no valid phone number', 422);
 
