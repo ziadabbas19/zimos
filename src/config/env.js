@@ -590,8 +590,9 @@ const env = {
     // Fawaterak as a store gateway (payments/gateways/fawaterak.js). No store
     // sees it — not in the dashboard, not at checkout, not through the API —
     // unless PAYMENTS_FAWATERAK_ENABLED is exactly "true"; then
-    // PAYMENTS_FAWATERAK_BETA_WORKSPACES (store slugs, comma-separated), when
-    // set, limits it to those stores. A payment already started through it
+    // PAYMENTS_FAWATERAK_BETA_WORKSPACES (workspace ids, comma-separated —
+    // never slugs, which merchants can change), when set, limits it to those
+    // stores. A payment already started through it
     // is still settled with the flag off: that money moved. Under
     // NODE_ENV=test it starts off; a test sets it on this object.
     fawaterak: {

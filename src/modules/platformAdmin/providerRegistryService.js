@@ -275,9 +275,12 @@ function gatewayAvailabilityFor(adapter, base) {
     };
   }
   if (rollout.state === 'beta') {
+    const ignored = rollout.ignoredBetaEntries.length
+      ? ` Ignored, not workspace ids: ${rollout.ignoredBetaEntries.join(', ')}.`
+      : '';
     return {
       ...base,
-      availabilityDetail: `${base.availabilityDetail} Only the stores in ${rollout.betaVar} see ${adapter.name}: ${rollout.betaWorkspaces.join(', ')}.`,
+      availabilityDetail: `${base.availabilityDetail} Only the stores in ${rollout.betaVar} see ${adapter.name}: ${rollout.betaWorkspaces.join(', ') || 'none'}.${ignored}`,
     };
   }
   return base;

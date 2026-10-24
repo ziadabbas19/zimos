@@ -79,7 +79,10 @@ const ADAPTERS = {
  * Which stores a gateway is offered to: connecting it, the gateway list, its
  * methods at checkout. Paymob and Kashier: every store. Fawaterak:
  * PAYMENTS_FAWATERAK_ENABLED, and then only the stores in
- * PAYMENTS_FAWATERAK_BETA_WORKSPACES when that is set (env.payments).
+ * PAYMENTS_FAWATERAK_BETA_WORKSPACES when that is set (env.payments). The
+ * list holds workspace ids, never slugs: a merchant can change their slug,
+ * so a slug left in the list (a typo, a store renamed) could be taken by
+ * another store. An entry that is not an id matches no store.
  *
  * getAdapter, isGateway and listAdapters are deliberately NOT limited by
  * this: a payment already started through a gateway is still recorded,
@@ -95,6 +98,8 @@ const ROLLOUTS = {
 
 const rolloutOf = (code) => (Object.prototype.hasOwnProperty.call(ROLLOUTS, code) ? ROLLOUTS[code] : null);
 
+const WORKSPACE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
 /** 'all' | 'beta' | 'off': who may see the gateway on this server. */
 function serverRollout(code) {
   if (!module.exports.getAdapter(code)) return 'off';
@@ -107,26 +112,28 @@ function serverRollout(code) {
 
 /**
  * A gateway's own switch, for the platform admin: null when it has none
- * (offered to every store); otherwise its state, the variable names and the
- * beta store slugs.
+ * (offered to every store); otherwise its state, the variable names, the
+ * beta workspace ids, and the entries that are not ids (they match nothing).
  */
 function describeRollout(code) {
   const rollout = rolloutOf(code);
   if (!rollout) return null;
+  const entries = [...rollout.read().betaWorkspaces];
   return {
     state: serverRollout(code),
     enabledVar: rollout.enabledVar,
     betaVar: rollout.betaVar,
-    betaWorkspaces: [...rollout.read().betaWorkspaces],
+    betaWorkspaces: entries.filter((e) => WORKSPACE_ID.test(e)),
+    ignoredBetaEntries: entries.filter((e) => !WORKSPACE_ID.test(e)),
   };
 }
 
-/** Whether a store (`workspace.slug`) may see the gateway. */
+/** Whether a store (`workspace.id`) may see the gateway. */
 function isOfferedTo(code, workspace) {
   const state = serverRollout(code);
   if (state === 'all') return true;
-  if (state === 'off' || !workspace || !workspace.slug) return false;
-  return rolloutOf(code).read().betaWorkspaces.includes(String(workspace.slug).toLowerCase());
+  if (state === 'off' || !workspace || !workspace.id) return false;
+  return rolloutOf(code).read().betaWorkspaces.includes(String(workspace.id).toLowerCase());
 }
 
 /** The gateways switched on for at least one store on this server. */

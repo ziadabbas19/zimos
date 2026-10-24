@@ -239,10 +239,13 @@ describe('provider registry — payment gateways', () => {
     expect(row.availabilityDetail).toMatch(/PAYMENTS_FAWATERAK_ENABLED is off/);
     expect(row.healthCheck).toEqual({ checkable: true, target: 'app.fawaterk.com' });
 
-    Object.assign(env.payments.fawaterak, { enabled: true, betaWorkspaces: ['shop-a', 'shop-b'] });
+    const ids = ['3f0c2a9e-1b7d-4c55-9a10-2b6d8e4f7a01', '8a1e5c33-6f2b-4d0e-b7c9-0d4e2f1a9b02'];
+    Object.assign(env.payments.fawaterak, { enabled: true, betaWorkspaces: [...ids, 'shop-a'] });
     row = await fawaterak();
     expect(row.availability).toBe('enabled');
-    expect(row.availabilityDetail).toMatch(/PAYMENTS_FAWATERAK_BETA_WORKSPACES see Fawaterak: shop-a, shop-b/);
+    expect(row.availabilityDetail).toContain(`PAYMENTS_FAWATERAK_BETA_WORKSPACES see Fawaterak: ${ids.join(', ')}.`);
+    // A slug is no workspace id: named as ignored.
+    expect(row.availabilityDetail).toContain('Ignored, not workspace ids: shop-a.');
 
     env.payments.fawaterak.betaWorkspaces = [];
     row = await fawaterak();

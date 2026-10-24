@@ -130,10 +130,10 @@ describe('the PAYMENTS_FAWATERAK_* switch', () => {
     expect(fw.callsTo('/createTransaction')).toHaveLength(0);
   });
 
-  it('beta: only the stores named in PAYMENTS_FAWATERAK_BETA_WORKSPACES see it', async () => {
+  it('beta: only the stores whose workspace id is in PAYMENTS_FAWATERAK_BETA_WORKSPACES see it', async () => {
     const inBeta = await setupWorkspaceWithProduct();
     const other = await setupWorkspaceWithProduct();
-    env.payments.fawaterak.betaWorkspaces = [inBeta.workspace.slug.toLowerCase()];
+    env.payments.fawaterak.betaWorkspaces = [inBeta.workspace.id.toLowerCase()];
 
     const listed = async (s) =>
       (await request(app).get(gatewaysUrl(s.workspace.id)).set(bearer(s.auth.accessToken))).body.gateways.map((g) => g.code);
@@ -143,6 +143,16 @@ describe('the PAYMENTS_FAWATERAK_* switch', () => {
     expect((await connect(inBeta.auth.accessToken, inBeta.workspace.id)).status).toBe(200);
     // Paymob and Kashier are not limited by Fawaterak's switch.
     expect(await listed(other)).toEqual(expect.arrayContaining(['paymob', 'kashier']));
+  });
+
+  it('beta: a slug in the list admits no store, even the one that has it', async () => {
+    const setup = await setupWorkspaceWithProduct();
+    expect(setup.workspace.slug).toBeTruthy();
+    env.payments.fawaterak.betaWorkspaces = [setup.workspace.slug.toLowerCase()];
+
+    const list = await request(app).get(gatewaysUrl(setup.workspace.id)).set(bearer(setup.auth.accessToken));
+    expect(list.body.gateways.map((g) => g.code)).not.toContain('fawaterak');
+    expect((await connect(setup.auth.accessToken, setup.workspace.id)).status).toBe(404);
   });
 });
 

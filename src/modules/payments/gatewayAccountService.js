@@ -48,9 +48,9 @@ function requireAdapter(code) {
   return adapter;
 }
 
-/** The store as the gateway rollout reads it (gateways.isOfferedTo). */
+/** The store as the gateway rollout reads it (gateways.isOfferedTo: its id). */
 function rolloutWorkspace(workspaceId) {
-  return db.Workspace.findByPk(workspaceId, { attributes: ['id', 'slug'] });
+  return db.Workspace.findByPk(workspaceId, { attributes: ['id'] });
 }
 
 /** A gateway this store may not see answers exactly like an unknown one. */

@@ -15,7 +15,7 @@ Code: `src/modules/payments/gateways/fawaterak.js`, registered in
 | Variable | Meaning |
 |---|---|
 | `PAYMENTS_FAWATERAK_ENABLED` | Off unless exactly `true`. Off: no store sees Fawaterak — not in the dashboard, not at checkout, not through the API (connect answers 404). |
-| `PAYMENTS_FAWATERAK_BETA_WORKSPACES` | Store slugs, comma-separated. With the switch on and this set, only those stores see it. Empty: every store. |
+| `PAYMENTS_FAWATERAK_BETA_WORKSPACES` | Workspace ids (UUIDs), comma-separated. With the switch on and this set, only those stores see it. Empty: every store. Not slugs: a merchant can change their slug, so a slug left in the list could be taken by another store. An entry that is not an id matches no store; the platform admin's gateway registry lists such entries as ignored. |
 
 `PAYMENTS_ONLINE_ENABLED` and `GATEWAY_CREDENTIALS_KEY` apply as for every
 gateway. A payment already started through Fawaterak is still settled
@@ -86,7 +86,7 @@ and dropped.
 
 1. A Fawaterak staging account with Visa / Mastercard switched on.
 2. Set `PAYMENTS_FAWATERAK_ENABLED=true` and
-   `PAYMENTS_FAWATERAK_BETA_WORKSPACES=<one test store's slug>`.
+   `PAYMENTS_FAWATERAK_BETA_WORKSPACES=<one test store's workspace id>`.
 3. Connect the staging keys in that store and pay one order from the store
    preview with a Fawaterak test card. Check:
    - the Fawaterak card on Payments → Gateways shows "Last payment update
