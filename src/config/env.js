@@ -381,6 +381,18 @@ const env = {
     },
   },
 
+  // Locked orders (orders/orderLock.js, billing/confirmFeeService.js). On, a
+  // store whose subscription lapsed, or a pay-per-order store that cannot pay
+  // the next fee, keeps selling, but its new orders' customer details are
+  // hidden until it renews or tops up; the pay-per-order fee is taken once
+  // when an order is confirmed instead of when it is placed. Off unless
+  // exactly "true"; off, nothing is hidden and the fee is charged as before.
+  // Under NODE_ENV=test it starts off whatever the .env says; a test that
+  // needs it sets it here.
+  ordersLock: {
+    enabled: process.env.NODE_ENV !== 'test' && process.env.ORDERS_LOCK_ENABLED === 'true',
+  },
+
   // Plan features as a gate (billing/planFeatureGate): adding a custom domain,
   // inviting a team member and the web analytics are refused (403
   // PLAN_FEATURE_REQUIRED) for a store whose features (plan + console

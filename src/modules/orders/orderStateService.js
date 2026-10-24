@@ -124,7 +124,14 @@ async function setConfirmationState(workspaceId, orderId, state, req, transactio
   // Paid by InstaPay / a wallet: not confirmed for shipping until the proof is approved.
   if (state === 'confirmed') await require('../manualPayments/manualPaymentService').assertConfirmable(order, transaction);
   const before = order.confirmationState;
-  await order.update({ confirmationState: state, confirmedAt: confirmedAtFor(order, state) }, { transaction });
+  // Entering 'confirmed': the pay-per-order fee is taken here, once, or the
+  // confirmation is refused (402 ORDER_LOCKED) — billing/confirmFeeService.
+  // The wallet is the last lock: the callers hold the order's row already.
+  const contactLock =
+    state === 'confirmed' && before !== 'confirmed'
+      ? await require('../billing/confirmFeeService').settleOnConfirmation(order, { strict: true, actorUserId: req && req.user ? req.user.id : null }, transaction)
+      : order.contactLock;
+  await order.update({ confirmationState: state, confirmedAt: confirmedAtFor(order, state), contactLock }, { transaction });
   await recordAudit({
     workspaceId,
     actorUserId: req.user ? req.user.id : null,
@@ -140,6 +147,9 @@ async function setConfirmationState(workspaceId, orderId, state, req, transactio
   return order;
 }
 
+// The financial states an order already counts as paid in (orderStage PAID_STATES_SQL).
+const PAID_BEFORE = ['paid', 'partially_paid', 'refunded', 'partially_refunded'];
+
 /**
  * confirmed_at follows the confirmation state (migration 115): stamped on the
  * move into 'confirmed', kept while it stays there, cleared when it leaves.
@@ -153,7 +163,11 @@ async function setFinancialState(workspaceId, orderId, state, req, transaction) 
   const order = await db.Order.findOne({ where: { id: orderId, workspaceId }, transaction });
   if (!order) throw new NotFoundError('Order');
   const before = order.financialState;
-  await order.update({ financialState: state }, { transaction });
+  // An order paid online reaches its confirmed stage with the payment
+  // (orders/orderLock): unlocked, or due with its fee taken after the commit.
+  const paidNow = ['paid', 'partially_paid'].includes(state) && !PAID_BEFORE.includes(before) && order.paymentMethod !== 'cod';
+  const contactLock = paidNow ? await require('../billing/confirmFeeService').markOnPayment(order, transaction) : order.contactLock;
+  await order.update({ financialState: state, contactLock }, { transaction });
   await recordAudit({
     workspaceId,
     actorUserId: req && req.user ? req.user.id : null,

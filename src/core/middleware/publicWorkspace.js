@@ -4,7 +4,7 @@ const asyncHandler = require('express-async-handler');
 const db = require('../../db/models');
 const { AppError, NotFoundError } = require('../errors/AppError');
 const { isUuid, normalizeSlug } = require('../utils/workspaceSlug');
-const { accessFor } = require('../../modules/workspaces/workspaceAccessService');
+const { accessFor, closesStorefront } = require('../../modules/workspaces/workspaceAccessService');
 const { isStorePreviewRequest } = require('../security/storePreview');
 
 /**
@@ -47,7 +47,8 @@ const resolvePublicWorkspace = asyncHandler(async (req, res, next) => {
     if (!isStorePreviewRequest(req, workspace.id)) throw new NotFoundError('Workspace');
     req.draftPreview = true;
   }
-  if (access.restricted) {
+  // With ORDERS_LOCK_ENABLED only a suspension closes it (closesStorefront).
+  if (closesStorefront(access)) {
     throw new AppError('STORE_UNAVAILABLE', 'This store is currently unavailable.', 423, {
       store: {
         name: workspace.name,

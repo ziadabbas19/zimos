@@ -150,12 +150,30 @@ async function accessFor(workspaceId, { now = new Date(), workspace, subscriptio
   };
 }
 
+/**
+ * Whether the storefront answers STORE_UNAVAILABLE (core/middleware/
+ * publicWorkspace). With ORDERS_LOCK_ENABLED an unpaid subscription or an
+ * empty balance no longer closes it: the store keeps selling and its new
+ * orders' customer details are hidden instead (orders/orderLock.js). A
+ * suspension by Zimos still closes it.
+ */
+function closesStorefront(access) {
+  if (!access.restricted) return false;
+  if (env.ordersLock.enabled === true) return access.reasons.includes('suspended');
+  return true;
+}
+
 /** The merchant dashboard's view: what to warn about and what is locked. */
 function serializeAccess(access) {
   const b = access.billing;
   return {
     restricted: access.restricted,
     reasons: access.reasons,
+    // False while the store still sells despite `restricted` (ORDERS_LOCK_ENABLED).
+    storefrontClosed: closesStorefront(access),
+    // Locked orders are on (orders/orderLock.js): the dashboard shows the
+    // balance widget and the locked-orders banner.
+    ordersLock: env.ordersLock.enabled === true,
     // Built but not published until subscribed (REQUIRE_SUBSCRIPTION_TO_GO_LIVE).
     draft: Boolean(access.draft),
     billing: {
@@ -181,5 +199,6 @@ module.exports = {
   billingLifecycle,
   isDraftSubscription,
   accessFor,
+  closesStorefront,
   serializeAccess,
 };

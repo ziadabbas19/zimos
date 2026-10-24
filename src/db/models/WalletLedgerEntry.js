@@ -9,7 +9,8 @@ module.exports = (sequelize, DataTypes) => {
     {
       id: { type: DataTypes.UUID, defaultValue: DataTypes.UUIDV4, primaryKey: true },
       workspaceId: { type: DataTypes.UUID, allowNull: false, field: 'workspace_id' },
-      // topup | order_fee | order_fee_reversal | order_fee_recharge
+      // topup | order_fee | order_fee_reversal | order_fee_recharge |
+      // order_confirm_fee (once per order, migration 718) | …
       entryType: { type: DataTypes.STRING(30), allowNull: false, field: 'entry_type' },
       cashDelta: { type: DataTypes.BIGINT, allowNull: false, field: 'cash_delta' },
       // Free orders taken (-1), given back (+1) or granted (+n) (migration 220).
