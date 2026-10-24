@@ -35,6 +35,8 @@ const LEASE_MS = 2 * 60 * 1000;
 const CONCURRENCY = 5;
 const USER_AGENT = 'Zimos-Webhooks/1.0';
 const SECRET_RETRY_MS = 5 * 60 * 1000;
+// How long a delivery keeps waiting for its secret to become readable before it ends.
+const SECRET_GIVE_UP_MS = 3 * 24 * 60 * 60 * 1000;
 
 async function claimDue({ limit, now }) {
   const rows = await db.sequelize.query(
@@ -88,16 +90,22 @@ async function attemptDelivery(deliveryId, { now = new Date() } = {}) {
   // A sealed secret this server cannot open (WEBHOOK_SECRETS_KEY missing or
   // changed): nothing is sent unsigned, and the attempt is not counted
   // against the receiver — it comes due again until the key is back.
+  // Three days of that and the row ends (exhausted) instead of coming back
+  // every 5 minutes for ever; Redeliver sends it once the key is back. A row
+  // with no secret at all (both columns empty, which the CHECK of migration
+  // 714 refuses) is treated the same way.
   let secret;
   try {
     secret = readSecret(endpoint);
+    if (!secret) throw new Error('No signing secret is stored for this endpoint');
   } catch (err) {
     logger.error('Webhook signing secret unreadable', { endpointId: endpoint.id, workspaceId: endpoint.workspaceId, reason: err.message });
-    await delivery.update({
-      status: 'failed',
-      nextAttemptAt: new Date(now.getTime() + SECRET_RETRY_MS),
-      lastError: 'The signing secret could not be read on our side; retried automatically',
-    });
+    const giveUp = now.getTime() - new Date(delivery.createdAt).getTime() >= SECRET_GIVE_UP_MS;
+    await delivery.update(
+      giveUp
+        ? { status: 'exhausted', nextAttemptAt: null, lastError: 'The signing secret could not be read on our side for 3 days: not sent' }
+        : { status: 'failed', nextAttemptAt: new Date(now.getTime() + SECRET_RETRY_MS), lastError: 'The signing secret could not be read on our side; retried automatically' }
+    );
     return delivery;
   }
 

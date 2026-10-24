@@ -177,6 +177,14 @@ describe('webhook signing secrets at rest', () => {
     // The endpoint is not marked failing for our own missing key.
     const stored = await db.WebhookEndpoint.findByPk(endpoint.id);
     expect(stored.failingSince).toBeNull();
+    // After three days of that, the row ends instead of coming back for ever.
+    const row = await db.WebhookDelivery.findByPk(res.body.delivery.id);
+    await row.update({ status: 'failed', createdAt: new Date(Date.now() - 4 * 24 * 3600 * 1000) }, { silent: true });
+    await db.sequelize.query('UPDATE webhook_deliveries SET created_at = :at WHERE id = :id', { replacements: { at: new Date(Date.now() - 4 * 24 * 3600 * 1000), id: row.id } });
+    const ended = await require('../../src/modules/webhooks/webhookDispatcher').attemptDelivery(row.id);
+    expect(ended).toMatchObject({ status: 'exhausted', nextAttemptAt: null, attemptCount: 0 });
+    expect(ended.lastError).toMatch(/3 days/);
+    expect(receiver.received).toHaveLength(1);
     // Listing still works; the hint is simply unknown while the key is gone.
     const list = await request(app).get(`/api/v1/workspaces/${workspace.id}/webhooks`).set(bearer(auth.accessToken));
     expect(list.status).toBe(200);
