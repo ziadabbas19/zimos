@@ -1,0 +1,422 @@
+'use strict';
+
+/**
+ * Live updates (modules/realtime): who may connect, which rooms they are put
+ * in, and that nothing of one store reaches another — the isolation of
+ * tenantIsolation.test.js, over a socket. A real Socket.IO server on a free
+ * port, with the postgres adapter on the test database: every message takes
+ * the production path (outbox → realtime consumer → emitter NOTIFY → adapter
+ * LISTEN → room).
+ *
+ * "Receives nothing" is always checked after a positive control received the
+ * same event, so a silent socket means filtered, not slow.
+ */
+
+const http = require('http');
+const { Pool } = require('pg');
+const { io: connectSocket } = require('socket.io-client');
+const {
+  app,
+  request,
+  registerAndActivate,
+  createWorkspace,
+  createProductWithVariant,
+  addMemberWithRole,
+  makePlatformUser,
+  confirmCodOrder,
+} = require('../helpers/factories');
+const db = require('../../src/db/models');
+const env = require('../../src/config/env');
+const jwt = require('jsonwebtoken');
+const billingService = require('../../src/modules/billing/billingService');
+const pgPool = require('../../src/modules/realtime/pgPool');
+const publisher = require('../../src/modules/realtime/publisher');
+const { route } = require('../../src/modules/realtime/catalog');
+const { createRealtimeServer, PATH } = require('../../src/modules/realtime/realtimeServer');
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const bearer = (token) => ({ Authorization: `Bearer ${token}` });
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+let server;
+let realtime;
+let base;
+const clients = [];
+
+function listen(httpServer) {
+  return new Promise((resolve) => httpServer.listen(0, '127.0.0.1', () => resolve(`http://127.0.0.1:${httpServer.address().port}`)));
+}
+
+beforeAll(async () => {
+  env.realtime.enabled = true;
+  server = http.createServer(app);
+  realtime = createRealtimeServer(server, { app, pool: pgPool.get() });
+  base = await listen(server);
+});
+
+afterEach(() => {
+  for (const socket of clients.splice(0)) socket.disconnect();
+  realtime.resetLimits();
+  env.realtime.maxConnectionsPerUser = 10;
+  env.realtime.handshakesPerMinute = 60;
+});
+
+afterAll(async () => {
+  await realtime.stop();
+  publisher.reset();
+  await pgPool.end();
+  await new Promise((resolve) => server.close(resolve));
+  env.realtime.enabled = false;
+});
+
+/** A socket to `url` with `auth`; `received` collects every message, `closed` its disconnects. */
+function open(auth, { url = base, headers } = {}) {
+  const socket = connectSocket(url, {
+    path: PATH,
+    transports: ['websocket'],
+    auth,
+    reconnection: false,
+    forceNew: true,
+    timeout: 5000,
+    ...(headers ? { extraHeaders: headers } : {}),
+  });
+  clients.push(socket);
+  const received = [];
+  const closed = [];
+  socket.onAny((name, message) => received.push({ name, message }));
+  socket.on('disconnect', (reason) => closed.push(reason));
+  const ready = new Promise((resolve, reject) => {
+    socket.once('connect', () => resolve(socket));
+    socket.once('connect_error', reject);
+  });
+  return { socket, received, closed, ready };
+}
+
+async function connected(token, opts) {
+  const client = open({ token }, opts);
+  await client.ready;
+  return client;
+}
+
+/** The connect_error a handshake ends with. */
+async function refusal(auth, opts) {
+  const client = open(auth, opts);
+  return client.ready.then(
+    () => {
+      throw new Error('connected, expected a refusal');
+    },
+    (err) => err
+  );
+}
+
+async function waitFor(check, what, ms = 5000) {
+  const until = Date.now() + ms;
+  while (Date.now() < until) {
+    const found = check();
+    if (found) return found;
+    await sleep(25);
+  }
+  throw new Error(`timed out waiting for ${what}`);
+}
+
+const named = (client, name, test = () => true) => () => client.received.find((r) => r.name === name && test(r.message));
+const names = (client) => client.received.map((r) => r.name);
+
+async function placeOrder(token, workspaceId, variantId, { quantity = 1, phone = '01000007777' } = {}) {
+  const res = await request(app)
+    .post(`/api/v1/workspaces/${workspaceId}/orders`)
+    .set(bearer(token))
+    .set('Idempotency-Key', `rt-${Date.now()}-${Math.random().toString(36).slice(2)}`)
+    .send({
+      items: [{ variantId, quantity }],
+      contact: { fullName: 'Live Buyer', phone },
+      shippingAddress: { country: 'EG', city: 'Cairo', addressLine: '9 Socket St' },
+      paymentMethod: 'cod',
+    });
+  if (res.status !== 201) throw new Error(`placeOrder failed: ${res.status} ${JSON.stringify(res.body)}`);
+  return res.body.order;
+}
+
+async function store(name, { stock = 20 } = {}) {
+  const auth = await registerAndActivate({ fullName: `${name} Owner` });
+  const workspace = await createWorkspace(auth.accessToken, name);
+  const { product, variant } = await createProductWithVariant(auth.accessToken, workspace.id, { stock });
+  return { auth, workspace, product, variant };
+}
+
+/** Every message must be exactly this shape: ids, a type and a time, nothing else. */
+function expectIdsOnly(message) {
+  expect(Object.keys(message).sort()).toEqual(['at', 'entity', 'id', 'type', 'v', 'workspaceId']);
+  expect(Object.keys(message.entity).sort()).toEqual(['id', 'type']);
+  expect(message.v).toBe(1);
+  expect(message.id).toMatch(UUID);
+  expect(message.entity.id).toMatch(UUID);
+  if (message.workspaceId !== null) expect(message.workspaceId).toMatch(UUID);
+  expect(Number.isNaN(Date.parse(message.at))).toBe(false);
+}
+
+describe('handshake', () => {
+  it('refuses no token, a forged token, an expired token and a token of an account that is not active', async () => {
+    const owner = await registerAndActivate();
+    expect((await refusal(undefined)).message).toBe('unauthorized');
+    expect((await refusal({ token: 'not-a-jwt' })).message).toBe('unauthorized');
+    const forged = jwt.sign({ sub: owner.userId }, 'some-other-secret', { expiresIn: '5m' });
+    expect((await refusal({ token: forged })).message).toBe('unauthorized');
+    const expired = jwt.sign({ sub: owner.userId, exp: Math.floor(Date.now() / 1000) - 10 }, env.jwt.accessSecret);
+    expect((await refusal({ token: expired })).message).toBe('unauthorized');
+
+    await db.User.update({ status: 'suspended' }, { where: { id: owner.userId } });
+    expect((await refusal({ token: owner.accessToken })).message).toBe('unauthorized');
+  });
+
+  it('refuses a session that has ended', async () => {
+    const owner = await registerAndActivate();
+    await db.Session.update({ revokedAt: new Date() }, { where: { userId: owner.userId } });
+    expect((await refusal({ token: owner.accessToken })).message).toBe('session_ended');
+  });
+
+  it('refuses a browser origin outside CORS_ORIGINS before the upgrade', async () => {
+    const owner = await registerAndActivate();
+    const err = await refusal({ token: owner.accessToken }, { headers: { Origin: 'https://evil.example' } });
+    expect(err.message).not.toBe('unauthorized');
+    await connected(owner.accessToken, { headers: { Origin: env.cors.origins[0] } });
+  });
+
+  it('holds REALTIME_MAX_CONNECTIONS_PER_USER sockets per account, and refuses the next', async () => {
+    env.realtime.maxConnectionsPerUser = 2;
+    const owner = await registerAndActivate();
+    await connected(owner.accessToken);
+    await connected(owner.accessToken);
+    expect((await refusal({ token: owner.accessToken })).message).toBe('too_many_connections');
+    // Another account is not counted against it.
+    const other = await registerAndActivate();
+    await connected(other.accessToken);
+  });
+
+  it('limits connection attempts per IP (REALTIME_HANDSHAKES_PER_MINUTE)', async () => {
+    env.realtime.handshakesPerMinute = 2;
+    const owner = await registerAndActivate();
+    await connected(owner.accessToken);
+    await connected(owner.accessToken);
+    const err = await refusal({ token: owner.accessToken });
+    expect(err.message).not.toBe('too_many_connections');
+  });
+});
+
+describe('store isolation', () => {
+  it("one store's order reaches its own team and never another store, whatever the other asks for", async () => {
+    const A = await store('Store A');
+    const B = await store('Store B');
+    // A asks for B's rooms in its handshake: the server never reads that.
+    const a = await connected(A.auth.accessToken);
+    const aAsking = open({ token: A.auth.accessToken, workspaceId: B.workspace.id, rooms: [`w:${B.workspace.id}:orders.view`] });
+    await aAsking.ready;
+    const b = await connected(B.auth.accessToken);
+
+    const order = await placeOrder(B.auth.accessToken, B.workspace.id, B.variant.id);
+    const got = await waitFor(named(b, 'order.created'), 'B order.created');
+    expect(got.message.workspaceId).toBe(B.workspace.id);
+    expect(got.message.entity).toEqual({ type: 'order', id: order.id });
+    expectIdsOnly(got.message);
+
+    await sleep(300);
+    expect(a.received).toEqual([]);
+    expect(aAsking.received).toEqual([]);
+  });
+
+  it('an event sent by the client ends its connection and joins nothing', async () => {
+    const A = await store('Store A');
+    const B = await store('Store B');
+    const a = await connected(A.auth.accessToken);
+    a.socket.emit('join', `w:${B.workspace.id}:orders.view`);
+    await waitFor(() => a.closed.length > 0, 'the server to end the connection');
+
+    const a2 = await connected(A.auth.accessToken);
+    a2.socket.emit('subscribe', { workspaceId: B.workspace.id });
+    await waitFor(() => a2.closed.length > 0, 'the server to end the second connection');
+
+    const b = await connected(B.auth.accessToken);
+    await placeOrder(B.auth.accessToken, B.workspace.id, B.variant.id);
+    await waitFor(named(b, 'order.created'), 'B order.created');
+    await sleep(300);
+    expect(a.received).toEqual([]);
+    expect(a2.received).toEqual([]);
+  });
+
+  it('a member of two stores hears both, each under its own store id', async () => {
+    const A = await store('Store A');
+    const B = await store('Store B');
+    const both = await addMemberWithRole(A.auth.accessToken, A.workspace.id, 'order_operator', 'Two Stores');
+    const roleB = await db.Role.findOne({ where: { workspaceId: B.workspace.id, key: 'order_operator' } });
+    await request(app)
+      .post(`/api/v1/workspaces/${B.workspace.id}/members`)
+      .set(bearer(B.auth.accessToken))
+      .send({ email: both.email, roleId: roleB.id })
+      .expect(201);
+    const member = await connected(both.accessToken);
+
+    const orderA = await placeOrder(A.auth.accessToken, A.workspace.id, A.variant.id);
+    const orderB = await placeOrder(B.auth.accessToken, B.workspace.id, B.variant.id);
+    const gotA = await waitFor(named(member, 'order.created', (m) => m.entity.id === orderA.id), 'order A');
+    const gotB = await waitFor(named(member, 'order.created', (m) => m.entity.id === orderB.id), 'order B');
+    expect(gotA.message.workspaceId).toBe(A.workspace.id);
+    expect(gotB.message.workspaceId).toBe(B.workspace.id);
+  });
+
+  it('a teammate without orders.view hears no order; with inventory.view it still hears stock.low', async () => {
+    const A = await store('Store A', { stock: 5 });
+    await db.ProductVariant.update({ lowStockThreshold: 3 }, { where: { id: A.variant.id } });
+    const editor = await addMemberWithRole(A.auth.accessToken, A.workspace.id, 'editor', 'Editor');
+    const ed = await connected(editor.accessToken);
+    const owner = await connected(A.auth.accessToken);
+
+    await placeOrder(A.auth.accessToken, A.workspace.id, A.variant.id, { quantity: 3 });
+    await waitFor(named(owner, 'order.created'), 'owner order.created');
+    const low = await waitFor(named(ed, 'stock.low'), 'editor stock.low');
+    expect(low.message.entity).toEqual({ type: 'product', id: A.product.id });
+    expectIdsOnly(low.message);
+    await waitFor(named(owner, 'stock.low'), 'owner stock.low');
+    await sleep(300);
+    expect(names(ed)).toEqual(['stock.low']);
+  });
+
+  it('a move between stages is order.status_changed, ids only', async () => {
+    const A = await store('Store A');
+    const B = await store('Store B');
+    const order = await placeOrder(A.auth.accessToken, A.workspace.id, A.variant.id);
+    const a = await connected(A.auth.accessToken);
+    const b = await connected(B.auth.accessToken);
+    await confirmCodOrder(A.auth.accessToken, A.workspace.id, order.id);
+    const moved = await waitFor(named(a, 'order.status_changed'), 'order.status_changed');
+    expect(moved.message.entity).toEqual({ type: 'order', id: order.id });
+    expect(moved.message.workspaceId).toBe(A.workspace.id);
+    expectIdsOnly(moved.message);
+    // Its outbox row names only the store and the order.
+    const row = await db.DomainEvent.findOne({ where: { type: 'order.stage_changed' } });
+    expect(row.payload).toEqual({ orderId: order.id });
+    await sleep(300);
+    expect(b.received).toEqual([]);
+  });
+
+  it('a removed teammate and an ended session stop receiving', async () => {
+    const A = await store('Store A');
+    const operator = await addMemberWithRole(A.auth.accessToken, A.workspace.id, 'order_operator', 'Leaving');
+    const op = await connected(operator.accessToken);
+    const owner = await connected(A.auth.accessToken);
+
+    await db.Membership.destroy({ where: { workspaceId: A.workspace.id, userId: operator.userId } });
+    await realtime.syncRooms();
+    await placeOrder(A.auth.accessToken, A.workspace.id, A.variant.id);
+    await waitFor(named(owner, 'order.created'), 'owner order.created');
+    await sleep(300);
+    expect(op.received).toEqual([]);
+
+    await db.Session.update({ revokedAt: new Date() }, { where: { userId: A.auth.userId } });
+    await realtime.checkSessions();
+    await waitFor(() => owner.closed.length > 0, 'the owner socket to close');
+  });
+});
+
+describe('console room', () => {
+  it('only console accounts with the page permission hear console events; a merchant never does', async () => {
+    await billingService.seedDefaultPlans();
+    const admin = await makePlatformUser('admin');
+    const agent = await makePlatformUser('agent');
+    const A = await store('Store A');
+    const adminSocket = await connected(admin.accessToken);
+    const agentSocket = await connected(agent.accessToken);
+    const merchant = await connected(A.auth.accessToken);
+
+    // merchant.created: a sign-up.
+    const newcomer = await registerAndActivate({ fullName: 'Newcomer' });
+    const signup = await waitFor(named(adminSocket, 'merchant.created', (m) => m.entity.id === newcomer.userId), 'merchant.created');
+    expect(signup.message.workspaceId).toBe(null);
+    expectIdsOnly(signup.message);
+
+    // ticket.created: a support ticket.
+    const ticket = await request(app)
+      .post(`/api/v1/workspaces/${A.workspace.id}/support/tickets`)
+      .set(bearer(A.auth.accessToken))
+      .send({ subject: 'Help', body: 'Something is wrong.', category: 'technical' })
+      .expect(201);
+    const opened = await waitFor(named(adminSocket, 'ticket.created'), 'ticket.created');
+    expect(opened.message.entity).toEqual({ type: 'support_ticket', id: ticket.body.ticket.id });
+    expect(opened.message.workspaceId).toBe(A.workspace.id);
+
+    // subscription.paid: a charge recorded as paid.
+    const starter = await db.Plan.findOne({ where: { key: 'starter' } });
+    await db.Subscription.update({ planId: starter.id }, { where: { workspaceId: A.workspace.id } });
+    await request(app).post(`/api/v1/admin/workspaces/${A.workspace.id}/charges`).set(admin.H).expect(201);
+    const charge = (await request(app).get(`/api/v1/admin/workspaces/${A.workspace.id}/charges`).set(admin.H)).body.charges[0];
+    await request(app).post(`/api/v1/admin/charges/${charge.id}/record-payment`).set(admin.H).send({ amountReceived: Number((await db.BillingInvoice.findByPk(charge.id)).amount) }).expect(200);
+    const paid = await waitFor(named(adminSocket, 'subscription.paid'), 'subscription.paid');
+    expect(paid.message.entity).toEqual({ type: 'billing_invoice', id: charge.id });
+    expectIdsOnly(paid.message);
+
+    await sleep(300);
+    expect(agentSocket.received).toEqual([]);
+    expect(names(merchant).filter((n) => ['merchant.created', 'ticket.created', 'subscription.paid'].includes(n))).toEqual([]);
+  });
+});
+
+describe('across API processes', () => {
+  it('one message published once reaches the sockets of two servers through the database', async () => {
+    const pool2 = new Pool({ host: env.db.host, port: env.db.port, database: env.db.name, user: env.db.user, password: env.db.password, max: 3 });
+    const server2 = http.createServer(app);
+    const realtime2 = createRealtimeServer(server2, { app, pool: pool2 });
+    const base2 = await listen(server2);
+    try {
+      const A = await store('Store A');
+      const on1 = await connected(A.auth.accessToken);
+      const on2 = await connected(A.auth.accessToken, { url: base2 });
+      const order = await placeOrder(A.auth.accessToken, A.workspace.id, A.variant.id);
+      await waitFor(named(on1, 'order.created', (m) => m.entity.id === order.id), 'server 1');
+      await waitFor(named(on2, 'order.created', (m) => m.entity.id === order.id), 'server 2');
+      expect(names(on1).filter((n) => n === 'order.created')).toHaveLength(1);
+      expect(names(on2).filter((n) => n === 'order.created')).toHaveLength(1);
+    } finally {
+      await realtime2.stop();
+      await pool2.end();
+      await new Promise((resolve) => server2.close(resolve));
+    }
+  });
+});
+
+describe('catalog', () => {
+  it('routes every store event to its store room and every console event to its permission room, ids only', () => {
+    const workspaceId = '11111111-1111-4111-8111-111111111111';
+    const id = '22222222-2222-4222-8222-222222222222';
+    const at = new Date('2026-10-24T10:00:00Z');
+    const cases = [
+      ['order.created', { orderId: id }, 'order.created', `w:${workspaceId}:orders.view`],
+      ['order.paid', { orderId: id, financialState: 'paid' }, 'order.paid', `w:${workspaceId}:orders.view`],
+      ['order.stage_changed', { orderId: id }, 'order.status_changed', `w:${workspaceId}:orders.view`],
+      ['shipment.status_changed', { shipmentId: 'x', orderId: id, oldStatus: 'a', newStatus: 'b' }, 'shipment.status', `w:${workspaceId}:orders.view`],
+      ['product.low_stock', { productId: id, variantId: 'v', sku: 'SKU', available: 1, threshold: 2 }, 'stock.low', `w:${workspaceId}:inventory.view`],
+      ['merchant.created', { userId: id }, 'merchant.created', 'p:workspaces.view'],
+      ['subscription.paid', { billingInvoiceId: id }, 'subscription.paid', 'p:subscriptions.view'],
+      ['ticket.created', { ticketId: id }, 'ticket.created', 'p:support.view'],
+    ];
+    for (const [type, payload, name, room] of cases) {
+      const routed = route({ id, type, workspaceId, payload, occurredAt: at });
+      expect(routed.name).toBe(name);
+      expect(routed.room).toBe(room);
+      expectIdsOnly(routed.message);
+      // Nothing of the payload but the one id travels.
+      expect(JSON.stringify(routed.message)).not.toMatch(/SKU|financialState|available|threshold|oldStatus/);
+    }
+    expect(route({ id, type: 'order.created', workspaceId: null, payload: { orderId: id } })).toBe(null);
+    expect(route({ id, type: 'customer.updated', workspaceId, payload: { customerId: id } })).toBe(null);
+  });
+
+  it("puts the namespace on the emitter's NOTIFY, which the adapter drops without it, and leaves other queries alone", async () => {
+    const calls = [];
+    const pool = publisher.withNamespace({ query: async (text, values) => calls.push([text, values]) });
+    const sent = JSON.stringify({ uid: 'emitter', type: 3, data: { packet: { type: 2, data: ['order.created', {}], nsp: '/' }, opts: { rooms: ['r'] } } });
+    await pool.query('SELECT pg_notify($1, $2)', ['socket.io#/', sent]);
+    await pool.query('SELECT 1', []);
+    expect(JSON.parse(calls[0][1][1])).toEqual({ ...JSON.parse(sent), nsp: '/' });
+    expect(calls[0][1][0]).toBe('socket.io#/');
+    expect(calls[1]).toEqual(['SELECT 1', []]);
+  });
+});
