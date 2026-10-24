@@ -841,8 +841,9 @@ const env = {
     // Existing endpoints are never touched. Off (the default): as before.
     requireApiAccess: process.env.NODE_ENV !== 'test' && process.env.WEBHOOKS_REQUIRE_API_ACCESS === 'true',
     // Largest delivery body; an event over it is sent with ids only and
-    // `truncated: true` (webhooks/webhookPayloadCap.js). 0 turns the cap off.
-    maxPayloadBytes: /^\d+$/.test((process.env.WEBHOOKS_MAX_PAYLOAD_BYTES || '').trim()) ? parseInt(process.env.WEBHOOKS_MAX_PAYLOAD_BYTES, 10) : 262144,
+    // `truncated: true` (webhooks/webhookPayloadCap.js). Unset or 0: no cap,
+    // every event whole, as before (262144 = 256 KB is the suggested value).
+    maxPayloadBytes: /^\d+$/.test((process.env.WEBHOOKS_MAX_PAYLOAD_BYTES || '').trim()) ? parseInt(process.env.WEBHOOKS_MAX_PAYLOAD_BYTES, 10) : 0,
   },
 
   // The order as integrations see it (public API, webhooks) and the pull
