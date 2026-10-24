@@ -6,6 +6,7 @@ const { subscribes } = require('./webhookEvents');
 const { matchesFilter } = require('./webhookFilter');
 const { DOMAIN_TO_TOPIC } = require('./webhookTopics');
 const { capPayload } = require('./webhookPayloadCap');
+const customerData = require('./customerData');
 
 /**
  * Turns a domain event (core/outbox) into webhook deliveries: one row in
@@ -120,20 +121,21 @@ async function build(topic, event) {
 async function fanOut(workspaceId, topic, { eventId, data, subject = {}, endpointId = null, occurredAt = new Date() }) {
   const where = { workspaceId, isActive: true };
   if (endpointId) where.id = endpointId;
-  const endpoints = await db.WebhookEndpoint.findAll({ where });
+  const endpoints = (await db.WebhookEndpoint.findAll({ where })).filter((endpoint) => subscribes(endpoint, topic) && matchesFilter(endpoint, subject));
   const now = new Date();
-  const rows = endpoints
-    .filter((endpoint) => subscribes(endpoint, topic) && matchesFilter(endpoint, subject))
-    .map((endpoint) => ({
-      workspaceId,
-      endpointId: endpoint.id,
-      eventId,
-      eventType: topic,
-      payload: capPayload({ id: eventId, type: topic, createdAt: new Date(occurredAt).toISOString(), workspaceId, data }),
-      status: 'pending',
-      attemptCount: 0,
-      nextAttemptAt: now,
-    }));
+  // Customers in full only for an endpoint whose configurer may see them (customerData.js).
+  const reveals = await customerData.revealsByEndpoint(workspaceId, endpoints);
+  const payload = { id: eventId, type: topic, createdAt: new Date(occurredAt).toISOString(), workspaceId, data };
+  const rows = endpoints.map((endpoint) => ({
+    workspaceId,
+    endpointId: endpoint.id,
+    eventId,
+    eventType: topic,
+    payload: capPayload(customerData.forEndpoint(payload, reveals.get(endpoint.id))),
+    status: 'pending',
+    attemptCount: 0,
+    nextAttemptAt: now,
+  }));
   if (rows.length === 0) return 0;
   await db.WebhookDelivery.bulkCreate(rows, { ignoreDuplicates: true });
   return rows.length;

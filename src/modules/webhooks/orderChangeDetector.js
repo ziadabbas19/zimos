@@ -9,6 +9,7 @@ const { serializeOrders } = require('../publicApi/publicOrderOptions');
 const { subscribes } = require('./webhookEvents');
 const orderLock = require('../orders/orderLock');
 const { capPayload } = require('./webhookPayloadCap');
+const customerData = require('./customerData');
 
 /**
  * Turns order changes into webhook deliveries — without any order writer
@@ -277,6 +278,12 @@ async function processPage(candidates, now, transaction) {
     if (at >= 0) newSnapshots.splice(at, 1);
   }
 
+  // Customers in full only for an endpoint whose configurer may see them (customerData.js).
+  const reveals = new Map();
+  for (const [workspaceId, list] of endpointsByWorkspace) {
+    for (const [id, reveal] of await customerData.revealsByEndpoint(workspaceId, list)) reveals.set(id, reveal);
+  }
+
   const deliveries = pending.filter(({ row }) => orders.has(row.id)).map(({ endpoint, type, row, previous, current, signature }) => {
     const eventId =
       type === 'order.created'
@@ -290,7 +297,7 @@ async function processPage(candidates, now, transaction) {
       endpointId: endpoint.id,
       eventId,
       eventType: type,
-      payload: capPayload({ id: eventId, type, createdAt: now.toISOString(), workspaceId: row.workspace_id, data }),
+      payload: capPayload(customerData.forEndpoint({ id: eventId, type, createdAt: now.toISOString(), workspaceId: row.workspace_id, data }, reveals.get(endpoint.id))),
       status: 'pending',
       attemptCount: 0,
       nextAttemptAt: now,

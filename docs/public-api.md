@@ -354,6 +354,18 @@ X-Zimos-Signature: t=1790000000,v1=5d1f0a…
 }
 ```
 
+**Customers in webhooks.** An endpoint is sent customers' names, phones,
+emails and street addresses in full only while the teammate who last set its
+address may see customers in full — their role holds
+`customers.reveal_sensitive`, the permission that also shows full phone
+numbers in the orders list and the export — and is still a member of the store.
+Otherwise they arrive masked — `M*** A***`, `+2010*****567`, `m***@example.com`,
+and the address keeps its country, governorate and city — while the order
+itself (number, lines, amounts) is whole. The endpoint list says which
+(`sendsCustomerData`); an owner saving the address again makes it full. The
+delivery log follows the same rule for whoever opens it, and resending past
+orders needs that permission.
+
 **Large events.** A body larger than 256 KB is sent with ids only and
 `"truncated": true` — `data.order` becomes `{ "id", "orderNumber" }`; read the
 rest with `GET /orders/{orderId}`. The event id is unchanged.

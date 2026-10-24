@@ -10,6 +10,9 @@ const { NotFoundError } = require('../../core/errors/AppError');
 const { recordAudit } = require('../audit/auditService');
 const { attemptDelivery } = require('./webhookDispatcher');
 const { resendOrders } = require('./webhookFanout');
+const { maskCustomerData, viewerReveals } = require('./customerData');
+const { requirePermission } = require('../../core/middleware/rbac');
+const { PERMISSIONS } = require('../../core/security/permissions');
 
 /**
  * The store-wide delivery log and "resend order to webhook" (SPEC §16.1).
@@ -23,7 +26,9 @@ const ws = { workspaceId: uuid.required() };
 
 const STATUS_GROUPS = { succeeded: ['delivered'], failed: ['failed', 'exhausted'], pending: ['pending'] };
 
-const view = (delivery) => ({
+// The payload's names, phones, emails and addresses masked for a viewer
+// without customers.reveal_sensitive (customerData.js).
+const view = (delivery, reveal) => ({
   id: delivery.id,
   endpointId: delivery.endpointId,
   url: delivery.endpoint ? delivery.endpoint.url : null,
@@ -34,7 +39,7 @@ const view = (delivery) => ({
   nextAttemptAt: delivery.nextAttemptAt,
   lastResponseStatus: delivery.lastResponseStatus,
   lastError: delivery.lastError,
-  payload: delivery.payload,
+  payload: reveal ? delivery.payload : maskCustomerData(delivery.payload),
   createdAt: delivery.createdAt,
   updatedAt: delivery.updatedAt,
 });
@@ -67,7 +72,7 @@ router.get(
     });
     const page = rows.slice(0, limit);
     res.json({
-      deliveries: page.map(view),
+      deliveries: page.map((d) => view(d, viewerReveals(req))),
       nextCursor: rows.length > limit ? page[page.length - 1].createdAt.toISOString() : null,
     });
   })
@@ -100,13 +105,16 @@ router.post(
     const fresh = await db.WebhookDelivery.findByPk(sent.id, {
       include: [{ model: db.WebhookEndpoint, as: 'endpoint', attributes: ['id', 'url'] }],
     });
-    res.json({ delivery: view(fresh) });
+    res.json({ delivery: view(fresh, viewerReveals(req)) });
   })
 );
 
 // POST /webhooks/resend-orders { orderIds: [...], endpointId? } — from the order page and bulk actions.
+// Sends past orders, customers included, to a URL of the caller's choosing:
+// only a teammate who may see customers in full (customers.reveal_sensitive).
 router.post(
   '/resend-orders',
+  requirePermission(PERMISSIONS.CUSTOMERS_REVEAL_SENSITIVE),
   validate({
     params: Joi.object(ws),
     body: Joi.object({
