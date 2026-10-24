@@ -7,6 +7,7 @@ const { resolveTenant } = require('../../core/middleware/tenantContext');
 const { requirePermission } = require('../../core/middleware/rbac');
 const { PERMISSIONS } = require('../../core/security/permissions');
 const controller = require('./webhookController');
+const { newEndpointGate } = require('./webhookPlanGate');
 const schemas = require('./webhookValidation');
 
 // Mounted at /api/v1/workspaces/:workspaceId/webhooks. The merchant's
@@ -20,7 +21,8 @@ router.use(require('./webhookExtraRoutes'));
 
 router.get('/events', validate(schemas.list), controller.events);
 router.get('/', validate(schemas.list), controller.list);
-router.post('/', validate(schemas.create), controller.create);
+// WEBHOOKS_REQUIRE_API_ACCESS: a new endpoint needs api_access (webhookPlanGate.js).
+router.post('/', validate(schemas.create), newEndpointGate, controller.create);
 router.patch('/:endpointId', validate(schemas.update), controller.update);
 router.delete('/:endpointId', validate(schemas.byId), controller.remove);
 router.post('/:endpointId/rotate-secret', validate(schemas.byId), controller.rotateSecret);

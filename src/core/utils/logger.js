@@ -48,6 +48,11 @@ const REDACT_KEYS = new Set([
   'hashKey',
   'transactionHashKey',
   'api_key',
+  // Webhook endpoints' signing secrets, in clear or sealed (webhooks/signingSecretStore.js).
+  'signingSecret',
+  'signingSecretSealed',
+  'signing_secret',
+  'signing_secret_sealed',
 ]);
 
 function redact(meta) {

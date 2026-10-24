@@ -5,6 +5,7 @@ const db = require('../../db/models');
 const { subscribes } = require('./webhookEvents');
 const { matchesFilter } = require('./webhookFilter');
 const { DOMAIN_TO_TOPIC } = require('./webhookTopics');
+const { capPayload } = require('./webhookPayloadCap');
 
 /**
  * Turns a domain event (core/outbox) into webhook deliveries: one row in
@@ -125,7 +126,7 @@ async function fanOut(workspaceId, topic, { eventId, data, subject = {}, endpoin
       endpointId: endpoint.id,
       eventId,
       eventType: topic,
-      payload: { id: eventId, type: topic, createdAt: new Date(occurredAt).toISOString(), workspaceId, data },
+      payload: capPayload({ id: eventId, type: topic, createdAt: new Date(occurredAt).toISOString(), workspaceId, data }),
       status: 'pending',
       attemptCount: 0,
       nextAttemptAt: now,

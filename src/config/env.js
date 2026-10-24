@@ -825,6 +825,24 @@ const env = {
         : process.env.NODE_ENV !== 'production',
     timeoutMs: Math.max(1000, parseInt(process.env.WEBHOOKS_TIMEOUT_MS || '10000', 10) || 10000),
     batchSize: Math.max(1, parseInt(process.env.WEBHOOKS_BATCH_SIZE || '50', 10) || 50),
+    // WEBHOOK_SECRET_SEALING=true: a new or rotated signing secret is stored
+    // sealed (AES-256-GCM, core/utils/credentialsCipher) with
+    // WEBHOOK_SECRETS_KEY — 32 bytes, base64, its own key like the carriers'
+    // and gateways'. Off (the default): stored in clear, as before. A sealed
+    // secret is read whatever the flag says (webhooks/signingSecretStore.js).
+    // On without a usable key, creating an endpoint or rotating its secret
+    // answers 503 WEBHOOK_SECRETS_NOT_CONFIGURED. Under NODE_ENV=test it
+    // starts off; a test sets it.
+    secretSealing: process.env.NODE_ENV !== 'test' && process.env.WEBHOOK_SECRET_SEALING === 'true',
+    secretsKey: (process.env.WEBHOOK_SECRETS_KEY || '').trim(),
+    // WEBHOOKS_REQUIRE_API_ACCESS=true: adding an endpoint needs the plan's
+    // api_access, as minting an API key does — refused only while
+    // PLAN_FEATURE_ENFORCEMENT is on too (webhooks/webhookPlanGate.js).
+    // Existing endpoints are never touched. Off (the default): as before.
+    requireApiAccess: process.env.NODE_ENV !== 'test' && process.env.WEBHOOKS_REQUIRE_API_ACCESS === 'true',
+    // Largest delivery body; an event over it is sent with ids only and
+    // `truncated: true` (webhooks/webhookPayloadCap.js). 0 turns the cap off.
+    maxPayloadBytes: /^\d+$/.test((process.env.WEBHOOKS_MAX_PAYLOAD_BYTES || '').trim()) ? parseInt(process.env.WEBHOOKS_MAX_PAYLOAD_BYTES, 10) : 262144,
   },
 
   // Merchant courier accounts (modules/shipping/carriers). The key encrypts

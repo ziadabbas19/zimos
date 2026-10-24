@@ -320,7 +320,8 @@ const hookScope = requireScope('webhooks:write');
 router.get('/webhooks/events', hookScope, ws, validate(webhookSchemas.list), hooks, webhookController.events);
 router.get('/webhooks', hookScope, ws, validate(webhookSchemas.list), hooks, webhookController.list);
 // The signing secret is in this answer and never shown again.
-router.post('/webhooks', hookScope, ws, validate(webhookSchemas.create), hooks, webhookController.create);
+// WEBHOOKS_REQUIRE_API_ACCESS: as in the dashboard, a new endpoint needs api_access.
+router.post('/webhooks', hookScope, ws, validate(webhookSchemas.create), hooks, require('../webhooks/webhookPlanGate').newEndpointGate, webhookController.create);
 router.patch('/webhooks/:endpointId', hookScope, ws, validate(webhookSchemas.update), hooks, webhookController.update);
 router.delete('/webhooks/:endpointId', hookScope, ws, validate(webhookSchemas.byId), hooks, webhookController.remove);
 

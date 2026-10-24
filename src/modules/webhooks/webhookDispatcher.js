@@ -3,7 +3,9 @@
 const { QueryTypes } = require('sequelize');
 const db = require('../../db/models');
 const env = require('../../config/env');
+const logger = require('../../core/utils/logger');
 const { signatureHeader } = require('./webhookSigning');
+const { readSecret } = require('./signingSecretStore');
 const { send } = require('./webhookSender');
 
 /**
@@ -32,6 +34,7 @@ const MAX_ATTEMPTS = BACKOFF_MINUTES.length + 1;
 const LEASE_MS = 2 * 60 * 1000;
 const CONCURRENCY = 5;
 const USER_AGENT = 'Zimos-Webhooks/1.0';
+const SECRET_RETRY_MS = 5 * 60 * 1000;
 
 async function claimDue({ limit, now }) {
   const rows = await db.sequelize.query(
@@ -70,6 +73,22 @@ async function attemptDelivery(deliveryId, { now = new Date() } = {}) {
     return delivery;
   }
 
+  // A sealed secret this server cannot open (WEBHOOK_SECRETS_KEY missing or
+  // changed): nothing is sent unsigned, and the attempt is not counted
+  // against the receiver — it comes due again until the key is back.
+  let secret;
+  try {
+    secret = readSecret(endpoint);
+  } catch (err) {
+    logger.error('Webhook signing secret unreadable', { endpointId: endpoint.id, workspaceId: endpoint.workspaceId, reason: err.message });
+    await delivery.update({
+      status: 'failed',
+      nextAttemptAt: new Date(now.getTime() + SECRET_RETRY_MS),
+      lastError: 'The signing secret could not be read on our side; retried automatically',
+    });
+    return delivery;
+  }
+
   const body = JSON.stringify(delivery.payload);
   const timestamp = Math.floor(now.getTime() / 1000);
   const result = await send({
@@ -85,7 +104,7 @@ async function attemptDelivery(deliveryId, { now = new Date() } = {}) {
       'X-Zimos-Event-Id': delivery.eventId,
       'X-Zimos-Delivery-Id': delivery.id,
       'X-Zimos-Timestamp': String(timestamp),
-      'X-Zimos-Signature': signatureHeader(endpoint.signingSecret, timestamp, body),
+      'X-Zimos-Signature': signatureHeader(secret, timestamp, body),
     },
   });
 

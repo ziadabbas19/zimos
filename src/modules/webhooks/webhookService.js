@@ -5,7 +5,8 @@ const db = require('../../db/models');
 const { AppError, NotFoundError } = require('../../core/errors/AppError');
 const { recordAudit } = require('../audit/auditService');
 const { checkUrl } = require('./webhookUrlGuard');
-const { generateSecret, secretHint } = require('./webhookSigning');
+const { generateSecret } = require('./webhookSigning');
+const secretStore = require('./signingSecretStore');
 const { EVENT_TYPES, TEST_EVENT, WILDCARD } = require('./webhookEvents');
 const { attemptDelivery } = require('./webhookDispatcher');
 const { normaliseFilter } = require('./webhookFilter');
@@ -34,7 +35,7 @@ function serializeEndpoint(endpoint) {
     // Set when the endpoint was switched off after three days of failures.
     disabledAt: endpoint.disabledAt || null,
     disabledReason: endpoint.disabledReason || null,
-    secretHint: secretHint(endpoint.signingSecret),
+    secretHint: secretStore.hintFor(endpoint),
     createdAt: endpoint.createdAt,
     updatedAt: endpoint.updatedAt,
   };
@@ -93,12 +94,15 @@ async function createEndpoint(workspaceId, { url, events, isActive = true, filte
       );
     }
     const signingSecret = generateSecret();
+    // The id is known before the row is written: a sealed secret is bound to it.
+    const id = crypto.randomUUID();
     const endpoint = await db.WebhookEndpoint.create(
       {
+        id,
         workspaceId,
         url: cleanUrl,
         events: normaliseEvents(events),
-        signingSecret,
+        ...secretStore.storedFields(workspaceId, id, signingSecret),
         isActive,
         filter: normaliseFilter(filter),
         customHeaders: require('./customHeaders').on() ? require('./customHeaders').normalise(customHeaders) : [],
@@ -175,7 +179,7 @@ async function rotateSecret(workspaceId, endpointId, req) {
   return db.sequelize.transaction(async (transaction) => {
     const endpoint = await findEndpoint(workspaceId, endpointId, transaction);
     const signingSecret = generateSecret();
-    await endpoint.update({ signingSecret }, { transaction });
+    await endpoint.update(secretStore.storedFields(workspaceId, endpoint.id, signingSecret), { transaction });
     await recordAudit({
       workspaceId,
       actorUserId: req.user.id,

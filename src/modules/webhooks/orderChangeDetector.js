@@ -8,6 +8,7 @@ const orderService = require('../orders/orderService');
 const { serializeOrder } = require('../publicApi/publicOrderSerializer');
 const { subscribes } = require('./webhookEvents');
 const orderLock = require('../orders/orderLock');
+const { capPayload } = require('./webhookPayloadCap');
 
 /**
  * Turns order changes into webhook deliveries — without any order writer
@@ -288,7 +289,7 @@ async function processPage(candidates, now, transaction) {
       endpointId: endpoint.id,
       eventId,
       eventType: type,
-      payload: { id: eventId, type, createdAt: now.toISOString(), workspaceId: row.workspace_id, data },
+      payload: capPayload({ id: eventId, type, createdAt: now.toISOString(), workspaceId: row.workspace_id, data }),
       status: 'pending',
       attemptCount: 0,
       nextAttemptAt: now,
