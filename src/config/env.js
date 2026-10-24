@@ -897,6 +897,13 @@ const env = {
   // their periods reach this far back only.
   analyticsRawRetentionDays: limitOrOff('ANALYTICS_RAW_RETENTION_DAYS'),
 
+  // zimos.co visits (site_visits) older than this many days are deleted every
+  // six hours (siteAnalytics/siteVisitsRetention.js). 0 or unset keeps them for
+  // ever, as before. The console's Site traffic pages read these rows, so with
+  // this set they reach this far back only. Not ANALYTICS_RAW_RETENTION_DAYS:
+  // that one is the stores', and changing it must not change this.
+  siteVisitsRetentionDays: limitOrOff('SITE_VISITS_RETENTION_DAYS'),
+
   // Merchant custom domains (modules/domains). Off unless exactly "true": every
   // dashboard route under /workspaces/:id/domains answers 404 like an unknown
   // path. Domains already verified keep resolving: GET /store/resolve-host and

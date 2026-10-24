@@ -11,6 +11,7 @@ const { notFoundHandler } = require('../../core/middleware/errorHandler');
 const { GOVERNORATE_CODES } = require('../shipping/governorates');
 const siteTraffic = require('./siteTrafficService');
 const details = require('./siteTrafficDetails');
+const live = require('./siteTrafficLive');
 
 // The console's "Site traffic" page, mounted under /api/v1/admin like the
 // rest of the console (after its authenticate). Read-only, not audited, and
@@ -80,6 +81,14 @@ router.get(
   detailsOn,
   validate(schemas.session),
   asyncHandler(async (req, res) => res.json(await details.sessionTimeline(req.params.sessionId)))
+);
+// The Live view: sessions seen in the last five minutes (siteTrafficLive.js).
+// The console asks every 15 seconds; behind the same switch as the details.
+router.get(
+  '/site-traffic/live',
+  can(P.OVERVIEW_VIEW),
+  detailsOn,
+  asyncHandler(async (req, res) => res.json(await live.live()))
 );
 router.get(
   '/site-traffic/protection',

@@ -89,10 +89,11 @@ async function recordEvent(body, req) {
 }
 
 /**
- * The same row with SITE_TRAFFIC_DETAILS_ENABLED: also the browser, the
- * governorate (Cloudflare's region header through ANALYTICS_GEO_HEADERS and the
- * store traffic mapping; null without it, nothing guessed) and, for a
- * cta_click, which dashboard link it was.
+ * The same row with SITE_TRAFFIC_DETAILS_ENABLED: also the browser and the
+ * operating system (their families, from the user agent), the governorate
+ * (Cloudflare's region header through ANALYTICS_GEO_HEADERS and the store
+ * traffic mapping; null without it, nothing guessed) and, for a cta_click,
+ * which dashboard link it was.
  */
 async function recordDetailedEvent(body, req) {
   const client = getClientInfo({
@@ -103,10 +104,10 @@ async function recordDetailedEvent(body, req) {
   await db.sequelize.query(
     `INSERT INTO site_visits
        (visitor_hash, session_id, path, locale, referrer_host, utm_source, utm_medium, utm_campaign,
-        device_class, country, event, seconds_on_page, browser, governorate, cta_kind)
+        device_class, country, event, seconds_on_page, browser, os, governorate, cta_kind)
      VALUES
        (:visitorHash, :sessionId, :path, :locale, :referrerHost, :utmSource, :utmMedium, :utmCampaign,
-        :deviceClass, :country, :event, :seconds, :browser, :governorate, :ctaKind)`,
+        :deviceClass, :country, :event, :seconds, :browser, :os, :governorate, :ctaKind)`,
     {
       replacements: {
         visitorHash: visitorHash(body.visitorId),
@@ -122,6 +123,7 @@ async function recordDetailedEvent(body, req) {
         event: body.event,
         seconds: body.event === 'ping' ? PING_SECONDS : 0,
         browser: client.browser || null,
+        os: client.os || null,
         governorate: governorateFromRegion(client.country, client.region),
         ctaKind: body.event === 'cta_click' ? body.cta || null : null,
       },
