@@ -212,7 +212,11 @@ describe('accepted orders feed: on', () => {
     await confirmCodOrder(ctx.auth.accessToken, ctx.ws, accepted.id);
 
     expect(ids(await feed(posOnly))).toEqual([accepted.id]);
+    const untouched = (o) => ({ updatedAt: o.updatedAt.getTime(), stage: [o.confirmationState, o.fulfillmentState, o.financialState], cancelledAt: o.cancelledAt });
+    const beforeStatus = untouched(await db.Order.findByPk(accepted.id));
     expect((await request(app).put(`/api/v1/public/orders/${accepted.id}/pos-status`).set(posOnly.H).send({ status: 'preparing' })).status).toBe(200);
+    // The kitchen status is a row of its own beside the order: the order itself does not change.
+    expect(untouched(await db.Order.findByPk(accepted.id))).toEqual(beforeStatus);
     expect((await request(app).post(`/api/v1/public/orders/${accepted.id}/ack`).set(posOnly.H)).status).toBe(200);
 
     // Not in its feed, and not even the one it took: every general read is refused.
