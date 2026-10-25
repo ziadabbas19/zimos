@@ -29,9 +29,16 @@ const { createIndexConcurrently, dropIndexConcurrently } = require('../concurren
  *   extended (as migration 224 does for the notification types), so types
  *   added by other migrations are kept.
  *
+ * webhook_order_holds
+ *   the orders whose webhooks wait because they are locked
+ *   (webhooks/orderChangeDetector.js): one row per order, from the first
+ *   change the observer saw while it was locked until it opens, when its
+ *   events go out as if it had just changed (and the row goes). checked_at
+ *   paces how often a held order is looked at again.
+ *
  * No data is written. Run-twice safe, without a transaction (CONCURRENTLY).
- * Down drops the indexes and the column; entries of the new type stay (the
- * ledger is append-only) and the old type CHECK comes back NOT VALID.
+ * Down drops the table, the indexes and the column; entries of the new type
+ * stay (the ledger is append-only) and the old type CHECK comes back NOT VALID.
  */
 
 const FEE_TYPE = 'order_confirm_fee';
@@ -93,10 +100,35 @@ module.exports = {
       definition: `(order_id, entry_type) WHERE entry_type = '${FEE_TYPE}'`,
       unique: true,
     });
+
+    await qi.createTable('webhook_order_holds', {
+      order_id: {
+        type: DataTypes.UUID,
+        primaryKey: true,
+        allowNull: false,
+        references: { model: 'orders', key: 'id' },
+        onDelete: 'CASCADE',
+        onUpdate: 'CASCADE',
+      },
+      workspace_id: {
+        type: DataTypes.UUID,
+        allowNull: false,
+        references: { model: 'workspaces', key: 'id' },
+        onDelete: 'CASCADE',
+        onUpdate: 'CASCADE',
+      },
+      held_at: { type: DataTypes.DATE, allowNull: false },
+      checked_at: { type: DataTypes.DATE, allowNull: false },
+      created_at: { type: DataTypes.DATE, allowNull: false, defaultValue: Sequelize.literal('NOW()') },
+      updated_at: { type: DataTypes.DATE, allowNull: false, defaultValue: Sequelize.literal('NOW()') },
+    });
+    // Skipped when it exists (a second run); built concurrently if the table was there already.
+    await qi.addIndex('webhook_order_holds', ['checked_at'], { name: 'webhook_order_holds_checked_at_idx' });
   },
 
   down: async (queryInterface) => {
     const qi = guarded(queryInterface);
+    await qi.dropTable('webhook_order_holds');
     await dropIndexConcurrently(queryInterface, ONCE_INDEX);
     const types = await ledgerTypes(queryInterface);
     if (types && types.includes(FEE_TYPE)) {

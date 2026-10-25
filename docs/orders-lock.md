@@ -4,8 +4,8 @@ Behind `ORDERS_LOCK_ENABLED` (only `true` turns it on). Off, nothing below
 happens: nothing is hidden, the pay-per-order fee is charged when the order is
 placed (as `docs/billing-wallet.md` describes), and every answer is the one it
 was, without the new `contactLocked` field. Migration 718 adds
-`orders.contact_lock` and the `order_confirm_fee` ledger type; it writes no
-data.
+`orders.contact_lock`, the `order_confirm_fee` ledger type and the
+`webhook_order_holds` table; it writes no data.
 
 Code: `src/modules/orders/orderLock.js` (the rule, the hiding, the refusals)
 and `src/modules/billing/confirmFeeService.js` (the fee).
@@ -23,8 +23,9 @@ the merchant when
 - (b) the order was settled when it reached its confirmed stage
   (`contact_lock = 'unlocked'`), or reached it before the column existed
   (`contact_lock` null);
-- (c) the order is open and not confirmed yet, the store pays per order, and
-  it can pay the fee now (a free order left, or a balance of at least one fee).
+- (c) the order never reached its confirmed stage — pending, or cancelled or
+  rejected before it was confirmed — the store pays per order, and it can pay
+  the fee now (a free order left, or a balance of at least one fee).
 
 Otherwise it is **locked**. A funnel add-on placed as its own order (`source`
 `upsell` with `linked_from_order_id`) follows the order it was added to.
@@ -150,8 +151,17 @@ Not tried at all:
 - outgoing webhooks: no delivery is queued for a locked order (domain events,
   the order change scanner, "resend to webhook", which names it under
   `locked`); `customer.*` for a hidden customer and `checkout.*` while new
-  orders would be locked are not sent. They are not sent later when the order
-  opens.
+  orders would be locked are not sent.
+- when a locked order opens (a renewal, a top-up, the fees paid from the
+  dashboard, a fallback to pay per order…), the change scanner sends it on its
+  next pass as a change made now: the scanner kept it in `webhook_order_holds`
+  and left its snapshot as last sent, so an order never sent gets its
+  `order.created` (as if just placed) and one sent before gets one
+  `order.status_changed` when its state moved meanwhile, nothing when it did
+  not. `order.created`'s event id is per order: never queued twice for an
+  endpoint. The other order topics raised while it was locked (confirmed,
+  cancelled, paid…) are not replayed; the status change carries where it
+  stands now.
 
 Unchanged on purpose (they do not show the details to the merchant):
 

@@ -217,6 +217,7 @@ const TABLES = {
   upsell_acceptances: wipe(STORE),
   user_acquisition: wipe('where each account came from; the accounts go (the creator\'s row too: it describes pre-launch traffic)'),
   upsell_rules: wipe(STORE),
+  webhook_order_holds: wipe(STORE),
   webhook_order_states: wipe(STORE),
   webhook_scan_cursors: wipe('where the order-change scanner stopped; points at orders that go'),
   whatsapp_campaign_recipients: wipe(STORE),

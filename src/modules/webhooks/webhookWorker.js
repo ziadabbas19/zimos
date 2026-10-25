@@ -2,7 +2,7 @@
 
 const env = require('../../config/env');
 const logger = require('../../core/utils/logger');
-const { scanOnce } = require('./orderChangeDetector');
+const { scanOnce, releaseHeld } = require('./orderChangeDetector');
 const { deliverDue } = require('./webhookDispatcher');
 
 /**
@@ -18,8 +18,10 @@ const { deliverDue } = require('./webhookDispatcher');
  */
 async function runOnce({ now } = {}) {
   const { scanned, events } = await scanOnce({ now: now || new Date() });
+  // Locked orders that have opened since: their events go out in this pass (orderChangeDetector).
+  const released = await releaseHeld({ now: now || new Date() });
   const sent = await deliverDue({ now });
-  return { scanned, events, ...sent };
+  return { scanned, events: events + released.events, released: released.released, ...sent };
 }
 
 let timer = null;
