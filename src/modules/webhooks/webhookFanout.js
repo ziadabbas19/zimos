@@ -217,4 +217,30 @@ async function resendOrders(workspaceId, orderIds, { endpointId = null } = {}) {
   return { orders: orderIds.length - missing.length - locked.length, deliveries, missing, ...(locked.length ? { locked } : {}) };
 }
 
-module.exports = { fanOut, handleDomainEvent, resendOrders, orderSubject };
+/**
+ * order.accepted for orders that were locked (orders/orderLock) and have just
+ * opened (orderChangeDetector.releaseHeld): the confirmation or payment that
+ * accepted them came while their customer's details were hidden, so nothing
+ * was sent then. Sent now for each that is accepted now; its event id is per
+ * order, so an endpoint never gets it twice. One that locked again meanwhile
+ * is left for its next opening.
+ */
+async function acceptedOnOpen(orderIds) {
+  let deliveries = 0;
+  const rows = await db.Order.findAll({ where: { id: orderIds }, attributes: ['id', 'workspaceId'] });
+  for (const { id: orderId, workspaceId } of rows) {
+    const acceptance = await orderAccepted().acceptanceOf(workspaceId, orderId);
+    if (!acceptance || !acceptance.accepted) continue;
+    const subject = await orderSubject(workspaceId, orderId);
+    const order = subject ? await orderData(workspaceId, orderId) : null;
+    if (!order) continue;
+    deliveries += await fanOut(workspaceId, 'order.accepted', {
+      eventId: `order.accepted:${orderId}`,
+      data: { order, acceptedVia: acceptance.via, acceptedAt: acceptance.acceptedAt },
+      subject,
+    });
+  }
+  return deliveries;
+}
+
+module.exports = { fanOut, handleDomainEvent, resendOrders, orderSubject, acceptedOnOpen };
