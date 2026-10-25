@@ -5,8 +5,8 @@
  * in, and that nothing of one store reaches another — the isolation of
  * tenantIsolation.test.js, over a socket. A real Socket.IO server on a free
  * port, with the postgres adapter on the test database: every message takes
- * the production path (outbox → realtime consumer → emitter NOTIFY → adapter
- * LISTEN → room).
+ * the production path (outbox → realtime consumer → publisher NOTIFY →
+ * adapter LISTEN → room).
  *
  * "Receives nothing" is always checked after a positive control received the
  * same event, so a silent socket means filtered, not slow.
@@ -38,11 +38,21 @@ const billingService = require('../../src/modules/billing/billingService');
 const pgPool = require('../../src/modules/realtime/pgPool');
 const publisher = require('../../src/modules/realtime/publisher');
 const { route } = require('../../src/modules/realtime/catalog');
-const { createRealtimeServer, PATH } = require('../../src/modules/realtime/realtimeServer');
+const sessionGate = require('../../src/core/security/sessionGate');
+const {
+  createRealtimeServer,
+  PATH,
+  HANDSHAKES_PER_USER_PER_MINUTE,
+  HANDSHAKE_CONCURRENCY,
+  LISTEN_DOWN_GRACE_MS,
+} = require('../../src/modules/realtime/realtimeServer');
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const bearer = (token) => ({ Authorization: `Bearer ${token}` });
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+// The periodic checks an hour apart: what these tests see is the cut on commit, never a check that
+// happened to fall in the window.
+const HOUR = 60 * 60 * 1000;
 
 let server;
 let realtime;
@@ -57,8 +67,10 @@ function listen(httpServer) {
 beforeAll(async () => {
   env.realtime.enabled = true;
   server = http.createServer(app);
-  realtime = createRealtimeServer(server, { app, connections: pgPool.get() });
+  realtime = createRealtimeServer(server, { app, connections: pgPool.get(), sessionCheckMs: HOUR, roomsCheckMs: HOUR });
   base = await listen(server);
+  // Handshakes are refused until LISTEN is up.
+  await waitFor(() => pgPool.get().isListening(), 'the LISTEN connection', 15000);
 });
 
 afterEach(() => {
@@ -143,6 +155,25 @@ async function waitFor(check, what, ms = 5000) {
     await sleep(25);
   }
   throw new Error(`timed out waiting for ${what}`);
+}
+
+/** Whether a pool.query call is a NOTIFY of publisher.js (uid "emitter"), not the adapter's heartbeat. */
+const fromPublisher = (params) => Array.isArray(params) && typeof params[1] === 'string' && params[1].startsWith('{"uid":"emitter"');
+
+/** The next `count` NOTIFYs of the publisher fail; the adapter's own go through. `ours()` counts the publisher's. */
+function failPublishes(count, failure = new Error('database down')) {
+  const pool = pgPool.get().pool;
+  const original = pool.query.bind(pool);
+  let left = count;
+  const spy = jest.spyOn(pool, 'query').mockImplementation((text, params, ...rest) => {
+    if (fromPublisher(params) && left > 0) {
+      left -= 1;
+      return Promise.reject(failure);
+    }
+    return original(text, params, ...rest);
+  });
+  spy.ours = () => spy.mock.calls.filter(([, params]) => fromPublisher(params)).length;
+  return spy;
 }
 
 const named = (client, name, test = () => true) => () => client.received.find((r) => r.name === name && test(r.message));
@@ -244,6 +275,49 @@ describe('handshake', () => {
     const results = await Promise.allSettled(attempts.map((c) => c.ready));
     expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(2);
     expect(results.filter((r) => r.status === 'rejected').map((r) => r.reason.message)).toEqual(Array(4).fill('too_many_connections'));
+  });
+
+  it("reads the session from the database, not sessionGate's cache, which still says it stands", async () => {
+    const owner = await registerAndActivate();
+    const { sid } = jwt.decode(owner.accessToken);
+    expect(await sessionGate.isActive(sid)).toBe(true);
+    // Plain SQL: no hook empties that cache, as on a server where the session did not end.
+    await db.sequelize.query('UPDATE sessions SET revoked_at = now() WHERE id = :sid', { replacements: { sid } });
+    expect(await sessionGate.isActive(sid)).toBe(true);
+    expect((await refusal({ token: owner.accessToken })).message).toBe('session_ended');
+  });
+
+  it('asks the database for a few handshakes at a time; the others wait their turn', async () => {
+    const owners = await Promise.all([1, 2, 3].map(() => registerAndActivate()));
+    // Each handshake holds its turn a while, so they overlap.
+    const original = sessionGate.currentSessionId;
+    const slow = jest.spyOn(sessionGate, 'currentSessionId').mockImplementation(async (sid) => {
+      await sleep(150);
+      return original(sid);
+    });
+    realtime.resetHandshakePeak();
+    try {
+      const attempts = owners.flatMap((o) => [1, 2, 3, 4].map(() => open({ token: o.accessToken })));
+      const results = await Promise.allSettled(attempts.map((c) => c.ready));
+      expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(12);
+      expect(realtime.handshakePeak()).toBe(HANDSHAKE_CONCURRENCY);
+    } finally {
+      slow.mockRestore();
+    }
+  });
+
+  it('lets one account begin at most HANDSHAKES_PER_USER_PER_MINUTE handshakes a minute', async () => {
+    // Every socket is closed straight away: what is counted here is the attempts, not the open sockets.
+    env.realtime.maxConnectionsPerUser = 100;
+    const owner = await registerAndActivate();
+    for (let i = 0; i < HANDSHAKES_PER_USER_PER_MINUTE; i += 1) {
+      const c = await connected(owner.accessToken);
+      c.socket.disconnect();
+    }
+    expect((await refusal({ token: owner.accessToken })).message).toBe('too_many_attempts');
+    // Another account is not counted against it.
+    const other = await registerAndActivate();
+    await connected(other.accessToken);
   });
 
   it('keeps nothing that signs in on the socket once the handshake is done', async () => {
@@ -381,6 +455,33 @@ describe('store isolation', () => {
   });
 });
 
+describe('the periodic checks', () => {
+  it('one asked for while another runs runs right after it, reading the database when asked so', async () => {
+    await waitFor(() => realtime.io.of('/').sockets.size === 0, 'the sockets of earlier tests to go');
+    const owner = await registerAndActivate();
+    await connected(owner.accessToken);
+    const original = sessionGate.isActive;
+    const cached = jest.spyOn(sessionGate, 'isActive').mockImplementation(async (sid) => {
+      await sleep(300);
+      return original(sid);
+    });
+    const fresh = jest.spyOn(sessionGate, 'currentSessionId');
+    try {
+      const first = realtime.checkSessions();
+      await sleep(50);
+      // A change that named no account (RESYNC_EVENT) while the check above runs.
+      await realtime.checkSessions({ fresh: true });
+      expect(fresh).not.toHaveBeenCalled();
+      await first;
+      expect(cached).toHaveBeenCalledTimes(1);
+      expect(fresh).toHaveBeenCalledTimes(1);
+    } finally {
+      cached.mockRestore();
+      fresh.mockRestore();
+    }
+  });
+});
+
 describe('the moment access changes', () => {
   // Far below the periodic checks (sessions 15 s, rooms 60 s): only the cut on commit can be this quick.
   const QUICK_MS = 3000;
@@ -438,6 +539,68 @@ describe('the moment access changes', () => {
     const socket = await connected(owner.accessToken);
     await closesQuickly(socket, () => request(app).post('/api/v1/auth/logout').send({ refreshToken: owner.refreshToken }).expect(200));
     expect((await refusal({ token: owner.accessToken })).message).toBe('session_ended');
+  });
+
+  it("a sign-out on one device leaves the account's other devices connected", async () => {
+    const owner = await registerAndActivate();
+    const second = await request(app).post('/api/v1/auth/login').send({ email: owner.email, password: owner.password }).expect(200);
+    const phone = await connected(owner.accessToken);
+    const laptop = await connected(second.body.accessToken);
+    await closesQuickly(phone, () => request(app).post('/api/v1/auth/logout').send({ refreshToken: owner.refreshToken }).expect(200));
+    await sleep(1000);
+    expect(laptop.closed).toEqual([]);
+    expect(laptop.socket.connected).toBe(true);
+  });
+
+  it('a handshake still under way when the teammate is removed is let go as it completes', async () => {
+    const A = await store('Store A');
+    const operator = await addMemberWithRole(A.auth.accessToken, A.workspace.id, 'order_operator', 'Racing');
+    const owner = await connected(A.auth.accessToken);
+    const membership = await membershipOf(A.workspace.id, operator.userId);
+    // The handshake reads the operator's memberships (the store still there), then is held a moment.
+    const original = db.Membership.findAll.bind(db.Membership);
+    let read = false;
+    const held = jest.spyOn(db.Membership, 'findAll').mockImplementation(async (options, ...rest) => {
+      const rows = await original(options, ...rest);
+      const ids = options && options.where && options.where.userId;
+      if (!read && Array.isArray(ids) && ids.includes(operator.userId)) {
+        read = true;
+        await sleep(1500);
+      }
+      return rows;
+    });
+    try {
+      const op = open({ token: operator.accessToken });
+      await waitFor(() => read, "the handshake to read the operator's memberships");
+      await request(app).delete(`/api/v1/workspaces/${A.workspace.id}/members/${membership.id}`).set(bearerOf(A.auth)).expect(200);
+      await op.ready;
+      await waitFor(() => op.closed.length > 0, 'the late socket to be let go', QUICK_MS);
+      await placeOrder(A.auth.accessToken, A.workspace.id, A.variant.id);
+      await waitFor(named(owner, 'order.created'), 'owner order.created');
+      await sleep(300);
+      expect(names(op).filter((n) => n.startsWith('order.'))).toEqual([]);
+    } finally {
+      held.mockRestore();
+    }
+  });
+
+  it('the cut does not wait out a pause after a failed publish, and is sent again once if it fails', async () => {
+    const owner = await registerAndActivate();
+    const socket = await connected(owner.accessToken);
+    // A failed publish a moment ago (publishing paused), and the cut's own first NOTIFY failing too.
+    const query = failPublishes(2);
+    try {
+      const probe = { id: '66666666-6666-4666-8666-666666666666', type: 'order.created', workspaceId: '11111111-1111-4111-8111-111111111111', payload: { orderId: '77777777-7777-4777-8777-777777777777' } };
+      expect((await publisher.publish(probe).catch((err) => err)).message).toBe('live updates: publish failed');
+      const t0 = Date.now();
+      expect(await publisher.cutAccess(owner.userId)).toBe(true);
+      expect(Date.now() - t0).toBeGreaterThanOrEqual(publisher.CONTROL_RETRY_MS - 50);
+      expect(query.ours()).toBe(3);
+      await waitFor(() => socket.closed.length > 0, 'the socket to be closed', 2000);
+    } finally {
+      query.mockRestore();
+      publisher.reset();
+    }
   });
 
   it('an account suspended: closed on commit', async () => {
@@ -517,9 +680,10 @@ describe('across API processes', () => {
   it('one message published once reaches the sockets of two servers through the database', async () => {
     const connections2 = pgPool.createConnections({ name: 'zimos-realtime-test-2' });
     const server2 = http.createServer(app);
-    const realtime2 = createRealtimeServer(server2, { app, connections: connections2 });
+    const realtime2 = createRealtimeServer(server2, { app, connections: connections2, sessionCheckMs: HOUR, roomsCheckMs: HOUR });
     const base2 = await listen(server2);
     try {
+      await waitFor(() => connections2.isListening(), 'the second LISTEN connection', 15000);
       const A = await store('Store A');
       const on1 = await connected(A.auth.accessToken);
       const on2 = await connected(A.auth.accessToken, { url: base2 });
@@ -537,30 +701,79 @@ describe('across API processes', () => {
 });
 
 describe('the LISTEN connection', () => {
-  it('dropping does not end the process, and messages flow again once it is back', async () => {
+  /** Publishes a probe until it reaches `client`: a new LISTEN runs a moment after its connection. */
+  async function probeReaches(client, workspaceId) {
+    const probeId = '33333333-3333-4333-8333-333333333333';
+    for (let i = 0; i < 20; i += 1) {
+      await publisher.publish({ id: probeId, type: 'order.created', workspaceId, payload: { orderId: probeId } }).catch(() => {});
+      await sleep(500);
+      if (named(client, 'order.created', (m) => m.entity.id === probeId)()) return true;
+    }
+    return false;
+  }
+
+  it('dropping does not end the process; while it is down the sockets go and handshakes are refused; back, all works', async () => {
     const A = await store('Store A');
     const a = await connected(A.auth.accessToken);
-    const [listening] = pgPool.get().listeners();
+    const connections = pgPool.get();
+    const [listening] = connections.listeners();
     expect(listening).toBeTruthy();
-    // What a database restart or a network reset does to it.
-    await db.sequelize.query('SELECT pg_terminate_backend(:pid)', { replacements: { pid: listening.processID } });
-    await waitFor(() => !pgPool.get().listeners().includes(listening), 'the dead LISTEN connection to go');
-    // An unhandled 'error' from it would have thrown here and failed the test.
-    await waitFor(() => pgPool.get().listeners().length === 1, 'a new LISTEN connection', 15000);
+    // Kept down until the test lets it come back: every attempt of the adapter fails.
+    const down = jest.spyOn(connections.forAdapter, 'connect').mockRejectedValue(new Error('database down'));
+    try {
+      // What a database restart or a network reset does to it.
+      await db.sequelize.query('SELECT pg_terminate_backend(:pid)', { replacements: { pid: listening.processID } });
+      // An unhandled 'error' from it would have thrown here and failed the test.
+      await waitFor(() => !connections.isListening(), 'LISTEN to be down');
+      // The dashboard is told: its socket goes, and it polls instead of trusting a silent connection.
+      await waitFor(() => a.closed.length > 0, 'the socket to be let go', LISTEN_DOWN_GRACE_MS + 3000);
+      expect((await refusal({ token: A.auth.accessToken })).message).toBe('unavailable');
+      expect(down).toHaveBeenCalled();
+    } finally {
+      down.mockRestore();
+    }
+    // The adapter tries again every 1 to 3 seconds.
+    await waitFor(() => connections.isListening(), 'LISTEN to be back', 15000);
+    const again = await connected(A.auth.accessToken);
+    expect(await probeReaches(again, A.workspace.id)).toBe(true);
+  }, 40000);
 
-    // Its LISTEN runs right after it connects: probe until a message gets through.
-    const probeId = '33333333-3333-4333-8333-333333333333';
-    const got = await (async () => {
-      for (let i = 0; i < 20; i += 1) {
-        await publisher.publish({ id: probeId, type: 'order.created', workspaceId: A.workspace.id, payload: { orderId: probeId } }).catch(() => {});
-        await sleep(500);
-        const found = named(a, 'order.created', (m) => m.entity.id === probeId)();
-        if (found) return found;
-      }
-      return null;
-    })();
-    expect(got).toBeTruthy();
-  });
+  it('one LISTEN connection at a time: the adapter asking for two at once delivers each message once', async () => {
+    const A = await store('Store A');
+    const a = await connected(A.auth.accessToken);
+    const connections = pgPool.get();
+    const before = connections.stats().retired;
+    // What the adapter does when a drop both ends its client and fails its LISTEN.
+    const pubsub = realtime.io.of('/').adapter.client;
+    await Promise.all([pubsub.initClient(), pubsub.initClient()]);
+    expect(connections.listeners()).toHaveLength(1);
+    expect(connections.stats().retired).toBeGreaterThan(before);
+    // A LISTEN cut short on a retired connection has the adapter try once more, 1 to 3 seconds later.
+    await sleep(3500);
+    await waitFor(() => connections.isListening(), 'LISTEN', 15000);
+    expect(connections.listeners()).toHaveLength(1);
+    const order = await placeOrder(A.auth.accessToken, A.workspace.id, A.variant.id);
+    await waitFor(named(a, 'order.created', (m) => m.entity.id === order.id), 'the order');
+    await sleep(500);
+    expect(a.received.filter((r) => r.name === 'order.created' && r.message.entity.id === order.id)).toHaveLength(1);
+  }, 30000);
+
+  it('a LISTEN connection that hears nothing, not even the heartbeat, is ended and another opened', async () => {
+    const quiet = pgPool.createConnections({ name: 'zimos-realtime-test-quiet', listenIdleMs: 300 });
+    const server3 = http.createServer(app);
+    // The adapters' heartbeats come every 5 s: far more than 300 ms of silence between them.
+    const realtime3 = createRealtimeServer(server3, { app, connections: quiet, sessionCheckMs: HOUR, roomsCheckMs: HOUR });
+    await listen(server3);
+    try {
+      await waitFor(() => quiet.stats().silentEnds >= 1, 'a silent LISTEN to be ended', 15000);
+      await waitFor(() => quiet.stats().connects >= 2, 'another LISTEN connection', 15000);
+      expect(quiet.listeners().length).toBeLessThanOrEqual(1);
+    } finally {
+      await realtime3.stop();
+      await quiet.end();
+      await new Promise((resolve) => server3.close(resolve));
+    }
+  }, 40000);
 
   it('waits longer after each failed attempt, with jitter, up to a cap', () => {
     expect(pgPool.listenBackoffMs(0)).toBe(0);
@@ -614,10 +827,9 @@ describe('the publisher', () => {
     return { io, nsp, adapter };
   }
 
-  it("is read by the pinned adapter: a broadcast to a room, a disconnect of a room, an event for the servers", () => {
+  it('is read by the pinned adapter: a broadcast to a room, and an event for the servers with its arguments', () => {
     const { nsp, adapter } = adapterOnItsOwn();
     const broadcast = jest.spyOn(Adapter.prototype, 'broadcast').mockImplementation(() => {});
-    const disconnect = jest.spyOn(Adapter.prototype, 'disconnectSockets').mockImplementation(() => {});
     const serverEvent = jest.spyOn(nsp, '_onServerSideEmit').mockImplementation(() => {});
     try {
       const body = { v: 1, id: 'e1', type: 'order.created', workspaceId: 'w1', entity: { type: 'order', id: 'o1' }, at: 'now' };
@@ -629,16 +841,12 @@ describe('the publisher', () => {
       expect([...opts.rooms]).toEqual([ROOM]);
       expect([...opts.except]).toEqual([]);
 
-      adapter.onMessage(wire(publisher.messages.disconnect('u:42')));
-      expect(disconnect).toHaveBeenCalledTimes(1);
-      expect([...disconnect.mock.calls[0][0].rooms]).toEqual(['u:42']);
-      expect(disconnect.mock.calls[0][1]).toBe(true);
-
       adapter.onMessage(wire(publisher.messages.serverEvent(publisher.RESYNC_EVENT)));
       expect(serverEvent).toHaveBeenCalledWith([publisher.RESYNC_EVENT]);
+      adapter.onMessage(wire(publisher.messages.serverEvent(publisher.CUT_EVENT, 'u-42', 'access')));
+      expect(serverEvent).toHaveBeenLastCalledWith([publisher.CUT_EVENT, 'u-42', 'access']);
     } finally {
       broadcast.mockRestore();
-      disconnect.mockRestore();
       serverEvent.mockRestore();
       adapter.close();
     }
@@ -667,11 +875,11 @@ describe('the publisher', () => {
     }
   });
 
-  it('a failed NOTIFY reaches no browser, says nothing about the database, and pauses publishing', async () => {
+  it('a failed NOTIFY reaches no browser, says nothing about the database, and pauses publishing a short while', async () => {
     const A = await store('Store A');
     const a = await connected(A.auth.accessToken);
     const failure = Object.assign(new Error('connect ECONNREFUSED 10.0.0.5:5432'), { code: 'ECONNREFUSED', address: '10.0.0.5', port: 5432 });
-    const query = jest.spyOn(pgPool.get().pool, 'query').mockRejectedValueOnce(failure);
+    const query = failPublishes(1, failure);
     try {
       const event = { id: '44444444-4444-4444-8444-444444444444', type: 'order.created', workspaceId: A.workspace.id, payload: { orderId: '55555555-5555-4555-8555-555555555555' } };
       const first = await publisher.publish(event).catch((err) => err);
@@ -680,12 +888,18 @@ describe('the publisher', () => {
       // Paused: the next one does not even ask the database.
       const second = await publisher.publish(event).catch((err) => err);
       expect(second.message).toBe('live updates: publishing paused after a failure');
-      expect(query).toHaveBeenCalledTimes(1);
+      expect(query.ours()).toBe(1);
       await sleep(500);
       expect(a.received).toEqual([]);
+      // Shorter than the first retry of the default queue (10 s): the retried job really asks the database.
+      expect(publisher.PAUSE_MAX_MS).toBeLessThan(10 * 1000);
+      await sleep(publisher.PAUSE_MAX_MS);
+      await publisher.publish(event);
+      expect(query.ours()).toBe(2);
+      await waitFor(named(a, 'order.created'), 'the event once the pause is over');
     } finally {
       query.mockRestore();
       publisher.reset();
     }
-  });
+  }, 30000);
 });

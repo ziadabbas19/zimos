@@ -64,13 +64,16 @@ describe('REALTIME_ENABLED off', () => {
     const another = await registerAndActivate({ fullName: 'Another Sign-up' });
 
     // The hooks that end sockets on an access change (realtime/control.js) do nothing.
-    const disconnect = jest.spyOn(publisher, 'disconnectUser');
+    const cut = jest.spyOn(publisher, 'cutAccess');
+    const sessions = jest.spyOn(publisher, 'checkSessionsOf');
     const resync = jest.spyOn(publisher, 'resyncAll');
     await db.User.update({ status: 'suspended' }, { where: { id: another.userId } });
     await request(app).post('/api/v1/auth/logout').send({ refreshToken: ctx.auth.refreshToken }).expect(200);
-    expect(disconnect).not.toHaveBeenCalled();
+    expect(cut).not.toHaveBeenCalled();
+    expect(sessions).not.toHaveBeenCalled();
     expect(resync).not.toHaveBeenCalled();
-    disconnect.mockRestore();
+    cut.mockRestore();
+    sessions.mockRestore();
     resync.mockRestore();
 
     const types = (await db.DomainEvent.findAll({ attributes: ['type'] })).map((e) => e.type);

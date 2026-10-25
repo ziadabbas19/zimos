@@ -5,7 +5,7 @@ const { EVENTS } = require('./catalog');
 
 /**
  * The outbox consumer of the live updates: each event of catalog.js goes to
- * its room through the emitter (publisher.js), from the worker.
+ * its room through publisher.js (one NOTIFY), from the worker.
  *
  * `events` is read at each dispatch (core/outbox consumersFor), so with
  * REALTIME_ENABLED off it lists nothing and no job is ever queued for it.

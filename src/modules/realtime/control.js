@@ -17,11 +17,21 @@ const publisher = require('./publisher');
  * deleted or given other console permissions (User), a role's permissions
  * edited (Role).
  *
- * After the change commits, the account's sockets are closed on every server
- * (publisher.disconnectUser: room u:<id>). The client connects again, and its
- * new handshake works the rooms out from the database as they now are, or is
- * refused. When a bulk change does not say which accounts it touched, every
- * server checks all its sockets now instead (publisher.resyncAll).
+ * After the change commits, every server hears of it (publisher.js):
+ *  - access changed (membership, account, role): the account's sockets are
+ *    closed (publisher.cutAccess). The client connects again, and its new
+ *    handshake works the rooms out from the database as they now are, or is
+ *    refused.
+ *  - a session ended: only the account's sockets whose session has ended are
+ *    closed (publisher.checkSessionsOf), so signing out on the phone leaves the
+ *    laptop connected.
+ * When a bulk change does not say which accounts it touched, every server
+ * checks all its sockets now instead (publisher.resyncAll).
+ *
+ * In the usual case that is all within a moment of the commit. It falls back
+ * to the periodic checks when the message cannot be sent (tried twice, 2 s
+ * apart) or a server's LISTEN is down at that moment, and for changes made
+ * where this module is not loaded (a script run from the command line).
  *
  * Left alone: the rotation a refresh makes (the old session names its
  * successor and the access goes on), and every other column (a pinned
@@ -51,22 +61,26 @@ function idsFrom(where, key) {
 const changedAny = (instance, fields) => fields.some((field) => instance.changed(field));
 const setsAny = (options, fields) => Boolean(options && options.attributes) && fields.some((field) => Object.prototype.hasOwnProperty.call(options.attributes, field));
 
-function disconnect(userIds, options) {
+/** After the commit, for each account: `send(userId)` (publisher.cutAccess or checkSessionsOf). */
+function tell(send, userIds, options) {
   if (!env.realtime.enabled) return;
   const ids = [...new Set(userIds.filter(Boolean))];
   if (ids.length === 0) return;
-  afterCommit(options, () => Promise.all(ids.map((id) => publisher.disconnectUser(id))));
+  afterCommit(options, () => Promise.all(ids.map((id) => send(id))));
 }
+
+const cut = (userIds, options) => tell((id) => publisher.cutAccess(id), userIds, options);
+const checkSessions = (userIds, options) => tell((id) => publisher.checkSessionsOf(id), userIds, options);
 
 function resync(options) {
   if (!env.realtime.enabled) return;
   afterCommit(options, () => publisher.resyncAll());
 }
 
-/** A bulk change: the accounts its `where` names, or every server checks everything. */
-function bulk(options, key) {
+/** A bulk change: `act` on the accounts its `where` names, or every server checks everything. */
+function bulk(options, key, act) {
   const ids = idsFrom(options && options.where, key);
-  if (ids) disconnect(ids, options);
+  if (ids) act(ids, options);
   else resync(options);
 }
 
@@ -78,31 +92,31 @@ function install() {
   const NAME = 'realtimeControl';
 
   db.Membership.addHook('afterUpdate', NAME, (membership, options) => {
-    if (changedAny(membership, MEMBERSHIP_FIELDS)) disconnect([membership.userId], options);
+    if (changedAny(membership, MEMBERSHIP_FIELDS)) cut([membership.userId], options);
   });
-  db.Membership.addHook('afterDestroy', NAME, (membership, options) => disconnect([membership.userId], options));
+  db.Membership.addHook('afterDestroy', NAME, (membership, options) => cut([membership.userId], options));
   db.Membership.addHook('afterBulkUpdate', NAME, (options) => {
-    if (setsAny(options, MEMBERSHIP_FIELDS)) bulk(options, 'userId');
+    if (setsAny(options, MEMBERSHIP_FIELDS)) bulk(options, 'userId', cut);
   });
-  db.Membership.addHook('afterBulkDestroy', NAME, (options) => bulk(options, 'userId'));
+  db.Membership.addHook('afterBulkDestroy', NAME, (options) => bulk(options, 'userId', cut));
 
   // A session that ends, not one a refresh rotated (that one names its successor).
   db.Session.addHook('afterUpdate', NAME, (session, options) => {
-    if (session.changed('revokedAt') && session.revokedAt && !session.rotatedToSessionId) disconnect([session.userId], options);
+    if (session.changed('revokedAt') && session.revokedAt && !session.rotatedToSessionId) checkSessions([session.userId], options);
   });
   db.Session.addHook('afterBulkUpdate', NAME, (options) => {
-    if (setsAny(options, ['revokedAt']) && !setsAny(options, ['rotatedToSessionId'])) bulk(options, 'userId');
+    if (setsAny(options, ['revokedAt']) && !setsAny(options, ['rotatedToSessionId'])) bulk(options, 'userId', checkSessions);
   });
-  db.Session.addHook('afterDestroy', NAME, (session, options) => disconnect([session.userId], options));
-  db.Session.addHook('afterBulkDestroy', NAME, (options) => bulk(options, 'userId'));
+  db.Session.addHook('afterDestroy', NAME, (session, options) => checkSessions([session.userId], options));
+  db.Session.addHook('afterBulkDestroy', NAME, (options) => bulk(options, 'userId', checkSessions));
 
   db.User.addHook('afterUpdate', NAME, (user, options) => {
-    if (changedAny(user, USER_FIELDS)) disconnect([user.id], options);
+    if (changedAny(user, USER_FIELDS)) cut([user.id], options);
   });
   db.User.addHook('afterBulkUpdate', NAME, (options) => {
-    if (setsAny(options, USER_FIELDS)) bulk(options, 'id');
+    if (setsAny(options, USER_FIELDS)) bulk(options, 'id', cut);
   });
-  db.User.addHook('afterDestroy', NAME, (user, options) => disconnect([user.id], options));
+  db.User.addHook('afterDestroy', NAME, (user, options) => cut([user.id], options));
 
   db.Role.addHook('afterUpdate', NAME, (role, options) => {
     if (changedAny(role, ROLE_FIELDS)) resync(options);
