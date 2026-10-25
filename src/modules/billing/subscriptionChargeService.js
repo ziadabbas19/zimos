@@ -330,6 +330,8 @@ async function settlePaid(
   { paidAt, amountPaid, externalReference, note, recordedByUserId, source, frozen = null },
   transaction
 ) {
+  // Renewed: the locked orders left 'due' open for good once this commits (orders/orderLock; no fee, no money moved).
+  require('./confirmFeeService').releaseDueAfterCommit(transaction, invoice.workspaceId);
   // A move's charge voided before the money came: applied or credited, never lost.
   if (invoice.status === 'void') {
     return settleLateMovePayment(invoice, { paidAt, amountPaid, externalReference, note, recordedByUserId, source, frozen }, transaction);

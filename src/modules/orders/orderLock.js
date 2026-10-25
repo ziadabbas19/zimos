@@ -25,7 +25,9 @@ const { AppError } = require('../../core/errors/AppError');
  *   (c) the order never reached its confirmed stage — pending, or cancelled
  *       or rejected before it was confirmed — and the store pays per order
  *       and can pay the fee now (a free order left, or a balance of at least
- *       one fee).
+ *       one fee);
+ *   (d) its pay-per-order fee was charged when it was placed (before the
+ *       switch) and not given back: wallet_ledger_entries, read when asked.
  * Otherwise it is locked. A funnel add-on placed as its own order (source
  * 'upsell', linked_from_order_id) shares its customer with the order it
  * follows and is locked exactly when that order is.
@@ -104,7 +106,10 @@ function reachedConfirmation(order) {
 
 const isFollowOn = (order) => Boolean(order.linkedFromOrderId) && order.source === 'upsell';
 
-/** The order on its own, without the order it may follow. */
+/**
+ * The order on its own, without the order it may follow, and without rule
+ * (d), which needs the ledger (placingFeePaid).
+ */
 function ownVisibility(ctx, order) {
   if (isOpenContext(ctx)) return true;
   if (order.contactLock === 'unlocked') return true;
@@ -112,6 +117,29 @@ function ownVisibility(ctx, order) {
   // (c) A cancelled or rejected order that was never confirmed counts as pending (Ziad, 2026-10-25).
   if (ctx.mode === 'pay_per_order' && ctx.canPay && !reachedConfirmation(order)) return true;
   return false;
+}
+
+// (d) The fee charged when the order was placed — before the switch, by
+// walletService.chargeOrderFee — and not given back since: walletService's
+// orderFeeState reading (charges, recharges and reversals counted). Nothing
+// is written for it (Ziad, 2026-10-25: no backfill).
+const PLACING_FEE_TYPES = ['order_fee', 'order_fee_recharge', 'order_fee_reversal'];
+const placingFeePaidSql = (a) => `EXISTS (
+    SELECT 1 FROM wallet_ledger_entries fe
+     WHERE fe.order_id = ${a}.id AND fe.entry_type IN ('order_fee', 'order_fee_recharge', 'order_fee_reversal')
+    HAVING COUNT(*) FILTER (WHERE fe.entry_type <> 'order_fee_reversal') > COUNT(*) FILTER (WHERE fe.entry_type = 'order_fee_reversal'))`;
+
+/** The ids among `ids` whose fee was paid when placed (rule (d)): one query, none for an empty list. */
+async function placingFeePaid(ids, transaction) {
+  if (ids.length === 0) return new Set();
+  const rows = await db.sequelize.query(
+    `SELECT fe.order_id FROM wallet_ledger_entries fe
+      WHERE fe.order_id IN (:ids) AND fe.entry_type IN (:types)
+      GROUP BY fe.order_id
+     HAVING COUNT(*) FILTER (WHERE fe.entry_type <> 'order_fee_reversal') > COUNT(*) FILTER (WHERE fe.entry_type = 'order_fee_reversal')`,
+    { replacements: { ids, types: PLACING_FEE_TYPES }, type: QueryTypes.SELECT, transaction }
+  );
+  return new Set(rows.map((r) => r.order_id));
 }
 
 // What a batch decision needs of each order (and of the orders they follow).
@@ -140,9 +168,12 @@ async function lockedIds(ctx, orders, { transaction } = {}) {
   const parents = parentIds.length
     ? await db.Order.findAll({ where: { id: parentIds, workspaceId: orders[0].workspaceId }, attributes: ORDER_ATTRIBUTES, transaction })
     : [];
-  const parentVisible = new Map(parents.map((p) => [p.id, ownVisibility(ctx, p)]));
+  // The ledger is read only for the orders the other rules leave locked.
+  const feePaid = await placingFeePaid([...new Set([...orders, ...parents].filter((o) => !ownVisibility(ctx, o)).map((o) => o.id))], transaction);
+  const visibleAlone = (o) => ownVisibility(ctx, o) || feePaid.has(o.id);
+  const parentVisible = new Map(parents.map((p) => [p.id, visibleAlone(p)]));
   for (const order of orders) {
-    const visible = ownVisibility(ctx, order) || (isFollowOn(order) && parentVisible.get(order.linkedFromOrderId) === true);
+    const visible = visibleAlone(order) || (isFollowOn(order) && parentVisible.get(order.linkedFromOrderId) === true);
     if (!visible) locked.add(order.id);
   }
   return locked;
@@ -166,6 +197,7 @@ function visibleSql(ctx, alias = 'o') {
     // COALESCE: a null contact_lock must give false here, never NULL, so NOT (...) still counts the row.
     const arms = [`COALESCE(${a}.contact_lock, '') = 'unlocked'`, `(${a}.contact_lock IS NULL AND ${reached})`];
     if (ctx.mode === 'pay_per_order' && ctx.canPay) arms.push(`(NOT ${reached})`);
+    arms.push(placingFeePaidSql(a));
     return `(${arms.join(' OR ')})`;
   };
   return `(${own(alias)} OR (${alias}.linked_from_order_id IS NOT NULL AND ${alias}.source = 'upsell' AND EXISTS (

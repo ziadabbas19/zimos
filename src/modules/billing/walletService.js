@@ -624,7 +624,7 @@ const FEE_PLAN_YEARS = 100;
  * move to a monthly plan or on another store). Used by choosePayPerOrder and
  * by a plan switch to pay per order (planSwitchService).
  */
-async function startPayPerOrder(subscription, plan, { now = new Date() } = {}, transaction) {
+async function startPayPerOrder(subscription, plan, { now = new Date(), settleDue = true } = {}, transaction) {
   const workspace = await db.Workspace.findByPk(subscription.workspaceId, { attributes: ['id', 'ownerUserId'], transaction });
   if (workspace && workspace.ownerUserId) {
     await require('./goLiveService').recordTrial(
@@ -638,6 +638,9 @@ async function startPayPerOrder(subscription, plan, { now = new Date() } = {}, t
     { planId: plan.id, status: 'active', trialEndsAt: null, currentPeriodStart: now, currentPeriodEnd: end, graceUntil: null, cancelAtPeriodEnd: false },
     { transaction }
   );
+  // The orders left 'due' (orders/orderLock) take their fees from the balance once this commits.
+  // Not from a scheduled switch (settleDue false): no scheduled job moves the balance's money.
+  if (settleDue) require('./confirmFeeService').settleDueAfterCommit(transaction, subscription.workspaceId);
 }
 
 /**

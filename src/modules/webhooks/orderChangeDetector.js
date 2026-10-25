@@ -258,14 +258,21 @@ async function processPage(candidates, now, transaction) {
   }
 
   // The order as the public API shows it, once per order however many
-  // endpoints hear about it. (An order that locked between the two reads is
-  // not sent either.)
+  // endpoints hear about it. An order that locked between the two reads (its
+  // store's last fee spent meanwhile) is held like any locked one: its
+  // snapshot is not moved on, so releaseHeld sends it when it opens.
   const orderIds = [...new Set(pending.map((p) => p.row.id))];
   const orders = new Map();
   for (const orderId of orderIds) {
     const row = rows.find((r) => r.id === orderId);
     const order = await orderService.getOrder(row.workspace_id, orderId);
-    if (!order.contactLocked) orders.set(orderId, serializeOrder(order));
+    if (!order.contactLocked) {
+      orders.set(orderId, serializeOrder(order));
+      continue;
+    }
+    holds.push({ orderId, workspaceId: row.workspace_id, heldAt: now, checkedAt: now });
+    const at = newSnapshots.findIndex((s) => s.orderId === orderId);
+    if (at >= 0) newSnapshots.splice(at, 1);
   }
 
   const deliveries = pending.filter(({ row }) => orders.has(row.id)).map(({ endpoint, type, row, previous, current, signature }) => {

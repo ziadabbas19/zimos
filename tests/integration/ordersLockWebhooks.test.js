@@ -11,6 +11,7 @@ const crypto = require('crypto');
 const { app, request } = require('../helpers/factories');
 const db = require('../../src/db/models');
 const wallet = require('../../src/modules/billing/walletService');
+const orderService = require('../../src/modules/orders/orderService');
 const { runOnce } = require('../../src/modules/webhooks/webhookWorker');
 const { RECHECK_MS } = require('../../src/modules/webhooks/orderChangeDetector');
 const h = require('../helpers/lockedStores');
@@ -118,5 +119,24 @@ describe('a locked order and its webhooks', () => {
     expect((await sentAbout(store, order.id)).map(([type]) => type)).toEqual(['order.created']);
     await pass();
     expect(await sentAbout(store, order.id)).toHaveLength(1);
+  });
+
+  it('an order that locks between the two reads of a pass is held, not lost: its snapshot stays, it goes once it opens', async () => {
+    const store = await h.payPerOrderStore({ balance: 1000 });
+    await addEndpoint(store);
+    const order = await h.placed(store);
+
+    // The store's last fee spent between the scanner's lock check and its read of the order.
+    const real = orderService.getOrder;
+    const spy = jest.spyOn(orderService, 'getOrder').mockImplementation(async (...args) => ({ ...(await real(...args)), contactLocked: true }));
+    await pass();
+    spy.mockRestore();
+    expect(await sentAbout(store, order.id)).toEqual([]);
+    expect(await db.WebhookOrderHold.findByPk(order.id)).not.toBeNull();
+    expect(await db.WebhookOrderState.findOne({ where: { orderId: order.id } })).toBeNull();
+
+    await pass();
+    expect((await sentAbout(store, order.id)).map(([type]) => type)).toEqual(['order.created']);
+    expect(await db.WebhookOrderHold.findByPk(order.id)).toBeNull();
   });
 });

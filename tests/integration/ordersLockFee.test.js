@@ -7,7 +7,7 @@
 // be paid — from every path that confirms — and never given back.
 
 const crypto = require('crypto');
-const { app, request } = require('../helpers/factories');
+const { app, request, makePlatformUser } = require('../helpers/factories');
 const db = require('../../src/db/models');
 const env = require('../../src/config/env');
 const wallet = require('../../src/modules/billing/walletService');
@@ -18,6 +18,15 @@ const h = require('../helpers/lockedStores');
 h.switchOn();
 
 const { FEE } = h;
+
+/** Polls `check` (an after-commit job) for up to 5 s. */
+async function eventually(check) {
+  for (let i = 0; i < 50; i += 1) {
+    if (await check()) return true;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  return false;
+}
 
 async function expectLedgerMatches() {
   for (const row of await ledgerCheck.check()) expect(ledgerCheck.problemsOf(row)).toEqual([]);
@@ -280,6 +289,61 @@ describe('an order paid online while the fee could not be paid', () => {
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({ settled: 1, locked: { count: 0, due: 0 } });
     expect((await db.Order.findByPk(order.id)).contactLock).toBe('unlocked');
+  });
+
+  it('is opened for good by a renewal (the console extends the period), with no fee taken', async () => {
+    const store = await h.monthlyStore({ lapsed: true });
+    const order = await paidOnline(store);
+    expect((await db.Order.findByPk(order.id)).contactLock).toBe('due');
+
+    const admin = await makePlatformUser('admin');
+    const ext = await request(app)
+      .post(`/api/v1/admin/workspaces/${store.wid}/subscription/extend`)
+      .set(admin.H)
+      .send({ duration: { months: 1 }, note: 'Paid by transfer' });
+    expect(ext.status).toBe(201);
+    // The release runs once the console's transaction has committed.
+    expect(await eventually(async () => (await db.Order.findByPk(order.id)).contactLock === 'unlocked')).toBe(true);
+    expect(await h.feeEntries(order.id)).toEqual([]);
+    // Lapsing again does not lock it: it was settled.
+    await h.lapse(store);
+    expect((await h.getOrder(store, order.id)).contactLocked).toBe(false);
+  });
+});
+
+describe('a funnel add-on placed as its own order', () => {
+  it('pays its own fee while the order it follows is pending, and none once that order is settled', async () => {
+    const store = await h.payPerOrderStore({ balance: 1000 });
+    const parent = await h.placed(store);
+    const addOn = await h.placed(store);
+    await db.Order.update({ source: 'upsell', linkedFromOrderId: parent.id }, { where: { id: addOn.id } });
+    expect((await h.confirm(store, addOn.id)).status).toBe(200);
+    expect((await h.feeEntries(addOn.id)).map((e) => e.entryType)).toEqual(['order_confirm_fee']);
+
+    expect((await h.confirm(store, parent.id)).status).toBe(200);
+    const second = await h.placed(store);
+    await db.Order.update({ source: 'upsell', linkedFromOrderId: parent.id }, { where: { id: second.id } });
+    expect((await h.confirm(store, second.id)).status).toBe(200);
+    expect(await h.feeEntries(second.id)).toEqual([]);
+    expect((await db.Order.findByPk(second.id)).contactLock).toBe('unlocked');
+    expect(await h.balanceOf(store)).toBe(1000 - 2 * FEE);
+  });
+});
+
+describe('an order whose fee was taken when it was placed, before the switch', () => {
+  it('shows while still pending though the balance cannot pay another fee, and is not counted as locked', async () => {
+    env.ordersLock.enabled = false;
+    const store = await h.payPerOrderStore({ balance: FEE });
+    const old = await h.placed(store);
+    expect((await h.feeEntries(old.id)).map((e) => e.entryType)).toEqual(['order_fee']);
+    expect(await h.balanceOf(store)).toBe(0);
+    env.ordersLock.enabled = true;
+
+    expect((await h.getOrder(store, old.id)).contactLocked).toBe(false);
+    const fresh = await h.placed(store);
+    expect((await h.getOrder(store, fresh.id)).contactLocked).toBe(true);
+    const summary = await request(app).get(`/api/v1/workspaces/${store.wid}/orders/locked-summary`).set(h.bearer(store.token));
+    expect(summary.body.locked).toMatchObject({ count: 1 });
   });
 });
 

@@ -25,7 +25,11 @@ the merchant when
   (`contact_lock` null);
 - (c) the order never reached its confirmed stage — pending, or cancelled or
   rejected before it was confirmed — the store pays per order, and it can pay
-  the fee now (a free order left, or a balance of at least one fee).
+  the fee now (a free order left, or a balance of at least one fee);
+- (d) its fee was charged when it was placed (before the switch,
+  `order_fee` / `order_fee_recharge` on `wallet_ledger_entries`) and not given
+  back since (`order_fee_reversal`): read from the ledger when asked, nothing
+  written for it.
 
 Otherwise it is **locked**. A funnel add-on placed as its own order (`source`
 `upsell` with `linked_from_order_id`) follows the order it was added to.
@@ -61,7 +65,12 @@ a shopper is never refused for the balance).
   `order_confirm_fee:<order>`; `wallet_ledger_entries_confirm_fee_once` is a
   unique index on `(order_id, entry_type)` for the type.
 - An order that paid a fee when it was placed (before the switch) pays nothing
-  more when confirmed.
+  more when confirmed, and shows while pending (rule (d)).
+- A funnel add-on placed as its own order pays no fee once the order it was
+  added to is settled (`contact_lock = 'unlocked'`, or confirmed before the
+  column existed). While that order is still pending — visible for now by
+  rule (c) only — the add-on pays its own fee like any order: confirming the
+  add-on alone never opens the shared customer for good.
 - Never given back: an order cancelled, rejected or returned after its
   confirmation keeps its fee (`walletService.reverseOrderFee` skips it). A fee
   taken at placing for an order never confirmed is still given back, as
@@ -84,11 +93,20 @@ Where an order is confirmed, all through the two setters of
 
 A `due` order is settled (its fee taken, `contact_lock` → `unlocked`) right
 after the payment commits, after any credit to the balance (top-up, gift,
-correction, fee given back, free orders granted), and from the dashboard
+correction, fee given back, free orders granted), when the merchant moves to
+pay per order (`choosePayPerOrder`, a plan switch applied at once:
+`walletService.startPayPerOrder`), and from the dashboard
 (`POST /orders/locked/settle`, e.g. after a fallback to pay per order). No
 scheduled job takes it: none moves the balance's money
-(`tests/integration/walletNoExpiry.test.js`). A `due` order cancelled since is
-left alone.
+(`tests/integration/walletNoExpiry.test.js`), so the automatic fallback to pay
+per order and a scheduled switch leave it for the next top-up or the
+dashboard. A `due` order cancelled since is left alone.
+
+A renewal — a subscription charge paid (`subscriptionChargeService.settlePaid`,
+whatever paid it) or the console's activate / extend / plan change
+(`manualSubscriptionService`) — marks the store's `due` orders `unlocked`
+once it commits, without a fee, when the store is entitled again; otherwise
+they would lock again with the next lapse. It moves no money.
 
 ## Every path, and what it does with a locked order
 
@@ -209,7 +227,9 @@ Not tried at all:
   not. `order.created`'s event id is per order: never queued twice for an
   endpoint. The other order topics raised while it was locked (confirmed,
   cancelled, paid…) are not replayed; the status change carries where it
-  stands now.
+  stands now. An order that locks between the scanner's lock check and its
+  read of the order (its store's last fee spent meanwhile) is held the same
+  way, its snapshot not moved on.
 
 Unchanged on purpose (they do not show the details to the merchant):
 
@@ -229,3 +249,30 @@ Unchanged on purpose (they do not show the details to the merchant):
 `GET /workspaces/:id/access` carries `ordersLock` and `storefrontClosed`;
 `GET /orders/locked-summary` the count and worth of the locked open orders
 (and how many are `due`); `POST /orders/locked/settle` takes the fees due.
+
+## Before turning it on
+
+Do not set `ORDERS_LOCK_ENABLED=true` in production before merchants have a
+way to pay Zimos that works for them (online billing, `ONLINE_BILLING_ENABLED`,
+or the manual transfer and its review in the console), and it has been
+checked. The lock does not read `BILLING_RESTRICTIONS` (decided 2026-10-25):
+production runs `warn` by default, and the moment the switch is on every store
+more than a day past its trial or period with no recorded payment has its new
+and pending orders locked, cannot confirm (402), and stops its webhooks and
+customer messages for them. Without a way to pay, such a store cannot open
+them again.
+
+## Turning it off again
+
+Off after a time on, nothing is charged for what happened while it was on:
+
+- orders placed while it was on paid no fee when placed (it moved to
+  confirmation), and one confirmed after it is off goes through
+  `settleOnConfirmation`'s "switch off" answer (`unlocked`, no fee);
+- `due` orders stay `due` in the database with no fee taken; they show,
+  since nothing is locked while it is off;
+- `contact_lock`, the `order_confirm_fee` entries and `webhook_order_holds`
+  stay; the holds are released on the next webhook pass (nothing is locked).
+
+Turned on again later, those orders read by the rule as they stand: a `due`
+one locks again until its fee is paid.

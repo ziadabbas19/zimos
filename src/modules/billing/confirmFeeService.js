@@ -40,8 +40,10 @@ const orderLock = require('../orders/orderLock');
  * Free orders go first (cash 0, free_orders_delta -1); the cash fee is taken
  * only when the balance holds all of it: it never goes below zero.
  *
- * A funnel add-on placed as its own order pays no fee (Q14): it follows the
- * order it was added to.
+ * A funnel add-on placed as its own order pays no fee (Q14) once the order it
+ * was added to is settled (its contact_lock 'unlocked', or confirmed before
+ * the column existed); while that order is still pending it pays its own,
+ * like any order.
  */
 
 const FEE_TYPE = 'order_confirm_fee';
@@ -92,16 +94,15 @@ async function settleOnConfirmation(order, { strict, actorUserId = null } = {}, 
   if (orderLock.isOpenContext(ctx)) return 'unlocked';
 
   if (orderLock.isFollowOn(order)) {
-    // No fee of its own: open exactly when the order it follows is.
+    // Free only when the order it follows is settled for good: its contact_lock 'unlocked', or
+    // confirmed before the column existed. A pending original that merely shows now (rule (c))
+    // would open this one for ever without a fee; it pays its own, as any order does (Ziad, 2026-10-25).
     const parent = await db.Order.findOne({
       where: { id: order.linkedFromOrderId, workspaceId: order.workspaceId },
       attributes: orderLock.ORDER_ATTRIBUTES,
       transaction,
     });
-    const locked = parent ? (await orderLock.lockedIds(ctx, [parent], { transaction })).has(parent.id) : true;
-    if (!locked) return 'unlocked';
-    if (strict) throw orderLock.lockedError(ctx);
-    return 'due';
+    if (parent && (parent.contactLock === 'unlocked' || (parent.contactLock == null && orderLock.reachedConfirmation(parent)))) return 'unlocked';
   }
 
   if (ctx.mode === 'pay_per_order') {
@@ -143,8 +144,10 @@ async function markOnPayment(order, transaction) {
  * scheduled job runs it: none moves the balance's money
  * (walletNoExpiry.test.js). Resolves { settled, left }.
  */
-async function settleDue(workspaceId, { orderIds = null, limit = 200 } = {}) {
+async function settleDue(workspaceId, { orderIds = null, limit = 200, takeFees = true } = {}) {
   if (!orderLock.enabled()) return { settled: 0, left: 0 };
+  // takeFees false (a renewal): only a store entitled now, whose due orders open without a fee.
+  if (!takeFees && !orderLock.isOpenContext(await orderLock.contextFor(workspaceId))) return { settled: 0, left: 0 };
   // A due order cancelled since (refunded) is left as it is: no fee for it.
   const rows = await db.sequelize.query(
     `SELECT id FROM orders
@@ -180,4 +183,19 @@ function settleDueAfterCommit(transaction, workspaceId) {
   );
 }
 
-module.exports = { FEE_TYPE, settleOnConfirmation, markOnPayment, settleDue, settleDueAfterCommit };
+/**
+ * After a renewal (a charge paid, the console's activate / extend / plan
+ * change): once the caller's transaction commits, a store entitled again has
+ * its due orders marked unlocked, no fee taken — they would otherwise lock
+ * again with the next lapse. It moves no money, so a billing sweep that
+ * settles a payment may run it; a store still on pay per order keeps them
+ * for its next top-up or the dashboard's settle. Never throws.
+ */
+function releaseDueAfterCommit(transaction, workspaceId) {
+  if (!orderLock.enabled() || !transaction) return;
+  transaction.afterCommit(() =>
+    settleDue(workspaceId, { takeFees: false }).catch((err) => logger.error(`[confirm-fee] release for ${workspaceId} failed: ${err.message}`))
+  );
+}
+
+module.exports = { FEE_TYPE, settleOnConfirmation, markOnPayment, settleDue, settleDueAfterCommit, releaseDueAfterCommit };

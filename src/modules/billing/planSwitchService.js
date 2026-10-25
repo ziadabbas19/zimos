@@ -371,10 +371,10 @@ async function preview(workspaceId, { planId, billingCycle, timing } = {}) {
 // ------------------------------------------------------------------ start
 
 /** The store moves to `plan` on `cycle` now (`free`: an open-ended active period, as a free plan is activated). */
-async function applyTo(subscription, plan, cycle, { free, payPerOrder = false }, transaction, now = new Date()) {
+async function applyTo(subscription, plan, cycle, { free, payPerOrder = false, settleDue = true }, transaction, now = new Date()) {
   // Pay per order: as when a trial chooses it (active, no period to pay; the balance and its rules as they are).
   if (payPerOrder) {
-    await wallet().startPayPerOrder(subscription, plan, { now }, transaction);
+    await wallet().startPayPerOrder(subscription, plan, { now, settleDue }, transaction);
     return;
   }
   const patch = { planId: plan.id, billingCycle: cycle };
@@ -812,7 +812,8 @@ async function applyDue({ now = new Date(), limit = 200 } = {}) {
         // price, unless the period after it is already paid at that price.
         const renews = Boolean(sw.quote && sw.quote.reason === 'upgrade') && !(await billedOnSchedule(sw, transaction));
         const before = { planId: subscription.planId, billingCycle: subscription.billingCycle, status: subscription.status, currentPeriodEnd: subscription.currentPeriodEnd };
-        await applyTo(subscription, target, sw.toBillingCycle, { free: !toPayPerOrder && planPrice(target, sw.toBillingCycle) === 0, payPerOrder: toPayPerOrder }, transaction, now);
+        // A scheduled job: the due orders' fees wait for the merchant (no scheduled job moves the balance's money).
+        await applyTo(subscription, target, sw.toBillingCycle, { free: !toPayPerOrder && planPrice(target, sw.toBillingCycle) === 0, payPerOrder: toPayPerOrder, settleDue: false }, transaction, now);
         await settlement.markApplied(sw, transaction);
         await settlement.audit(
           sw,
