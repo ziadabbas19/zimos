@@ -759,7 +759,12 @@ const env = {
   // from the account's memberships and console permissions, messages carrying
   // ids only. Under NODE_ENV=test it starts off; a test flips it on this object.
   //   maxConnectionsPerUser  open sockets and handshakes in progress one account
-  //                          may hold on one server
+  //                          may hold on one server. It does not size the
+  //                          database's share: whatever it is, at most 3
+  //                          handshakes of a process ask the database at once
+  //                          (realtimeServer.js HANDSHAKE_CONCURRENCY, a few of
+  //                          DB_POOL_MAX's connections), and an account begins
+  //                          at most 20 handshakes a minute on a server.
   //   handshakesPerMinute    connection attempts one IP may make a minute, counted
   //                          in each API process's memory: with N processes an IP
   //                          gets N times this. A limit against one noisy client,
