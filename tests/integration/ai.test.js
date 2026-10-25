@@ -67,7 +67,8 @@ async function connectedWithBot() {
 function customerWrites(workspaceId, id, text) {
   const from = '201055551234';
   const raw = JSON.stringify({
-    entry: [{ changes: [{ value: { contacts: [{ wa_id: from, profile: { name: 'Mona' } }], messages: [{ from, id, timestamp: String(Math.floor(Date.now() / 1000)), type: 'text', text: { body: text } }] } }] }],
+    // metadata: the receiving number, which must be the store's connected one (whatsappService.handleWebhook).
+    entry: [{ changes: [{ value: { metadata: { phone_number_id: PHONE_ID }, contacts: [{ wa_id: from, profile: { name: 'Mona' } }], messages: [{ from, id, timestamp: String(Math.floor(Date.now() / 1000)), type: 'text', text: { body: text } }] } }] }],
   });
   const sig = crypto.createHmac('sha256', APP_SECRET).update(raw).digest('hex');
   return request(app).post(`/api/v1/webhooks/whatsapp/${workspaceId}`).set('Content-Type', 'application/json').set('X-Hub-Signature-256', `sha256=${sig}`).send(raw);

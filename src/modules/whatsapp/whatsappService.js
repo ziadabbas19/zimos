@@ -6,6 +6,7 @@ const db = require('../../db/models');
 const inboxEvents = require('./inboxEvents');
 const { AppError, NotFoundError } = require('../../core/errors/AppError');
 const { normalizePhone } = require('../../core/utils/phone');
+const logger = require('../../core/utils/logger');
 const secretBox = require('../../core/utils/secretBox');
 const { recordAudit } = require('../audit/auditService');
 const cloud = require('./whatsappCloud');
@@ -198,9 +199,13 @@ async function setConversationStatus(workspaceId, conversationId, status) {
 // Webhook (Meta → us)
 // ---------------------------------------------------------------------------
 
+// Compared as digests, so the time taken says nothing about how much of the token matched.
+const sha256 = (value) => crypto.createHash('sha256').update(String(value)).digest();
+const sameToken = (given, expected) => Boolean(given && expected) && crypto.timingSafeEqual(sha256(given), sha256(expected));
+
 async function verifyWebhookSubscription(workspaceId, { mode, token, challenge }) {
   const integration = await getIntegration(workspaceId);
-  if (!integration || mode !== 'subscribe' || !token || token !== (integration.config || {}).verifyToken) return null;
+  if (!integration || mode !== 'subscribe' || typeof token !== 'string' || !sameToken(token, (integration.config || {}).verifyToken)) return null;
   return challenge;
 }
 
@@ -220,13 +225,27 @@ async function verifyWebhookSignature(workspaceId, rawBody, header) {
 const STATUS_RANK = { sent: 1, delivered: 2, read: 3, failed: 4 };
 
 async function handleWebhook(workspaceId, payload) {
-  const result = { messages: 0, statuses: 0 };
+  const result = { messages: 0, statuses: 0, ignored: 0 };
+  const integration = await getIntegration(workspaceId);
+  const ownNumber = integration && integration.config ? String(integration.config.phoneNumberId || '') : '';
   for (const entry of (payload && payload.entry) || []) {
     for (const change of entry.changes || []) {
       const value = change.value || {};
       // A template approved, rejected or paused in Meta (whatsappTemplates.js).
       if (change.field === 'message_template_status_update') {
         await require('./whatsappTemplates').onStatusUpdate(workspaceId, value);
+        continue;
+      }
+      // Meta sends every number of an app to the same callback URL: messages and statuses
+      // count here only for the number this store connected. Another number's (a second
+      // store on the same app) are logged and dropped, and Meta still gets its 200.
+      const phoneNumberId = value.metadata && value.metadata.phone_number_id ? String(value.metadata.phone_number_id) : '';
+      if (!ownNumber || phoneNumberId !== ownNumber) {
+        const count = (value.messages || []).length + (value.statuses || []).length;
+        if (count > 0) {
+          logger.warn(`[whatsapp.webhook] ${workspaceId}: ignored ${count} message(s)/status(es) for phone number id "${phoneNumberId || 'none'}", not the store's connected number`);
+        }
+        result.ignored += count;
         continue;
       }
       const names = Object.fromEntries((value.contacts || []).map((c) => [c.wa_id, c.profile && c.profile.name]));
