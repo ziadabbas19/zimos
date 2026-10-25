@@ -128,6 +128,19 @@ Merchant answers (hidden, `contactLocked: true` and `lockReason`):
 - the public API (`/api/v1/public`): `GET /orders`, `/orders/:id`,
   `/by-number`, the confirmation / cancel / COD-collected answers, with
   `contactLocked: true`;
+- the accepted-orders feed `GET /public/orders/accepted` (it reads the orders
+  list): a locked order — paid online, its fee due — is listed with its
+  customer's details hidden and `contactLocked: true`; its ETag changes when
+  the order opens, even with nothing written (a renewal);
+- the webhook delivery log (`GET /webhooks/deliveries`,
+  `GET /webhooks/:id/deliveries`, and the rows Send test / Redeliver / Resend
+  answer): a delivery about a locked order, a hidden customer, or a lost
+  checkout while those are hidden shows its payload's customer details as
+  `••••` and `contactLocked: true`, for every viewer
+  (`webhooks/deliveryLock.js`);
+- the kitchen ticket printed from the order page: a locked order's ticket
+  leaves the customer's name and the note off (it already carries no phone,
+  address or email);
 - customers `GET /customers`, `GET /customers/:id` (a customer is hidden when
   every order they placed is locked; a lead with no order is not);
   `PATCH /customers/:id`, the address edits and the blacklist switch
@@ -202,8 +215,9 @@ nothing sent:
   the blocklist); cancelling alone still works;
 - lost orders: reveal the phone, the WhatsApp message, convert to an order;
 - sending a stored webhook delivery again
-  (`POST /webhooks/deliveries/:id/resend`) when the order, customer or lost
-  checkout it is about is locked now.
+  (`POST /webhooks/deliveries/:id/resend`, and Redeliver
+  `POST /webhooks/:id/deliveries/:deliveryId/redeliver`) when the order,
+  customer or lost checkout it is about is locked now.
 
 Refused with 422 `VALIDATION_ERROR`, whatever the lock says: a dashboard write
 whose name, phone, e-mail, address, notes or shipment draft is `••••` (spaces
@@ -223,7 +237,10 @@ Not tried at all:
 - outgoing webhooks: no delivery is queued for a locked order (domain events,
   the order change scanner, "resend to webhook", which names it under
   `locked`); `customer.*` for a hidden customer and `checkout.*` while new
-  orders would be locked are not sent.
+  orders would be locked are not sent. A delivery stored while its subject
+  was visible is not sent either once it is locked: a retry that comes due
+  stops (`failed`, unscheduled, `lastError` saying so) in
+  `webhookDispatcher.attemptDelivery`, before anything is signed.
 - the store's e-mails to the customer (`notifications/orderEmailService`):
   none for a locked order — order confirmation, shipped, cancelled, refunded,
   and the digital delivery of an order not paid online — nor the
@@ -241,7 +258,9 @@ Not tried at all:
   not. `order.created`'s event id is per order: never queued twice for an
   endpoint. The other order topics raised while it was locked (confirmed,
   cancelled, paid…) are not replayed; the status change carries where it
-  stands now. An order that locks between the scanner's lock check and its
+  stands now. One exception: an order accepted while it was locked (paid
+  online, its fee due) gets its `order.accepted` when it opens, once — its
+  event id is per order (`webhookFanout.acceptedOnOpen`). An order that locks between the scanner's lock check and its
   read of the order (its store's last fee spent meanwhile) is held the same
   way, its snapshot not moved on.
 
@@ -249,6 +268,10 @@ Unchanged on purpose (they do not show the details to the merchant):
 
 - the shopper's own order (checkout answer, tracking, account, recovery link);
 - the payment gateways (the shopper is paying);
+- the accepted-orders feed's receipts (`POST /public/orders/ack`, one or many)
+  and the kitchen status (`PUT /public/orders/:id/pos-status`): they carry no
+  customer detail and work on a locked order — the kitchen can make a paid
+  order whose customer is hidden;
 - a gift card's own e-mail when it is issued for a paid order (the shopper
   paid for it);
 - the ad platforms' conversion APIs (hashed details);

@@ -249,6 +249,12 @@ it existed: 404, and 422 for `GET /orders/accepted` (read as
   otherwise). It is a note: "ready" does not ship and "completed" does not
   deliver — those stay the shipment's and the courier's. It changes nothing
   of the order itself.
+- A **locked** order (the store's subscription lapsed, or its balance cannot
+  pay the fee — paid online, its fee due) is listed with its customer's
+  details as `••••` and `"contactLocked": true`, as in `GET /orders`; the
+  products, prices and totals are whole. When it opens, read it again with
+  `GET /orders/{orderId}`; the feed's ETag changes then too. Receipts and the
+  kitchen status work on it and carry no customer detail.
 - An order has **one** kitchen status, shared by all the store's keys: a
   till and a kitchen screen with two keys write the same status, and the
   last write wins. Every key reads it back as `pos` on the order. (Receipts
