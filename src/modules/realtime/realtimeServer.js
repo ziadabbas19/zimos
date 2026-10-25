@@ -23,7 +23,9 @@ require('./control');
  * Who gets in, and into which rooms:
  *  - Before the upgrade (allowRequest): a browser's Origin must be one of
  *    CORS_ORIGINS, and one IP may try REALTIME_HANDSHAKES_PER_MINUTE times a
- *    minute on this server.
+ *    minute on this server. Counted in this process's memory, so with N API
+ *    processes an IP gets N times as many; a limit against one noisy client,
+ *    not against many addresses.
  *  - The handshake: the access token from the client's `auth.token` (never
  *    the URL), checked as core/middleware/authenticate does — signature and
  *    expiry, a session that still stands (sessionGate), an active account.
@@ -253,8 +255,21 @@ function createRealtimeServer(httpServer, { app, connections }) {
 
   const localSockets = () => [...io.of('/').sockets.values()];
 
+  // A check still running when the next is due lets it pass: they never stack up.
+  const running = { sessions: false, rooms: false };
+
   /** Ends the connections whose token has expired or whose session has ended; `fresh` reads every session from the database. */
   async function checkSessions({ fresh = false } = {}) {
+    if (running.sessions) return;
+    running.sessions = true;
+    try {
+      await checkEachSession(fresh);
+    } finally {
+      running.sessions = false;
+    }
+  }
+
+  async function checkEachSession(fresh) {
     for (const socket of localSockets()) {
       if (socket.data.expiresAt && socket.data.expiresAt <= Date.now()) {
         socket.disconnect(true);
@@ -271,6 +286,16 @@ function createRealtimeServer(httpServer, { app, connections }) {
 
   /** Works every connection's rooms out again; an account that may no longer connect is let go. */
   async function syncRooms() {
+    if (running.rooms) return;
+    running.rooms = true;
+    try {
+      await syncEachRoom();
+    } finally {
+      running.rooms = false;
+    }
+  }
+
+  async function syncEachRoom() {
     const sockets = localSockets();
     if (sockets.length === 0) return;
     let byUser;

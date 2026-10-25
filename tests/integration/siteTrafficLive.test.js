@@ -143,7 +143,10 @@ describe('SITE_VISITS_RETENTION_DAYS', () => {
     expect(acq.n).toBe(1);
   });
 
-  it('runs from a schedule of its own', () => {
+  it('runs from a schedule of its own, registered only while the setting is set', () => {
+    env.siteVisitsRetentionDays = 0;
+    expect(siteVisitsTasks.schedules).toEqual([]);
+    env.siteVisitsRetentionDays = 180;
     expect(siteVisitsTasks.schedules.map((s) => s.name)).toEqual(['site_analytics.visits_retention']);
   });
 });

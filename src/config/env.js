@@ -758,8 +758,13 @@ const env = {
   // would need sticky sessions), the session checked at the handshake, rooms
   // from the account's memberships and console permissions, messages carrying
   // ids only. Under NODE_ENV=test it starts off; a test flips it on this object.
-  //   maxConnectionsPerUser  open sockets one account may hold on one server
-  //   handshakesPerMinute    connection attempts one IP may make a minute, per server
+  //   maxConnectionsPerUser  open sockets and handshakes in progress one account
+  //                          may hold on one server
+  //   handshakesPerMinute    connection attempts one IP may make a minute, counted
+  //                          in each API process's memory: with N processes an IP
+  //                          gets N times this. A limit against one noisy client,
+  //                          not a defence against many addresses (an IPv6 block
+  //                          holds countless): Cloudflare in front is that.
   realtime: {
     enabled: process.env.NODE_ENV !== 'test' && process.env.REALTIME_ENABLED === 'true',
     maxConnectionsPerUser: positiveInt('REALTIME_MAX_CONNECTIONS_PER_USER', 10),
