@@ -151,6 +151,9 @@ async function sendChannel(channel, provider, { recipient, template, data, works
   let messageId = null;
   try {
     if (provider === 'console') {
+      // WhatsApp's console reaches nobody: in production that is a failed send, so every
+      // caller falls back to SMS (or, for sign-in codes, email) — PLATFORM_WHATSAPP.md.
+      if (channel === 'whatsapp' && env.isProduction) throw new Error('WHATSAPP_PROVIDER is console: nothing is sent in production');
       messageId = consoleMessageId();
       // Nothing leaves the server: logged, as before.
       logger.info(`[notification:${channel}] ${template} -> ${recipient}`, { data: loggable(data) });
