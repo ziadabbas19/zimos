@@ -77,12 +77,15 @@ const codCollected = asyncHandler(async (req, res) =>
 // key reads one order (GET /orders/:id) with the full number, and names,
 // emails and addresses are never masked. What a key may read is decided by
 // its scopes and its creator's role.
-// An ETag of what the till would take (the orders, their versions, the
-// cursor): a till that sends it back as If-None-Match while nothing changed
-// gets 304 and no body. `since` moves with the clock and is left out of it.
+// An ETag of what the till would take (the orders, their versions, whether
+// each is locked, the cursor): a till that sends it back as If-None-Match
+// while nothing changed gets 304 and no body. A locked order (orders/orderLock)
+// comes with its customer's details hidden and `contactLocked: true`, as in
+// GET /orders; one that opens without being written (the store renewed) gets
+// a new ETag. `since` moves with the clock and is left out of it.
 const accepted = asyncHandler(async (req, res) => {
   const body = forViewer(req, await feed.listUnacked(wid(req), req.apiKey, req.query));
-  const version = JSON.stringify([body.orders.map((o) => [o.id, o.updatedAt, o.pos ? o.pos.updatedAt : null]), body.nextCursor]);
+  const version = JSON.stringify([body.orders.map((o) => [o.id, o.updatedAt, o.pos ? o.pos.updatedAt : null, o.contactLocked === true]), body.nextCursor]);
   res.set('ETag', `W/"${crypto.createHash('sha256').update(version).digest('base64url').slice(0, 27)}"`);
   res.set('Cache-Control', 'no-cache');
   res.json(body);
