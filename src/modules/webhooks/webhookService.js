@@ -11,6 +11,7 @@ const { EVENT_TYPES, TEST_EVENT, WILDCARD, EXPLICIT_ONLY } = require('./webhookE
 const { attemptDelivery } = require('./webhookDispatcher');
 const { normaliseFilter } = require('./webhookFilter');
 const customerData = require('./customerData');
+const deliveryLock = require('./deliveryLock');
 
 /**
  * A workspace's webhook endpoints, as the dashboard manages them.
@@ -59,7 +60,7 @@ async function present(workspaceId, endpoint) {
  * customers.reveal_sensitive; without it the payload's names, phones, emails
  * and addresses are masked, whatever the endpoint itself was sent.
  */
-function serializeDelivery(delivery, { reveal = false } = {}) {
+function serializeDelivery(delivery, { reveal = false, locked = false } = {}) {
   return {
     id: delivery.id,
     eventId: delivery.eventId,
@@ -69,7 +70,9 @@ function serializeDelivery(delivery, { reveal = false } = {}) {
     nextAttemptAt: delivery.nextAttemptAt,
     lastResponseStatus: delivery.lastResponseStatus,
     lastError: delivery.lastError,
-    payload: reveal ? delivery.payload : customerData.maskCustomerData(delivery.payload),
+    // "••••" for anyone while what it is about is locked (deliveryLock.js); else masked without reveal.
+    payload: locked ? deliveryLock.hide(delivery.payload) : reveal ? delivery.payload : customerData.maskCustomerData(delivery.payload),
+    ...(locked ? { contactLocked: true } : {}),
     createdAt: delivery.createdAt,
     updatedAt: delivery.updatedAt,
   };
@@ -276,13 +279,16 @@ async function listDeliveries(workspaceId, endpointId, { limit = 50, status } = 
   const where = { workspaceId, endpointId };
   if (status) where.status = status;
   const deliveries = await db.WebhookDelivery.findAll({ where, order: [['createdAt', 'DESC']], limit });
-  return { deliveries: deliveries.map((d) => serializeDelivery(d, { reveal })) };
+  const locked = await deliveryLock.lockedIn(workspaceId, deliveries);
+  return { deliveries: deliveries.map((d) => serializeDelivery(d, { reveal, locked: locked.has(d.id) })) };
 }
 
 /** Sends one delivery again now — after a fix on the receiver's side, or to replay an event. */
 async function redeliver(workspaceId, endpointId, deliveryId, { reveal = false } = {}) {
   const delivery = await db.WebhookDelivery.findOne({ where: { id: deliveryId, endpointId, workspaceId } });
   if (!delivery) throw new NotFoundError('WebhookDelivery');
+  // As Resend: refused (402 ORDER_LOCKED) while what it is about is locked now (deliveryLock.js).
+  await deliveryLock.assertSendable(workspaceId, delivery);
   return serializeDelivery(await attemptDelivery(delivery.id), { reveal });
 }
 

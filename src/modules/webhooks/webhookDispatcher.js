@@ -8,6 +8,7 @@ const { signatureHeader } = require('./webhookSigning');
 const { readSecret } = require('./signingSecretStore');
 const { send } = require('./webhookSender');
 const { revealsByEndpoint, maskCustomerData } = require('./customerData');
+const { lockedIn } = require('./deliveryLock');
 
 /**
  * Sends what is due from webhook_deliveries — the outbox the change detector
@@ -86,6 +87,15 @@ async function attemptDelivery(deliveryId, { now = new Date() } = {}) {
       await delivery.update({ status: 'exhausted', nextAttemptAt: null, lastError: 'Not sent: the order is no longer accepted (cancelled since)' });
       return delivery;
     }
+  }
+
+  // About an order, a customer or a lost checkout locked now (deliveryLock.js,
+  // orders/orderLock): not sent — a retry still due, Redeliver or Resend
+  // alike. The row stops (failed, unscheduled) saying why; when the order
+  // opens, the change scanner sends where it stands and Redeliver works again.
+  if ((await lockedIn(delivery.workspaceId, [delivery])).has(delivery.id)) {
+    await delivery.update({ status: 'failed', nextAttemptAt: null, lastError: 'Not sent: what it is about is locked now (ORDER_LOCKED); Redeliver once it opens' });
+    return delivery;
   }
 
   // A sealed secret this server cannot open (WEBHOOK_SECRETS_KEY missing or
