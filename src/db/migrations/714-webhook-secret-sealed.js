@@ -16,8 +16,8 @@ const { withLockTimeout, constraintExists } = require('../lockTimeout');
  *
  * Nothing is rewritten here: rows keep their secret in clear until
  * scripts/seal-webhook-secrets.js --apply seals them. The CHECK is added NOT
- * VALID and then validated, every step under a lock_timeout with retries
- * (db/lockTimeout.js). Additive and run-twice safe. Down refuses while any
+ * VALID and then validated, every step — the column too — under a
+ * lock_timeout with retries (db/lockTimeout.js). Additive and run-twice safe. Down refuses while any
  * secret is only sealed — dropping the column then would lose it;
  * `node scripts/seal-webhook-secrets.js --unseal --apply` puts them back in
  * clear first.
@@ -29,7 +29,9 @@ module.exports = {
   up: async (queryInterface, Sequelize) => {
     const qi = guarded(queryInterface);
     const { sequelize } = queryInterface;
-    await qi.addColumn('webhook_endpoints', 'signing_secret_sealed', { type: Sequelize.TEXT, allowNull: true });
+    await withLockTimeout(sequelize, (transaction) =>
+      qi.addColumn('webhook_endpoints', 'signing_secret_sealed', { type: Sequelize.TEXT, allowNull: true }, { transaction })
+    );
     await withLockTimeout(sequelize, async (transaction) => {
       await sequelize.query('ALTER TABLE webhook_endpoints ALTER COLUMN signing_secret DROP NOT NULL', { transaction });
       if (!(await constraintExists(sequelize, PRESENT, transaction))) {
@@ -55,6 +57,6 @@ module.exports = {
       await sequelize.query(`ALTER TABLE webhook_endpoints DROP CONSTRAINT IF EXISTS ${PRESENT}`, { transaction });
       await sequelize.query('ALTER TABLE webhook_endpoints ALTER COLUMN signing_secret SET NOT NULL', { transaction });
     });
-    await qi.removeColumn('webhook_endpoints', 'signing_secret_sealed');
+    await withLockTimeout(sequelize, (transaction) => qi.removeColumn('webhook_endpoints', 'signing_secret_sealed', { transaction }));
   },
 };

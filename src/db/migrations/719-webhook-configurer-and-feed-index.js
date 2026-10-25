@@ -2,6 +2,7 @@
 
 const { guarded } = require('../migrationGuards');
 const { createIndexConcurrently, dropIndexConcurrently } = require('../concurrentIndex');
+const { withLockTimeout } = require('../lockTimeout');
 
 const FEED_INDEX = 'orders_workspace_updated_at_idx';
 
@@ -23,15 +24,19 @@ const FEED_INDEX = 'orders_workspace_updated_at_idx';
  * (publicApi/acceptedOrdersFeed.js), and so does GET /orders?updated_since=.
  * Without it each ask walks every order of the store.
  *
- * Run-twice safe and without a transaction (CONCURRENTLY): the column is
- * added once, only nulls are backfilled, a valid index is left alone (an
- * invalid leftover is rebuilt). Down drops the index CONCURRENTLY and the
- * column (deliveries go back to the old rule: in full).
+ * Run-twice safe. The column is added (and dropped) in a short transaction
+ * under a lock_timeout with retries (db/lockTimeout.js); the index without
+ * one (CONCURRENTLY). The column is added once, only nulls are backfilled, a
+ * valid index is left alone (an invalid leftover is rebuilt). Down drops the
+ * index CONCURRENTLY and the column (deliveries go back to the old rule: in
+ * full).
  */
 module.exports = {
   up: async (queryInterface, Sequelize) => {
     const qi = guarded(queryInterface);
-    await qi.addColumn('webhook_endpoints', 'configured_by_user_id', { type: Sequelize.UUID, allowNull: true });
+    await withLockTimeout(queryInterface.sequelize, (transaction) =>
+      qi.addColumn('webhook_endpoints', 'configured_by_user_id', { type: Sequelize.UUID, allowNull: true }, { transaction })
+    );
     await queryInterface.sequelize.query(`
       UPDATE webhook_endpoints e
          SET configured_by_user_id = a.actor_user_id
@@ -53,6 +58,6 @@ module.exports = {
   down: async (queryInterface) => {
     const qi = guarded(queryInterface);
     await dropIndexConcurrently(queryInterface, FEED_INDEX);
-    await qi.removeColumn('webhook_endpoints', 'configured_by_user_id');
+    await withLockTimeout(queryInterface.sequelize, (transaction) => qi.removeColumn('webhook_endpoints', 'configured_by_user_id', { transaction }));
   },
 };

@@ -46,12 +46,12 @@ function recorder({ columns = new Set(), constraints = new Set(), indexes = new 
   };
   const queryInterface = {
     sequelize,
-    addColumn: async (table, column) => {
-      statements.push({ sql: `ADD ${table}.${column}`, tx: null });
+    addColumn: async (table, column, definition, options = {}) => {
+      statements.push({ sql: `ADD ${table}.${column}`, tx: options.transaction ? options.transaction.id : null });
       columns.add(`${table}.${column}`);
     },
-    removeColumn: async (table, column) => {
-      statements.push({ sql: `REMOVE ${table}.${column}`, tx: null });
+    removeColumn: async (table, column, options = {}) => {
+      statements.push({ sql: `REMOVE ${table}.${column}`, tx: options.transaction ? options.transaction.id : null });
       columns.delete(`${table}.${column}`);
     },
   };
@@ -61,12 +61,12 @@ function recorder({ columns = new Set(), constraints = new Set(), indexes = new 
 
 const Sequelize = { TEXT: 'TEXT', UUID: 'UUID', STRING: (n) => `VARCHAR(${n})` };
 
-/** Every ALTER and CREATE TABLE ran inside a transaction that began with SET LOCAL lock_timeout. */
+/** Every ALTER, CREATE/DROP TABLE and column added or dropped ran inside a transaction that began with SET LOCAL lock_timeout. */
 function underLockTimeout(statements) {
   const firstInTx = new Map();
   for (const s of statements) if (s.tx !== null && !firstInTx.has(s.tx)) firstInTx.set(s.tx, s.sql);
   return statements
-    .filter((s) => /^(ALTER TABLE|CREATE TABLE|DROP TABLE)/.test(s.sql))
+    .filter((s) => /^(ALTER TABLE|CREATE TABLE|DROP TABLE|ADD |REMOVE )/.test(s.sql))
     .every((s) => s.tx !== null && /^SET LOCAL lock_timeout = '5s'$/.test(firstInTx.get(s.tx)));
 }
 
@@ -101,11 +101,12 @@ describe('migration 714 (sealed webhook secrets)', () => {
     expect(sql.indexOf('ALTER TABLE webhook_endpoints DROP CONSTRAINT IF EXISTS webhook_endpoints_signing_secret_present')).toBeLessThan(
       sql.indexOf('ALTER TABLE webhook_endpoints ALTER COLUMN signing_secret SET NOT NULL')
     );
+    expect(underLockTimeout(r.statements)).toBe(true);
   });
 });
 
 describe('migrations 715-717', () => {
-  it('715 adds a nullable column once and removes it once', async () => {
+  it('715 adds a nullable column once and removes it once, each under a lock_timeout', async () => {
     const r = recorder();
     await m715.up(r.queryInterface, Sequelize);
     await m715.up(r.queryInterface, Sequelize);
@@ -113,6 +114,7 @@ describe('migrations 715-717', () => {
     await m715.down(r.queryInterface);
     expect(r.sql().filter((s) => s.startsWith('ADD '))).toEqual(['ADD product_option_choices.external_code']);
     expect(r.sql().filter((s) => s.startsWith('REMOVE '))).toEqual(['REMOVE product_option_choices.external_code']);
+    expect(underLockTimeout(r.statements)).toBe(true);
   });
 
   it('716 and 717 create bare tables, then each foreign key NOT VALID and validated, all under a lock_timeout; never ALTER orders', async () => {
@@ -169,7 +171,7 @@ describe('migrations 715-717', () => {
 });
 
 describe('migration 719 (webhook configurer, feed index)', () => {
-  it('adds the column once, backfills only nulls from the activity log, builds the index CONCURRENTLY once; down undoes both', async () => {
+  it('adds the column once under a lock_timeout, backfills only nulls from the activity log, builds the index CONCURRENTLY once; down undoes both', async () => {
     const r = recorder();
     await m719.up(r.queryInterface, Sequelize);
     await m719.up(r.queryInterface, Sequelize);
@@ -184,5 +186,6 @@ describe('migration 719 (webhook configurer, feed index)', () => {
     await m719.down(r.queryInterface);
     expect(r.sql()).toContain('DROP INDEX CONCURRENTLY IF EXISTS orders_workspace_updated_at_idx;');
     expect(r.sql()).toContain('REMOVE webhook_endpoints.configured_by_user_id');
+    expect(underLockTimeout(r.statements)).toBe(true);
   });
 });
