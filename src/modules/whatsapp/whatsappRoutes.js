@@ -45,6 +45,7 @@ staff.put(
       phoneNumberId: Joi.string().pattern(/^\d{5,30}$/).required(),
       accessToken: Joi.string().min(20).max(1000).required(),
       businessAccountId: Joi.string().pattern(/^\d{5,30}$/).allow('', null).optional(),
+      // Required unless one is already saved (whatsappService.connect: 422 WHATSAPP_APP_SECRET_REQUIRED).
       appSecret: Joi.string().min(16).max(200).allow('', null).optional(),
     }),
   }),

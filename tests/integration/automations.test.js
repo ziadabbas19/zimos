@@ -57,7 +57,7 @@ describe('automations', () => {
     await request(app)
       .put(`/api/v1/workspaces/${workspace.id}/whatsapp/integration`)
       .set(bearer(auth.accessToken))
-      .send({ phoneNumberId: '5566778899', accessToken: TOKEN })
+      .send({ phoneNumberId: '5566778899', accessToken: TOKEN, appSecret: 'meta-app-secret-for-tests' })
       .expect(200);
 
     const created = await request(app)

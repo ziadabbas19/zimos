@@ -84,7 +84,7 @@ describe('WhatsApp integration', () => {
     const res = await request(app)
       .put(`/api/v1/workspaces/${workspace.id}/whatsapp/integration`)
       .set(bearer(auth.accessToken))
-      .send({ phoneNumberId: PHONE_ID, accessToken: 'EAAG-wrong-token-000000000000' });
+      .send({ phoneNumberId: PHONE_ID, accessToken: 'EAAG-wrong-token-000000000000', appSecret: APP_SECRET });
     expect(res.status).toBe(422);
     expect(res.body.error.code).toBe('WHATSAPP_AUTH_FAILED');
   });
@@ -204,6 +204,65 @@ describe('WhatsApp webhook: only the connected number counts', () => {
     await signed(workspace.id, statuses([{ id: 'wamid.1', status: 'delivered' }]));
     await out.reload();
     expect(out.status).toBe('delivered');
+  });
+});
+
+// S6: without the App Secret every webhook would be refused, so a connection always has one.
+// S7: the secrets are sealed before the token is sent to Meta.
+describe('WhatsApp connect: the App Secret and the order of the steps', () => {
+  const put = (ctx, body) => request(app).put(`/api/v1/workspaces/${ctx.workspace.id}/whatsapp/integration`).set(bearer(ctx.auth.accessToken)).send(body);
+
+  it('refuses a first connection without the App Secret, before asking Meta', async () => {
+    const ctx = await setupWorkspaceWithProduct();
+    for (const appSecret of [undefined, '', null]) {
+      const res = await put(ctx, { phoneNumberId: PHONE_ID, accessToken: TOKEN, ...(appSecret === undefined ? {} : { appSecret }) });
+      expect(res.status).toBe(422);
+      expect(res.body.error.code).toBe('WHATSAPP_APP_SECRET_REQUIRED');
+    }
+    expect(global.fetch).not.toHaveBeenCalled();
+    expect(await db.WorkspaceIntegration.count({ where: { workspaceId: ctx.workspace.id } })).toBe(0);
+  });
+
+  it('keeps the saved App Secret when a reconnect leaves it empty', async () => {
+    const ctx = await connected();
+    const res = await put(ctx, { phoneNumberId: PHONE_ID, accessToken: TOKEN });
+    expect(res.status).toBe(200);
+    expect(res.body.integration.appSecretSet).toBe(true);
+    // Still signed with the first one.
+    const hook = await signed(ctx.workspace.id, inbound('201055551234', 'wamid.keep', 'hi'));
+    expect(hook.status).toBe(200);
+  });
+
+  it('asks a connection saved without one (before this rule) for it on its next save', async () => {
+    const ctx = await setupWorkspaceWithProduct();
+    const secretBox = require('../../src/core/utils/secretBox');
+    await db.WorkspaceIntegration.create({
+      workspaceId: ctx.workspace.id,
+      provider: 'whatsapp_cloud',
+      status: 'connected',
+      config: { phoneNumberId: PHONE_ID, verifyToken: 'legacy-verify-token' },
+      secretsSealed: secretBox.seal(JSON.stringify({ accessToken: TOKEN, appSecret: null })),
+    });
+    const refused = await put(ctx, { phoneNumberId: PHONE_ID, accessToken: TOKEN });
+    expect(refused.status).toBe(422);
+    expect(refused.body.error.code).toBe('WHATSAPP_APP_SECRET_REQUIRED');
+    const saved = await put(ctx, { phoneNumberId: PHONE_ID, accessToken: TOKEN, appSecret: APP_SECRET });
+    expect(saved.status).toBe(200);
+    expect(saved.body.integration).toMatchObject({ appSecretSet: true, webhook: { verifyToken: 'legacy-verify-token' } });
+  });
+
+  it('sends nothing to Meta when the secrets cannot be sealed (INTEGRATIONS_ENCRYPTION_KEY missing)', async () => {
+    const ctx = await setupWorkspaceWithProduct();
+    const key = process.env.INTEGRATIONS_ENCRYPTION_KEY;
+    delete process.env.INTEGRATIONS_ENCRYPTION_KEY;
+    try {
+      const res = await put(ctx, { phoneNumberId: PHONE_ID, accessToken: TOKEN, appSecret: APP_SECRET });
+      expect(res.status).toBe(500);
+    } finally {
+      process.env.INTEGRATIONS_ENCRYPTION_KEY = key;
+    }
+    expect(global.fetch).not.toHaveBeenCalled();
+    expect(await db.WorkspaceIntegration.count({ where: { workspaceId: ctx.workspace.id } })).toBe(0);
   });
 });
 

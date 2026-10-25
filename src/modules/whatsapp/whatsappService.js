@@ -46,9 +46,18 @@ function integrationView(integration, apiBase) {
 }
 
 async function connect(workspaceId, { phoneNumberId, accessToken, businessAccountId, appSecret }, req) {
-  const details = await cloud.verifyPhoneNumber(phoneNumberId, accessToken);
   const existing = await getIntegration(workspaceId);
+  // Everything that can fail on our side fails before the token goes to Meta: the
+  // stored secrets are opened and the new ones sealed first (INTEGRATIONS_ENCRYPTION_KEY).
   const previous = existing ? secretsOf(existing) : {};
+  // The App Secret signs every webhook; without it each one is refused (401), so no
+  // reply or confirmation tap would ever arrive. A reconnect may keep the saved one.
+  const secret = appSecret || previous.appSecret || null;
+  if (!secret) {
+    throw new AppError('WHATSAPP_APP_SECRET_REQUIRED', "The App Secret is required: without it Meta's messages can't be checked and none of them can be received", 422);
+  }
+  const secretsSealed = secretBox.seal(JSON.stringify({ accessToken, appSecret: secret }));
+  const details = await cloud.verifyPhoneNumber(phoneNumberId, accessToken);
   const config = {
     phoneNumberId,
     businessAccountId: businessAccountId || null,
@@ -56,7 +65,6 @@ async function connect(workspaceId, { phoneNumberId, accessToken, businessAccoun
     verifiedName: details.verifiedName,
     verifyToken: (existing && existing.config && existing.config.verifyToken) || crypto.randomBytes(18).toString('hex'),
   };
-  const secretsSealed = secretBox.seal(JSON.stringify({ accessToken, appSecret: appSecret || previous.appSecret || null }));
   const fields = { workspaceId, provider: PROVIDER, status: 'connected', config, secretsSealed, lastVerifiedAt: new Date(), lastError: null };
   const integration = existing ? await existing.update(fields) : await db.WorkspaceIntegration.create(fields);
   await recordAudit({ workspaceId, actorUserId: req.user.id, action: 'integration.whatsapp.connect', entityType: 'WorkspaceIntegration', entityId: integration.id, after: { phoneNumberId, displayPhoneNumber: details.displayPhoneNumber }, req });
