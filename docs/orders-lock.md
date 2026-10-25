@@ -215,9 +215,12 @@ Not tried at all:
   orders would be locked are not sent.
 - the store's e-mails to the customer (`notifications/orderEmailService`):
   none for a locked order — order confirmation, shipped, cancelled, refunded,
-  digital delivery — nor the abandoned-cart e-mail while lost checkouts are
-  hidden. They go out with the store's Reply-To, so an answer would hand the
-  merchant the address. Not sent later when the order opens.
+  and the digital delivery of an order not paid online — nor the
+  abandoned-cart e-mail while lost checkouts are hidden. They go out with the
+  store's Reply-To, so an answer would hand the merchant the address. Not sent
+  later when the order opens. The digital delivery of an order paid online
+  (not cash on delivery, `paid` / `partially_paid`) goes even while it is
+  locked: the customer paid for the product.
 - when a locked order opens (a renewal, a top-up, the fees paid from the
   dashboard, a fallback to pay per order…), the change scanner sends it on its
   next pass as a change made now: the scanner kept it in `webhook_order_holds`

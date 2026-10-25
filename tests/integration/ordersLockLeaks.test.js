@@ -146,6 +146,28 @@ describe("the customer's e-mails (H4)", () => {
     expect(sent.length).toBeGreaterThan(0);
     expect(email).toHaveBeenCalled();
   });
+
+  it('the digital delivery of an order paid online goes even while it is locked; the rest stays stopped', async () => {
+    const store = await h.monthlyStore({ lapsed: true });
+    const paidOnline = await h.placed(store, { paymentMethod: 'card' });
+    // As setFinancialState leaves it on a lapsed store: paid, its fee owed, locked.
+    await db.Order.update({ financialState: 'paid', contactLock: 'due' }, { where: { id: paidOnline.id } });
+    const cod = await h.placed(store);
+    expect((await h.getOrder(store, paidOnline.id)).contactLocked).toBe(true);
+    expect((await h.getOrder(store, cod.id)).contactLocked).toBe(true);
+    const email = jest.spyOn(notify, 'email').mockResolvedValue({ status: 'sent' });
+
+    const delivered = await orderEmails.handleEvent(store.wid, 'order.digital_delivered', { orderId: paidOnline.id, notifyCustomer: true });
+    expect(delivered.map((r) => r.key)).toEqual(['digital_delivery']);
+    expect(email).toHaveBeenCalledTimes(1);
+    expect(email.mock.calls[0][0]).toMatchObject({ recipient: CONTACT.email, orderId: paidOnline.id });
+
+    // The same order's other e-mails, and a cash-on-delivery order's delivery, stay stopped.
+    expect(await orderEmails.handleEvent(store.wid, 'order.created', { orderId: paidOnline.id, notifyCustomer: true })).toEqual([]);
+    expect(await orderEmails.handleEvent(store.wid, 'order.shipped', { orderId: paidOnline.id, notifyCustomer: true })).toEqual([]);
+    expect(await orderEmails.handleEvent(store.wid, 'order.digital_delivered', { orderId: cod.id, notifyCustomer: true })).toEqual([]);
+    expect(email).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('the reports and the other lists (M1, M3, M4, M5)', () => {
