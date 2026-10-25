@@ -9,10 +9,7 @@ const { forViewer } = require('../../core/utils/phoneMask');
 // is not edited: the merchant would be writing over details they cannot see.
 const present = async (req, customers) => orderLock.presentCustomers(req.tenant.workspaceId, customers);
 const presentOne = async (req, customer) => (await present(req, [customer]))[0];
-async function assertVisible(req) {
-  const ctx = await orderLock.contextFor(req.tenant.workspaceId);
-  if ((await orderLock.lockedCustomerIds(ctx, req.tenant.workspaceId, [req.params.customerId])).size > 0) throw orderLock.lockedError(ctx);
-}
+const assertVisible = (req) => orderLock.assertCustomerVisible(req.tenant.workspaceId, req.params.customerId);
 
 // Phones in the list are masked for roles without customers.reveal_sensitive.
 const list = asyncHandler(async (req, res) => {
@@ -30,9 +27,11 @@ const update = asyncHandler(async (req, res) => {
   await assertVisible(req);
   res.json({ customer: await service.updateCustomer(req.tenant.workspaceId, req.params.customerId, req.body, req) });
 });
-const blacklist = asyncHandler(async (req, res) =>
-  res.json({ customer: await presentOne(req, await service.setBlacklist(req.tenant.workspaceId, req.params.customerId, req.body, req)) })
-);
+// Blocking writes the phone into the store's blacklist (fraud/blockedEntries), where it would show.
+const blacklist = asyncHandler(async (req, res) => {
+  await assertVisible(req);
+  res.json({ customer: await presentOne(req, await service.setBlacklist(req.tenant.workspaceId, req.params.customerId, req.body, req)) });
+});
 const addAddress = asyncHandler(async (req, res) => {
   await assertVisible(req);
   res.status(201).json({ address: await service.addAddress(req.tenant.workspaceId, req.params.customerId, req.body, req) });

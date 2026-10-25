@@ -235,7 +235,10 @@ async function createContact(workspaceId, data, req) {
 
   const existing = await db.Customer.findOne({ where: { workspaceId, phoneNormalized }, attributes: ['id'] });
   if (existing) {
-    throw new AppError('PHONE_TAKEN', 'A contact with that phone number already exists', 409, { customerId: existing.id });
+    // A contact who comes hidden is not named: the id would tie the typed phone to them (orders/orderLock).
+    const orderLock = require('../orders/orderLock');
+    const hidden = (await orderLock.lockedCustomerIds(await orderLock.contextFor(workspaceId), workspaceId, [existing.id])).size > 0;
+    throw new AppError('PHONE_TAKEN', 'A contact with that phone number already exists', 409, { customerId: hidden ? null : existing.id });
   }
   const customer = await db.Customer.create({
     workspaceId,

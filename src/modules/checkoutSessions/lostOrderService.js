@@ -446,7 +446,8 @@ async function remove(workspaceId, sessionId, req) {
       action: 'checkout_session.deleted',
       entityType: 'CheckoutSession',
       entityId: sessionId,
-      before: { lostReason: session.lostReason, phone: session.phoneNormalized },
+      // Not the phone: the store's activity log would show it whatever the lost order's lock says (orders/orderLock).
+      before: { lostReason: session.lostReason },
       req,
       transaction,
     });

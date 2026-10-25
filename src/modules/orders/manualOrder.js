@@ -97,11 +97,12 @@ async function customerByPhone(workspaceId, phone) {
     alternatePhone: shown(customer.alternatePhone),
     email: shown(customer.email),
     isBlacklisted: customer.isBlacklisted,
-    totalOrders: customer.totalOrders || 0,
-    totalRejectedOrders: customer.totalRejectedOrders || 0,
+    // A hidden customer's history would tie the typed phone to their locked orders: none of it.
+    totalOrders: hidden ? null : customer.totalOrders || 0,
+    totalRejectedOrders: hidden ? null : customer.totalRejectedOrders || 0,
     ...(ctx.enabled ? { contactLocked: hidden } : {}),
     lastAddress: lastOrder ? (lastLocked ? orderLock.maskAddress(lastOrder.shippingAddressSnapshot) : lastOrder.shippingAddressSnapshot) : null,
-    lastOrder: lastOrder ? { id: lastOrder.id, orderNumber: lastOrder.orderNumber, createdAt: lastOrder.createdAt } : null,
+    lastOrder: lastOrder && !hidden ? { id: lastOrder.id, orderNumber: lastOrder.orderNumber, createdAt: lastOrder.createdAt } : null,
   };
 }
 

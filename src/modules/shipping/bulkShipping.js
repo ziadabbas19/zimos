@@ -114,6 +114,11 @@ async function preview(workspaceId, body) {
   const active = new Set(
     (await db.Shipment.findAll({ where: { orderId: ids, status: { [Op.notIn]: FINISHED_STATUSES } }, attributes: ['orderId'] })).map((s) => s.orderId)
   );
+  // A locked order (orders/orderLock) is blocked as its booking would be (402 ORDER_LOCKED), before its address is read.
+  const orderLock = require('../orders/orderLock');
+  const lockCtx = await orderLock.contextFor(workspaceId);
+  const locked = await orderLock.lockedIds(lockCtx, orders);
+  const lockedReason = locked.size > 0 ? { code: 'ORDER_LOCKED', message: orderLock.lockedError(lockCtx).message } : null;
 
   const ready = [];
   const missing = [];
@@ -125,7 +130,7 @@ async function preview(workspaceId, body) {
       continue;
     }
     const base = { orderId: id, orderNumber: order.orderNumber };
-    const reason = blockedReason(order, active.has(id));
+    const reason = locked.has(id) ? lockedReason : blockedReason(order, active.has(id));
     if (reason) {
       blocked.push({ ...base, ...reason });
       continue;

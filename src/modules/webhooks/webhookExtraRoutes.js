@@ -73,6 +73,21 @@ router.get(
   })
 );
 
+/**
+ * A stored payload was written while its subject was visible: sent again
+ * by hand it is refused (402 ORDER_LOCKED) when the order, the customer or
+ * the lost checkout it is about is locked now (orders/orderLock).
+ */
+async function assertSendable(workspaceId, delivery) {
+  const orderLock = require('../orders/orderLock');
+  if (!orderLock.enabled()) return;
+  const data = (delivery.payload && delivery.payload.data) || {};
+  const orderId = (data.order && data.order.id) || data.orderId || null;
+  if (orderId) await orderLock.assertUnlocked(workspaceId, orderId);
+  else if (data.customer && data.customer.id) await orderLock.assertCustomerVisible(workspaceId, data.customer.id);
+  else if (String(delivery.eventType).startsWith('checkout.')) await orderLock.assertPendingOpen(workspaceId);
+}
+
 // POST /webhooks/deliveries/:deliveryId/resend — send this delivery again now.
 router.post(
   '/deliveries/:deliveryId/resend',
@@ -80,6 +95,7 @@ router.post(
   asyncHandler(async (req, res) => {
     const delivery = await db.WebhookDelivery.findOne({ where: { id: req.params.deliveryId, workspaceId: req.tenant.workspaceId } });
     if (!delivery) throw new NotFoundError('WebhookDelivery');
+    await assertSendable(req.tenant.workspaceId, delivery);
     const sent = await attemptDelivery(delivery.id);
     const fresh = await db.WebhookDelivery.findByPk(sent.id, {
       include: [{ model: db.WebhookEndpoint, as: 'endpoint', attributes: ['id', 'url'] }],

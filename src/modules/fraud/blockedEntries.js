@@ -8,6 +8,7 @@ const { NotFoundError, ValidationError } = require('../../core/errors/AppError')
 const { normalizePhone } = require('../../core/utils/phone');
 const { recordAudit } = require('../audit/auditService');
 const visitorGate = require('../risk/visitorGate');
+const orderLock = require('../orders/orderLock');
 
 /**
  * The store's blacklist (`blocked_entries`, migration 140).
@@ -115,6 +116,12 @@ function auditState(entry) {
   return { type: entry.type, value: entry.value, label: entry.label, scope: entry.scope, reason: entry.reason };
 }
 
+// True for an entry that is not the phone of a customer who comes hidden (orders/orderLock.customerVisibleSql).
+const phoneShownSql = (ctx) => `("BlockedEntry"."type" <> 'phone' OR NOT EXISTS (
+  SELECT 1 FROM customers bc
+   WHERE bc.workspace_id = "BlockedEntry"."workspace_id" AND bc.phone_normalized = "BlockedEntry"."value"
+     AND NOT ${orderLock.customerVisibleSql(ctx, 'bc')}))`;
+
 async function customerIdsByPhone(workspaceId, entries, transaction) {
   const phones = entries.filter((e) => e.type === 'phone').map((e) => e.value);
   if (phones.length === 0) return new Map();
@@ -132,17 +139,22 @@ async function customerIdsByPhone(workspaceId, entries, transaction) {
  * filter, for the type chips of the screen.
  */
 async function listEntries(workspaceId, { type, scope, q, limit = LIST_LIMIT_DEFAULT, cursor } = {}) {
+  const lockCtx = await orderLock.contextFor(workspaceId);
   const where = { workspaceId };
   if (type) where.type = type;
   if (scope) where.scope = scope;
   if (q) {
     const term = `%${q.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
     const phone = normalizePhone(q);
-    where[Op.or] = [
+    const byNumber = [
       { label: { [Op.iLike]: term } },
-      { reason: { [Op.iLike]: term } },
       { value: { [Op.iLike]: term } },
       ...(phone ? [{ type: 'phone', value: phone }] : []),
+    ];
+    where[Op.or] = [
+      { reason: { [Op.iLike]: term } },
+      // The phone of a customer who comes hidden (orders/orderLock) is never found by its number.
+      orderLock.isOpenContext(lockCtx) ? { [Op.or]: byNumber } : { [Op.and]: [{ [Op.or]: byNumber }, db.sequelize.literal(phoneShownSql(lockCtx))] },
     ];
   }
   const and = [];
@@ -176,11 +188,17 @@ async function listEntries(workspaceId, { type, scope, q, limit = LIST_LIMIT_DEF
   const hasMore = rows.length > limit;
   const page = rows.slice(0, limit);
   const customers = await customerIdsByPhone(workspaceId, page);
+  const hidden = await orderLock.lockedCustomerIds(lockCtx, workspaceId, [...customers.values()]);
   const counts = Object.fromEntries(TYPES.map((t) => [t, 0]));
   for (const row of grouped) counts[row.type] = Number(row.count);
 
   return {
-    entries: page.map((e) => serializeEntry(e, e.type === 'phone' ? customers.get(e.value) || null : null)),
+    entries: page.map((e) => {
+      const customerId = e.type === 'phone' ? customers.get(e.value) || null : null;
+      if (!customerId || !hidden.has(customerId)) return serializeEntry(e, customerId);
+      // A hidden customer's phone: the entry shows, its number and the customer do not.
+      return { ...serializeEntry(e, null), value: orderLock.MASK, label: e.label ? orderLock.MASK : e.label, contactLocked: true };
+    }),
     nextCursor: hasMore ? page[page.length - 1].id : null,
     counts,
   };
@@ -257,6 +275,10 @@ async function addEntry(workspaceId, { type = 'phone', value, name, address, sco
         });
       }
       entries.push(entry);
+    }
+    // A customer who comes hidden is not named: the answer would tie the typed phone to them (orders/orderLock).
+    if (customerId && (await orderLock.lockedCustomerIds(await orderLock.contextFor(workspaceId, { transaction }), workspaceId, [customerId], { transaction })).size > 0) {
+      customerId = null;
     }
     return { created: anyCreated, entries: entries.map((e) => serializeEntry(e, e.type === 'phone' ? customerId : null)) };
   }).then((result) => {

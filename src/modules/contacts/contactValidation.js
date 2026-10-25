@@ -1,6 +1,7 @@
 'use strict';
 const Joi = require('joi');
 const { rulesSchema, tagSchema } = require('./segmentRules');
+const { refusesHidden } = require('../../core/utils/refusesHidden');
 
 const uuid = Joi.string().uuid();
 const ws = { workspaceId: uuid.required() };
@@ -32,13 +33,13 @@ module.exports = {
   get: { params: Joi.object({ ...ws, customerId: uuid.required() }) },
   create: {
     params: Joi.object(ws),
-    body: Joi.object({
+    body: refusesHidden(Joi.object({
       phone: Joi.string().max(32).required(),
       fullName: text(200),
       email: Joi.string().email().max(255).allow('', null),
       marketingConsent: Joi.boolean().default(false),
       tags: tags.default([]),
-    }),
+    })),
   },
   setTags: { params: Joi.object({ ...ws, customerId: uuid.required() }), body: Joi.object({ tags: tags.required() }) },
   bulkTag: {

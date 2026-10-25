@@ -216,7 +216,8 @@ function tableOf(subject) {
 
 /**
  * An outbox event happened: send the store's email for it, if that template
- * is switched on and the customer left an email address. Never throws.
+ * is switched on, the customer left an email address and the order (or lost
+ * checkout) is not locked. Never throws.
  * The merchant's choice on a cancellation or refund wins over the switch:
  * `payload.notifyCustomer` false sends nothing, true sends the template
  * (its built-in text when never customised) even while it is off.
@@ -235,6 +236,12 @@ async function handleEvent(workspaceId, eventType, payload = {}) {
         ? await context().loadCheckoutSubject(workspaceId, payload.checkoutSessionId)
         : null;
     if (!subject || !subject.email) return [];
+    // A locked order or lost checkout (orders/orderLock): no email to its customer at all — it
+    // goes out with the store's Reply-To, so an answer would hand the merchant the address.
+    if (await require('../orders/orderLock').subjectLocked(workspaceId, subject)) {
+      logger.info(`[orderEmails] ${eventType} for ${workspaceId} not sent: locked`);
+      return [];
+    }
     // The abandoned-cart email is marketing: never to a STOP, an unsubscribe or a blocked phone or address,
     // and it ends with an unsubscribe link (marketingUnsubscribe.js).
     let unsubscribeUrl = null;

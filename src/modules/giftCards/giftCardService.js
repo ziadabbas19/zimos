@@ -278,32 +278,67 @@ function settingsOf(workspace) {
 
 // ------------------------------------------------------------------ staff --
 
+// A card bought on an order took its recipient from that order's customer: while the order is
+// locked (orders/orderLock) the card shows, its recipient does not.
+const RECIPIENT_FIELDS = ['recipientName', 'recipientEmail', 'message'];
+
+async function lockedCardIds(workspaceId, cards) {
+  const orderLock = require('../orders/orderLock');
+  const orderIds = [...new Set(cards.map((c) => c.orderId).filter(Boolean))];
+  if (!orderLock.enabled() || orderIds.length === 0) return new Set();
+  const ctx = await orderLock.contextFor(workspaceId);
+  if (orderLock.isOpenContext(ctx)) return new Set();
+  const orders = await db.Order.findAll({ where: { id: orderIds, workspaceId }, attributes: orderLock.ORDER_ATTRIBUTES });
+  const locked = await orderLock.lockedIds(ctx, orders);
+  return new Set(cards.filter((c) => locked.has(c.orderId)).map((c) => c.id));
+}
+
+const shownView = (card, locked) => (locked.has(card.id) ? require('../orders/orderLock').maskFields(view(card), RECIPIENT_FIELDS) : view(card));
+
 async function list(workspaceId, { state, q, limit = 50, before }) {
   const where = { workspaceId };
   if (q) {
     const n = normalize(q);
     if (n.length === 16) where.codeHash = hashOf(workspaceId, n);
     else if (/^[A-Z0-9]{4}$/.test(n)) where.last4 = n;
-    else where.recipientEmail = { [Op.iLike]: `%${String(q).trim()}%` };
+    else {
+      where.recipientEmail = { [Op.iLike]: `%${String(q).trim()}%` };
+      // Never found by the email of a locked order's customer.
+      const orderLock = require('../orders/orderLock');
+      const ctx = await orderLock.contextFor(workspaceId);
+      if (!orderLock.isOpenContext(ctx)) {
+        where[Op.and] = [db.sequelize.literal(`NOT EXISTS (SELECT 1 FROM orders go WHERE go.id = "GiftCard"."order_id" AND NOT ${orderLock.visibleSql(ctx, 'go')})`)];
+      }
+    }
   }
   if (before) where.createdAt = { [Op.lt]: new Date(before) };
   const rows = await db.GiftCard.findAll({ where, order: [['createdAt', 'DESC']], limit: 200 });
   const filtered = state ? rows.filter((r) => stateOf(r) === state) : rows;
   const page = filtered.slice(0, limit);
-  return { giftCards: page.map(view), nextBefore: filtered.length > limit ? page[page.length - 1].createdAt.toISOString() : null };
+  const locked = await lockedCardIds(workspaceId, page);
+  return { giftCards: page.map((c) => shownView(c, locked)), nextBefore: filtered.length > limit ? page[page.length - 1].createdAt.toISOString() : null };
 }
 
 async function get(workspaceId, id) {
   const card = await db.GiftCard.findOne({ where: { id, workspaceId } });
   if (!card) throw new NotFoundError('Gift card');
   const transactions = await db.GiftCardTransaction.findAll({ where: { giftCardId: id }, order: [['createdAt', 'DESC']], limit: 100 });
-  return { giftCard: view(card), transactions: transactions.map((t) => ({ id: t.id, kind: t.kind, amount: String(t.amount), balanceAfter: String(t.balanceAfter), orderId: t.orderId, note: t.note, createdAt: t.createdAt })) };
+  const locked = await lockedCardIds(workspaceId, [card]);
+  return { giftCard: shownView(card, locked), transactions: transactions.map((t) => ({ id: t.id, kind: t.kind, amount: String(t.amount), balanceAfter: String(t.balanceAfter), orderId: t.orderId, note: t.note, createdAt: t.createdAt })) };
+}
+
+/** 402 ORDER_LOCKED when the card's order is locked: its recipient is that order's hidden customer. */
+async function assertRecipientShown(workspaceId, card) {
+  if ((await lockedCardIds(workspaceId, [card])).has(card.id)) await require('../orders/orderLock').assertUnlocked(workspaceId, card.orderId);
 }
 
 async function update(workspaceId, id, body, req) {
   const card = await db.GiftCard.findOne({ where: { id, workspaceId } });
   if (!card) throw new NotFoundError('Gift card');
-  const before = view(card);
+  // Its status, expiry and balance can still change; not who it is for.
+  if (body.recipientName !== undefined || body.recipientEmail !== undefined) await assertRecipientShown(workspaceId, card);
+  const locked = await lockedCardIds(workspaceId, [card]);
+  const before = shownView(card, locked);
   const changes = {};
   for (const k of ['status', 'expiresAt', 'note', 'recipientName', 'recipientEmail']) if (body[k] !== undefined) changes[k] = body[k];
   await card.update(changes);
@@ -312,13 +347,15 @@ async function update(workspaceId, id, body, req) {
     await credit(card.id, null, body.adjustBy, { kind: 'adjust', note: body.adjustNote || null, actorUserId: req.user.id });
     await card.reload();
   }
-  await recordAudit({ workspaceId, actorUserId: req.user.id, action: 'gift_card.update', entityType: 'GiftCard', entityId: card.id, before, after: view(card), req });
+  await recordAudit({ workspaceId, actorUserId: req.user.id, action: 'gift_card.update', entityType: 'GiftCard', entityId: card.id, before, after: shownView(card, locked), req });
   return get(workspaceId, id);
 }
 
 async function revealCode(workspaceId, id, { resend = false } = {}, req) {
   const card = await db.GiftCard.findOne({ where: { id, workspaceId } });
   if (!card) throw new NotFoundError('Gift card');
+  // Sending it again emails a locked order's customer (orders/orderLock): not while locked.
+  if (resend) await assertRecipientShown(workspaceId, card);
   const code = secretBox.open(card.codeSealed);
   await recordAudit({ workspaceId, actorUserId: req.user.id, action: resend ? 'gift_card.resend' : 'gift_card.reveal', entityType: 'GiftCard', entityId: card.id, req });
   if (resend) {

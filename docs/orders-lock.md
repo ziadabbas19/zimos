@@ -110,11 +110,43 @@ Merchant answers (hidden, `contactLocked: true` and `lockReason`):
   `contactLocked: true`;
 - customers `GET /customers`, `GET /customers/:id` (a customer is hidden when
   every order they placed is locked; a lead with no order is not);
-  `PATCH /customers/:id` and the address edits are refused (402);
+  `PATCH /customers/:id`, the address edits and the blacklist switch
+  (`PATCH /customers/:id/blacklist`) are refused (402);
 - contacts `GET /contacts`, `GET /contacts/:id`, the export, and the contact
-  search;
+  search; adding a contact whose phone a hidden customer has answers 409
+  without the `customerId`;
 - the dashboard search (Ctrl K) `GET /search`: orders and customers;
-- the manual order form's lookup `GET /orders/manual/customer`;
+- the manual order form's lookup `GET /orders/manual/customer`: a hidden
+  customer comes without `totalOrders`, `totalRejectedOrders` or `lastOrder`
+  (null), so a typed phone is not tied to their locked orders;
+- the store's blacklist `GET /fraud/blocklist`: a hidden customer's phone entry
+  shows its number and label as `••••` and no `customerId`, and the `q` search
+  never finds it by its number; `POST /fraud/blocklist` does not name a hidden
+  customer;
+- the transfer of an order paid by InstaPay / a wallet
+  (`GET /manual-payments/orders/:id` and the approve / reject answers): the
+  payer's number hidden, no screenshot link;
+- the store's activity log `GET /audit-logs`: a row about a locked order, a
+  hidden customer or a lost checkout while lost checkouts are hidden shows its
+  before / after as `••••`; with the switch on, a row no staff member wrote (a
+  shopper's checkout) comes without its IP. Deleting a lost order no longer
+  records its phone;
+- store credit `GET /store-credit`: a hidden holder's name, phone and e-mail;
+  `POST /store-credit/customers/:id/adjust` for a hidden customer is refused
+  (402);
+- the customers report `GET /analytics/reports/customers` (top customers) and
+  its CSV: the name;
+- a course's students `GET /courses/:id/students`: the name and phone of a
+  student who comes hidden;
+- gift cards bought on a locked order (`GET /gift-cards`, one card): the
+  recipient's name, e-mail and message; the e-mail search does not find them;
+  changing the recipient or sending the card again is refused (402);
+- customer referrals `GET /customer-referrals/list`: a hidden referrer's or
+  friend's name;
+- the order timeline `GET /orders/:id/timeline`: the subject of an e-mail and
+  the text of a WhatsApp message sent before it locked;
+- the shipment batch preview `POST /shipment-batches/preview`: a locked order
+  is listed under `blocked` with `ORDER_LOCKED`, its address unread;
 - lost orders `GET /checkout-sessions` (and one, and the export): hidden while
   a new order would be locked (rule (c) alone), recovery link dropped;
 - invoices `GET /invoices` (the customer's name) and the invoice PDFs
@@ -137,10 +169,21 @@ nothing sent:
   (`POST /orders/:id/shipments`, a stage move to shipped/delivered, fulfil);
 - the waybill (`GET /orders/:id/waybill`, `POST /orders/documents/waybills`);
 - Confirm via WhatsApp (`POST /orders/:id/whatsapp-confirm`);
-- editing the order's customer, address or notes (`PATCH /orders/:id`);
+- editing the order's customer, address or notes (`PATCH /orders/:id`), and
+  saving its shipment draft (`PUT /orders/:id/shipment-draft`);
 - block-and-cancel from the fraud screen (it would list the phone and IP in
   the blocklist); cancelling alone still works;
-- lost orders: reveal the phone, the WhatsApp message, convert to an order.
+- lost orders: reveal the phone, the WhatsApp message, convert to an order;
+- sending a stored webhook delivery again
+  (`POST /webhooks/deliveries/:id/resend`) when the order, customer or lost
+  checkout it is about is locked now.
+
+Refused with 422 `VALIDATION_ERROR`, whatever the lock says: a dashboard write
+whose name, phone, e-mail, address, notes or shipment draft carries `••••`
+(`core/utils/refusesHidden`: creating an order, `PATCH /orders/:id`, a
+shipment and its draft, the customer and address edits, a new contact, a lost
+order converted). A form filled from a hidden view would otherwise save the
+placeholder over the real details.
 
 Not tried at all:
 
@@ -152,6 +195,11 @@ Not tried at all:
   the order change scanner, "resend to webhook", which names it under
   `locked`); `customer.*` for a hidden customer and `checkout.*` while new
   orders would be locked are not sent.
+- the store's e-mails to the customer (`notifications/orderEmailService`):
+  none for a locked order — order confirmation, shipped, cancelled, refunded,
+  digital delivery — nor the abandoned-cart e-mail while lost checkouts are
+  hidden. They go out with the store's Reply-To, so an answer would hand the
+  merchant the address. Not sent later when the order opens.
 - when a locked order opens (a renewal, a top-up, the fees paid from the
   dashboard, a fallback to pay per order…), the change scanner sends it on its
   next pass as a change made now: the scanner kept it in `webhook_order_holds`
@@ -167,13 +215,14 @@ Unchanged on purpose (they do not show the details to the merchant):
 
 - the shopper's own order (checkout answer, tracking, account, recovery link);
 - the payment gateways (the shopper is paying);
-- the transactional order e-mails to the shopper (not WhatsApp or SMS);
+- a gift card's own e-mail when it is issued for a paid order (the shopper
+  paid for it);
 - the ad platforms' conversion APIs (hashed details);
 - the AI order check (Zimos's own risk check);
 - the storefront's social proof (first name and city, to shoppers);
 - COD settlements (no locked order can be shipped);
-- the platform console (audit log, risk signals, blocklist): Zimos sees
-  everything.
+- the platform console (its audit log, risk signals, blocklist): Zimos sees
+  everything. The store's own activity log is the merchant's, above.
 
 ## The dashboard
 

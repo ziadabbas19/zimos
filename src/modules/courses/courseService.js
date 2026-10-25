@@ -239,19 +239,26 @@ async function listStudents(workspaceId, courseId) {
       })
     : [];
   const doneOf = new Map(done.map((r) => [r.enrollmentId, Number(r.n)]));
+  // eslint-disable-next-line global-require
+  const orderLock = require('../orders/orderLock');
   return {
     lessonsCount: total,
-    students: enrollments.map((e) => ({
-      id: e.id,
-      customerId: e.customerId,
-      name: e.customer ? e.customer.fullName : null,
-      phone: e.customer ? e.customer.phoneRaw || e.customer.phoneNormalized : null,
-      source: e.source,
-      orderId: e.orderId,
-      enrolledAt: e.enrolledAt,
-      revokedAt: e.revokedAt,
-      completedLessons: doneOf.get(e.id) || 0,
-    })),
+    // A student who comes hidden (enrolled by a locked order) is listed without a name or phone (orders/orderLock).
+    students: await orderLock.presentCustomers(
+      workspaceId,
+      enrollments.map((e) => ({
+        id: e.id,
+        customerId: e.customerId,
+        name: e.customer ? e.customer.fullName : null,
+        phone: e.customer ? e.customer.phoneRaw || e.customer.phoneNormalized : null,
+        source: e.source,
+        orderId: e.orderId,
+        enrolledAt: e.enrolledAt,
+        revokedAt: e.revokedAt,
+        completedLessons: doneOf.get(e.id) || 0,
+      })),
+      { pick: (r) => r.customerId, mask: (r) => orderLock.maskFields(r, ['name', 'phone']) }
+    ),
   };
 }
 

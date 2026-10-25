@@ -39,7 +39,8 @@ const { AppError } = require('../../core/errors/AppError');
  * is hidden or refused.
  */
 
-const MASK = '••••';
+// The dashboard writes refuse it (core/utils/refusesHidden), so a hidden value is never saved back.
+const { HIDDEN: MASK } = require('../../core/utils/refusesHidden');
 const PAID_STATES = ['paid', 'partially_paid', 'refunded', 'partially_refunded'];
 const PAID_STATES_SQL = `(${PAID_STATES.map((s) => `'${s}'`).join(', ')})`;
 // What a hidden record keeps: its own ids and dates, never the customer's details.
@@ -218,6 +219,17 @@ function maskObject(obj, keep = []) {
 const maskContact = (contact) => maskObject(contact);
 const maskAddress = (address) => maskObject(address, ADDRESS_KEPT);
 
+/** A row of some other module's view with the named customer fields hidden (a name, a phone, an email). */
+function maskFields(row, keys) {
+  const out = { ...row };
+  for (const key of keys) if (key in out) out[key] = masked(out[key]);
+  out.contactLocked = true;
+  return out;
+}
+
+/** An InstaPay / wallet transfer: the payer's number and the screenshot (which names them). */
+const maskManualPayment = (payment) => payment && { ...payment, payerNumber: masked(payment.payerNumber), proofUrl: null, proofUrlExpiresAt: null };
+
 /** A customer row as the merchant would see it, hidden. */
 function maskCustomer(customer) {
   if (!customer) return customer;
@@ -245,8 +257,7 @@ function maskOrder(order, ctx) {
   if (out.customer) out.customer = maskCustomer(out.customer);
   // The shipping card's saved draft carries the receiver: not shown while locked.
   if (out.shipmentDraft) out.shipmentDraft = null;
-  // An InstaPay / wallet transfer: the payer's number and the screenshot (which names them).
-  if (out.manualPayment) out.manualPayment = { ...out.manualPayment, payerNumber: masked(out.manualPayment.payerNumber), proofUrl: null, proofUrlExpiresAt: null };
+  if (out.manualPayment) out.manualPayment = maskManualPayment(out.manualPayment);
   out.contactLocked = true;
   out.lockReason = lockReason(ctx);
   return out;
@@ -318,6 +329,25 @@ async function assertUnlocked(workspaceId, orderOrId, { transaction } = {}) {
       : orderOrId;
   if (!order) return;
   if ((await lockedIds(ctx, [order], { transaction })).has(order.id)) throw lockedError(ctx);
+}
+
+/** Whether this store's order `orderId` is locked now (false when there is no such order). */
+async function isOrderLocked(workspaceId, orderId, { transaction } = {}) {
+  if (!enabled() || !orderId) return false;
+  const ctx = await contextFor(workspaceId, { transaction });
+  if (isOpenContext(ctx)) return false;
+  const order = await db.Order.findOne({ where: { id: orderId, workspaceId }, attributes: ORDER_ATTRIBUTES, transaction });
+  return Boolean(order) && (await lockedIds(ctx, [order], { transaction })).has(order.id);
+}
+
+/**
+ * Refuses (402 ORDER_LOCKED) a merchant action on a customer who comes
+ * hidden: the merchant would write over, or learn, details they cannot see.
+ */
+async function assertCustomerVisible(workspaceId, customerId) {
+  if (!enabled()) return;
+  const ctx = await contextFor(workspaceId);
+  if ((await lockedCustomerIds(ctx, workspaceId, [customerId])).size > 0) throw lockedError(ctx);
 }
 
 /**
@@ -430,14 +460,19 @@ module.exports = {
   customerVisibleSql,
   lockedCustomerIds,
   presentCustomers,
+  maskObject,
   maskOrder,
   maskContact,
   maskAddress,
   maskCustomer,
+  maskFields,
+  maskManualPayment,
   presentOrders,
   presentOrder,
   lockedError,
   assertUnlocked,
+  isOrderLocked,
+  assertCustomerVisible,
   mustNotSend,
   pendingLocked,
   assertPendingOpen,

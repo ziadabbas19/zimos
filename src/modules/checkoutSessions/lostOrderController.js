@@ -3,6 +3,7 @@ const { forViewer } = require('../../core/utils/phoneMask');
 const asyncHandler = require('express-async-handler');
 const Joi = require('joi');
 const joiEmail = require('../../core/utils/joiEmail');
+const { refusesHidden } = require('../../core/utils/refusesHidden');
 const service = require('./lostOrderService');
 
 const uuid = Joi.string().uuid();
@@ -48,7 +49,7 @@ const schemas = {
   one: { params: Joi.object({ workspaceId: uuid.required(), sessionId: uuid.required() }) },
   convert: {
     params: Joi.object({ workspaceId: uuid.required(), sessionId: uuid.required() }),
-    body: Joi.object({
+    body: refusesHidden(Joi.object({
       contact: Joi.object({
         fullName: Joi.string().max(200).optional(),
         phone: Joi.string().max(32).optional(),
@@ -65,7 +66,7 @@ const schemas = {
         .min(1)
         .max(20)
         .optional(),
-    }).default({}),
+    })).default({}),
   },
   exportCsv: { params: Joi.object({ workspaceId: uuid.required() }), body: Joi.object(filters).default({}) },
 };

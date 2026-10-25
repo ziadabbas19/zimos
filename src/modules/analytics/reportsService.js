@@ -4,6 +4,7 @@ const db = require('../../db/models');
 const { ValidationError } = require('../../core/errors/AppError');
 const { STAGE_SQL, countsAsSaleSql } = require('../orders/orderStage');
 const { rate, toNumber, DAY_MS } = require('./analyticsService');
+const orderLock = require('../orders/orderLock');
 
 /**
  * The analytics reports: sales, products, delivery (the COD reality) and
@@ -637,13 +638,18 @@ async function getCustomersReport(workspaceId, query = {}) {
       averageDaysToSecondOrder:
         life.days_to_second === null || life.days_to_second === undefined ? null : Math.round(Number(life.days_to_second)),
     },
-    topCustomers: top.map((r) => ({
-      customerId: r.customer_id,
-      name: r.name,
-      orders: toNumber(r.orders),
-      delivered: toNumber(r.delivered),
-      sales: toNumber(r.sales),
-    })),
+    // A customer who comes hidden is listed without a name (orders/orderLock); the CSV export reads this too.
+    topCustomers: await orderLock.presentCustomers(
+      workspaceId,
+      top.map((r) => ({
+        customerId: r.customer_id,
+        name: r.name,
+        orders: toNumber(r.orders),
+        delivered: toNumber(r.delivered),
+        sales: toNumber(r.sales),
+      })),
+      { pick: (r) => r.customerId, mask: (r) => orderLock.maskFields(r, ['name']) }
+    ),
     cohorts: Array.from(byCohort.values()).map((row) => ({
       cohort: row.cohort,
       size: row.size,
