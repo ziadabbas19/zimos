@@ -1,5 +1,7 @@
 'use strict';
 const Joi = require('joi');
+const { refusesHidden } = require('../../core/utils/refusesHidden');
+
 const uuid = Joi.string().uuid();
 
 module.exports = {
@@ -7,13 +9,13 @@ module.exports = {
   get: { params: Joi.object({ workspaceId: uuid.required(), customerId: uuid.required() }) },
   update: {
     params: Joi.object({ workspaceId: uuid.required(), customerId: uuid.required() }),
-    body: Joi.object({
+    body: refusesHidden(Joi.object({
       fullName: Joi.string().max(200).allow(null, '').optional(),
       email: Joi.string().email().max(255).allow(null, '').optional(),
       phone: Joi.string().max(32).optional(),
       alternatePhone: Joi.string().max(32).allow(null, '').optional(),
       marketingConsent: Joi.boolean().optional(),
-    }).min(1),
+    }).min(1)),
   },
   blacklist: {
     params: Joi.object({ workspaceId: uuid.required(), customerId: uuid.required() }),
@@ -21,7 +23,7 @@ module.exports = {
   },
   addAddress: {
     params: Joi.object({ workspaceId: uuid.required(), customerId: uuid.required() }),
-    body: Joi.object({
+    body: refusesHidden(Joi.object({
       country: Joi.string().length(2).required(),
       province: Joi.string().max(100).optional(),
       city: Joi.string().max(100).required(),
@@ -29,11 +31,11 @@ module.exports = {
       postalCode: Joi.string().max(20).optional(),
       notes: Joi.string().max(500).optional(),
       isDefault: Joi.boolean().default(false),
-    }),
+    })),
   },
   updateAddress: {
     params: Joi.object({ workspaceId: uuid.required(), customerId: uuid.required(), addressId: uuid.required() }),
-    body: Joi.object({
+    body: refusesHidden(Joi.object({
       country: Joi.string().length(2).optional(),
       province: Joi.string().max(100).allow(null, '').optional(),
       city: Joi.string().max(100).optional(),
@@ -41,6 +43,6 @@ module.exports = {
       postalCode: Joi.string().max(20).allow(null, '').optional(),
       notes: Joi.string().max(500).allow(null, '').optional(),
       isDefault: Joi.boolean().optional(),
-    }).min(1),
+    }).min(1)),
   },
 };

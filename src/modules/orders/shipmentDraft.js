@@ -9,6 +9,8 @@ const { requirePermission } = require('../../core/middleware/rbac');
 const { PERMISSIONS } = require('../../core/security/permissions');
 const { NotFoundError } = require('../../core/errors/AppError');
 const { recordAudit } = require('../audit/auditService');
+const { refusesHidden } = require('../../core/utils/refusesHidden');
+const orderLock = require('./orderLock');
 
 /**
  * "Save as draft" on the order's shipping card (SPEC §4.4): the shipment the
@@ -33,7 +35,7 @@ const params = Joi.object({ workspaceId: Joi.string().uuid().required(), orderId
 const schemas = {
   save: {
     params,
-    body: Joi.object({
+    body: refusesHidden(Joi.object({
       carrierCode: Joi.string().trim().min(1).max(100).required(),
       address: Joi.object({
         cityId: id.allow(''),
@@ -48,7 +50,7 @@ const schemas = {
         waybillNumber: Joi.string().max(100).allow(''),
         trackingUrl: Joi.string().max(500).allow(''),
       }).optional(),
-    }),
+    })),
   },
   remove: { params },
 };
@@ -61,6 +63,8 @@ async function findOrder(workspaceId, orderId) {
 
 async function save(workspaceId, orderId, body, req) {
   const order = await findOrder(workspaceId, orderId);
+  // Not on a locked order (402 ORDER_LOCKED): the form it comes from shows the receiver hidden.
+  await orderLock.assertUnlocked(workspaceId, order.id);
   const draft = {
     carrierCode: body.carrierCode,
     ...(body.address ? { address: body.address } : {}),

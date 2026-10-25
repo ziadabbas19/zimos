@@ -23,6 +23,9 @@ const RESUME_JOB = 'automations.resume';
 
 // Steps that message the customer (a webhook or a tag is not a message).
 const MESSAGE_STEPS = new Set(['whatsapp_template', 'sms', 'email']);
+// Steps that carry the customer's details anywhere: never run for a locked
+// order or checkout (orders/orderLock), not even tried.
+const CUSTOMER_DATA_STEPS = new Set([...MESSAGE_STEPS, 'webhook', 'notify_team']);
 
 // A trigger that is really another event plus a delay: "ask for a review N
 // days after delivery" listens to order.delivered and waits first.
@@ -78,8 +81,15 @@ async function advance(execution, { resumed = false } = {}) {
   }
 
   const list = execution.steps || [];
+  // Asked once per run of the steps, so a top-up while the sequence waited opens it again.
+  const locked = await require('../orders/orderLock').subjectLocked(execution.workspaceId, subject);
   for (let i = execution.nextStepIndex; i < list.length; i += 1) {
     const step = list[i];
+    if (locked && CUSTOMER_DATA_STEPS.has(step.type)) {
+      await logRun(execution, { status: 'skipped', stepIndex: i, stepType: step.type, detail: 'skipped: the order is locked (its customer details are hidden)' });
+      await execution.update({ nextStepIndex: i + 1 });
+      continue;
+    }
     if (step.type === 'wait') {
       const delayMs = steps.waitMs(step);
       await execution.update({ status: 'waiting', nextStepIndex: i + 1, resumeAt: new Date(Date.now() + delayMs) });

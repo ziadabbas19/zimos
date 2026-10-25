@@ -229,6 +229,9 @@ async function runAction(workspaceId, action, body, req, mutate) {
     const before = auditState(subscription);
     const patch = await mutate(subscription, transaction);
     await subscription.update(patch, { transaction });
+    // Activated or extended: the locked orders left 'due' open for good once this commits (no fee, no money moved).
+    // eslint-disable-next-line global-require
+    require('./confirmFeeService').releaseDueAfterCommit(transaction, workspaceId);
     // A plan switch the merchant left waiting no longer fits a period or a
     // plan set here: dropped, its charge voided. Extending keeps it.
     if (DROPS_PLAN_SWITCH.includes(action)) {

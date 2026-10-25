@@ -7,6 +7,7 @@ const { STAGE_SQL, ORDERS_WITH_STAGE_FROM } = require('./orderStage');
 const { orderSort, orderByClause, anchorValue } = require('./orderSort');
 const { applyOrderFilters } = require('./orderFilters');
 const statusHistory = require('./orderStatusHistory');
+const orderLock = require('./orderLock');
 
 /**
  * GET /orders/:id/timeline — everything that happened to one order, in one
@@ -188,13 +189,17 @@ async function timeline(workspaceId, orderId) {
   }
 
   // Messages to the customer: what went out, on which channel, and whether the provider took it.
+  // While the order is locked (orders/orderLock) their text and subjects are hidden: they were
+  // written to the customer, by name, before it locked.
+  const locked = await orderLock.isOrderLocked(workspaceId, orderId);
+  const said = (text) => (locked && text ? orderLock.MASK : text);
   for (const m of sentLogs) {
     events.push({
       id: `message:${m.id}`,
       type: 'message',
       at: m.createdAt,
       actor: { type: 'system', name: null },
-      data: { channel: m.channel, template: m.template, subject: m.subject, status: m.status, error: m.error, deliveryStatus: m.deliveryStatus || null, statusAt: m.statusAt || null, statusReason: m.statusReason || null },
+      data: { channel: m.channel, template: m.template, subject: said(m.subject), status: m.status, error: m.error, deliveryStatus: m.deliveryStatus || null, statusAt: m.statusAt || null, statusReason: m.statusReason || null },
     });
     // What the provider reported later, at its own time: "email bounced", "SMS not delivered" (deliveryStatus/).
     if (['bounced', 'complained', 'undelivered'].includes(m.deliveryStatus) && m.statusAt) {
@@ -203,7 +208,7 @@ async function timeline(workspaceId, orderId) {
         type: 'message_status',
         at: m.statusAt,
         actor: { type: 'system', name: null },
-        data: { channel: m.channel, status: m.deliveryStatus, reason: m.statusReason || null, subject: m.subject, messageId: m.id },
+        data: { channel: m.channel, status: m.deliveryStatus, reason: m.statusReason || null, subject: said(m.subject), messageId: m.id },
       });
     }
   }
@@ -216,7 +221,7 @@ async function timeline(workspaceId, orderId) {
       data: {
         channel: 'whatsapp',
         template: w.template_name || null,
-        subject: w.body ? String(w.body).slice(0, 300) : null,
+        subject: w.body ? said(String(w.body).slice(0, 300)) : null,
         // received / delivered / read when WhatsApp reported them.
         status: w.status,
         error: w.error || null,

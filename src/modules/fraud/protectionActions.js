@@ -22,6 +22,9 @@ const BLOCK_REASON_MAX = 300;
 async function blockAndCancel(workspaceId, orderId, { reason, acknowledgeManualCancel = false } = {}, req) {
   const order = await db.Order.findOne({ where: { id: orderId, workspaceId } });
   if (!order) throw new NotFoundError('Order');
+  // Blocking copies the phone and IP into the blocklist, which lists them: not
+  // for a locked order (402 ORDER_LOCKED, orders/orderLock). Cancelling it alone still works.
+  await require('../orders/orderLock').assertUnlocked(workspaceId, order);
   const why = String(reason || `Blocked from order ${order.orderNumber}`).slice(0, BLOCK_REASON_MAX);
 
   // Cancel first: if the order cannot be cancelled (shipped, courier needs an

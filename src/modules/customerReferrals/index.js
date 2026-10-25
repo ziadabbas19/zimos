@@ -241,7 +241,12 @@ staff.get(
       limit: req.query.limit,
       offset: req.query.offset,
     });
-    res.json({ referrals: rows.map(view), total: count });
+    // A referrer or friend who comes hidden (orders/orderLock) is listed without a name.
+    const orderLock = require('../orders/orderLock');
+    const people = rows.flatMap((r) => [r.referrer && r.referrer.id, r.friend && r.friend.id]).filter(Boolean);
+    const hidden = await orderLock.lockedCustomerIds(await orderLock.contextFor(req.tenant.workspaceId), req.tenant.workspaceId, people);
+    const named = (person) => person && (hidden.has(person.id) ? orderLock.maskFields(person, ['name']) : person);
+    res.json({ referrals: rows.map(view).map((r) => ({ ...r, referrer: named(r.referrer), friend: named(r.friend) })), total: count });
   })
 );
 

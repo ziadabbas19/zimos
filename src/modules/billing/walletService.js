@@ -71,6 +71,9 @@ function enabled() {
   return env.wallet.enabled === true;
 }
 
+// ORDERS_LOCK_ENABLED (orders/orderLock.js): the fee moves to the confirmation.
+const ordersLockOn = () => env.ordersLock.enabled === true;
+
 function disabledError() {
   return new AppError('WALLET_DISABLED', 'The prepaid balance is not available.', 404);
 }
@@ -197,6 +200,12 @@ async function writeEntry(
     },
     { transaction }
   );
+  // More to pay with (a top-up, a gift, a fee given back, free orders granted):
+  // orders paid online while their fee could not be paid are settled once this
+  // commits (confirmFeeService.settleDue; only with ORDERS_LOCK_ENABLED).
+  if (ordersLockOn() && (delta > 0 || (type === 'free_orders_grant' && freeDelta > 0))) {
+    require('./confirmFeeService').settleDueAfterCommit(transaction, wallet.workspaceId);
+  }
   return entry;
 }
 
@@ -242,6 +251,9 @@ async function balanceRefusal(workspaceId, { staff, balance, fee, terms }) {
  */
 async function chargeOrderFee(order, { staff = false } = {}, transaction) {
   if (!enabled()) return null;
+  // Locked orders on: the fee is taken when the order is confirmed instead
+  // (confirmFeeService), and placing an order is never refused for it.
+  if (ordersLockOn()) return null;
   const terms = await termsDue(order.workspaceId, transaction);
   if (!terms) return null;
   const { fee } = terms;
@@ -291,6 +303,10 @@ function tellAfterCommit(transaction, workspaceId, described, terms) {
  * no-op for an order with no fee on it now or one that has shipped.
  */
 async function reverseOrderFee(order, { reason = null, actorUserId = null } = {}, transaction) {
+  // Locked orders on: a fee is never given back once its order was confirmed
+  // (`order` as it stood before this change). A fee taken at placing, before
+  // the switch, for an order never confirmed still is.
+  if (ordersLockOn() && (order.contactLock === 'unlocked' || require('../orders/orderLock').reachedConfirmation(order))) return null;
   const touched = await db.WalletLedgerEntry.count({ where: { orderId: order.id }, transaction });
   if (!touched || (await hasShipped(order, transaction))) return null;
   const wallet = await lockWallet(order.workspaceId, transaction);
@@ -319,6 +335,9 @@ async function reverseOrderFee(order, { reason = null, actorUserId = null } = {}
  */
 async function rechargeOrderFee(order, { actorUserId = null } = {}, transaction) {
   if (!enabled()) return null;
+  // Locked orders on: confirming the order again takes its confirmation fee
+  // (once ever), so nothing is charged again here.
+  if (ordersLockOn()) return null;
   const touched = await db.WalletLedgerEntry.count({ where: { orderId: order.id }, transaction });
   if (!touched || (await hasShipped(order, transaction))) return null;
   const wallet = await lockWallet(order.workspaceId, transaction);
@@ -417,11 +436,11 @@ async function accessState(workspaceId, subscription) {
 async function monthUsage(workspaceId) {
   const [row] = await db.sequelize.query(
     `SELECT COALESCE(SUM(-cash_delta), 0)::bigint AS spent,
-            COUNT(*) FILTER (WHERE entry_type IN ('order_fee', 'order_fee_recharge'))::int AS charged,
+            COUNT(*) FILTER (WHERE entry_type IN ('order_fee', 'order_fee_recharge', 'order_confirm_fee'))::int AS charged,
             COUNT(*) FILTER (WHERE entry_type = 'order_fee_reversal')::int AS reversed
        FROM wallet_ledger_entries
       WHERE workspace_id = $workspaceId
-        AND entry_type IN ('order_fee', 'order_fee_reversal', 'order_fee_recharge')
+        AND entry_type IN ('order_fee', 'order_fee_reversal', 'order_fee_recharge', 'order_confirm_fee')
         AND created_at >= (date_trunc('month', NOW() AT TIME ZONE 'Africa/Cairo') AT TIME ZONE 'Africa/Cairo')`,
     { bind: { workspaceId }, type: QueryTypes.SELECT }
   );
@@ -605,7 +624,7 @@ const FEE_PLAN_YEARS = 100;
  * move to a monthly plan or on another store). Used by choosePayPerOrder and
  * by a plan switch to pay per order (planSwitchService).
  */
-async function startPayPerOrder(subscription, plan, { now = new Date() } = {}, transaction) {
+async function startPayPerOrder(subscription, plan, { now = new Date(), settleDue = true } = {}, transaction) {
   const workspace = await db.Workspace.findByPk(subscription.workspaceId, { attributes: ['id', 'ownerUserId'], transaction });
   if (workspace && workspace.ownerUserId) {
     await require('./goLiveService').recordTrial(
@@ -619,6 +638,9 @@ async function startPayPerOrder(subscription, plan, { now = new Date() } = {}, t
     { planId: plan.id, status: 'active', trialEndsAt: null, currentPeriodStart: now, currentPeriodEnd: end, graceUntil: null, cancelAtPeriodEnd: false },
     { transaction }
   );
+  // The orders left 'due' (orders/orderLock) take their fees from the balance once this commits.
+  // Not from a scheduled switch (settleDue false): no scheduled job moves the balance's money.
+  if (settleDue) require('./confirmFeeService').settleDueAfterCommit(transaction, subscription.workspaceId);
 }
 
 /**
@@ -683,6 +705,9 @@ module.exports = {
   feeDue,
   termsDue,
   termsOf,
+  // For orders/orderLock and confirmFeeService (ORDERS_LOCK_ENABLED).
+  termsForSubscription,
+  freeLeft,
   chargeOrderFee,
   reverseOrderFee,
   rechargeOrderFee,

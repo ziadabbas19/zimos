@@ -23,7 +23,9 @@ const handler = asyncHandler(async (req, res) => {
     throw new AuthorizationError(`Missing required permission: ${PERMISSIONS.REFUNDS_MANAGE}`);
   }
   const order = await require('./orderService').cancelOrder(workspaceId, req.params.orderId, { ...cancel, notifyCustomer }, req);
-  if (!refundAmount) return res.json({ order });
+  // Every answer below carries the order through the lock (orders/orderLock).
+  const shown = async (o) => require('./orderLock').presentOrder(workspaceId, typeof o.toJSON === 'function' ? o.toJSON() : o);
+  if (!refundAmount) return res.json({ order: await shown(order) });
 
   if (notifyCustomer !== undefined) req.notifyCustomer = notifyCustomer;
   try {
@@ -34,11 +36,11 @@ const handler = asyncHandler(async (req, res) => {
       req
     );
     const fresh = await require('../../db/models').Order.findByPk(order.id);
-    return res.json({ order: fresh || order, refund });
+    return res.json({ order: await shown(fresh || order), refund });
   } catch (err) {
     if (!err.isOperational) logger.error('Refund after cancellation failed', { workspaceId, orderId: order.id, message: err.message });
     return res.json({
-      order,
+      order: await shown(order),
       refundError: { code: err.isOperational ? err.code : 'INTERNAL_SERVER_ERROR', message: err.isOperational ? err.message : 'The refund could not be made' },
     });
   }

@@ -149,14 +149,20 @@ async function customerPanel(workspaceId, conversationId) {
   const delivered = count('delivered');
   // Of the orders that reached an end, how many were delivered.
   const finished = delivered + count('cancelled') + count('returned') + count('delivery_failed');
+  // Known only from locked orders (orders/orderLock): the name and e-mail hidden. The
+  // number is the conversation's own, which the merchant is already writing to.
+  const orderLock = require('../orders/orderLock');
+  const lockCtx = await orderLock.contextFor(workspaceId);
+  const hidden = (await orderLock.lockedCustomerIds(lockCtx, workspaceId, [customer.id])).has(customer.id);
 
   return {
     customer: {
       id: customer.id,
-      fullName: customer.fullName || conversation.customerName,
+      fullName: hidden ? conversation.customerName || orderLock.MASK : customer.fullName || conversation.customerName,
       phone: customer.phoneNormalized,
-      email: customer.email || null,
+      email: hidden ? customer.email && orderLock.MASK : customer.email || null,
       isBlacklisted: Boolean(customer.isBlacklisted),
+      ...(lockCtx.enabled ? { contactLocked: hidden } : {}),
     },
     stats: {
       totalOrders: orders.length,

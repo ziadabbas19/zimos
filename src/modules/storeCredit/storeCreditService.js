@@ -51,6 +51,8 @@ async function move(customerId, amount, kind, extra, transaction, { strict = fal
 async function adjust(workspaceId, customerId, amount, note, req) {
   const customer = await db.Customer.findOne({ where: { id: customerId, workspaceId } });
   if (!customer) throw new NotFoundError('Customer');
+  // A customer who comes hidden: a grant would put them in the holders' list, by name (orders/orderLock).
+  await require('../orders/orderLock').assertCustomerVisible(workspaceId, customer.id);
   const out = await db.sequelize.transaction((t) => move(customer.id, amount, amount > 0 ? 'grant' : 'adjust', { note, actorUserId: req.user.id }, t, { strict: true }));
   await recordAudit({ workspaceId, actorUserId: req.user.id, action: 'store_credit.adjust', entityType: 'Customer', entityId: customer.id, after: { amount, balance: out.balance, note }, req });
   return { balance: String(out.balance), applied: String(out.applied) };
@@ -182,7 +184,14 @@ async function accountOf(customer, limit = 50) {
 async function listHolders(workspaceId) {
   const rows = await db.Customer.findAll({ where: { workspaceId, storeCreditAmount: { [Op.gt]: 0 } }, attributes: ['id', 'fullName', 'phoneNormalized', 'email', 'storeCreditAmount'], order: [['storeCreditAmount', 'DESC']], limit: 500 });
   const total = Number(await db.Customer.sum('storeCreditAmount', { where: { workspaceId } })) || 0;
-  return { customers: rows.map((c) => ({ customerId: c.id, fullName: c.fullName, phone: c.phoneNormalized, email: c.email, balance: String(c.storeCreditAmount) })), outstanding: String(total), currency: await currencyOf(workspaceId) };
+  const orderLock = require('../orders/orderLock');
+  // A holder who comes hidden shows the balance, not who they are (orders/orderLock).
+  const customers = await orderLock.presentCustomers(
+    workspaceId,
+    rows.map((c) => ({ customerId: c.id, fullName: c.fullName, phone: c.phoneNormalized, email: c.email, balance: String(c.storeCreditAmount) })),
+    { pick: (r) => r.customerId, mask: (r) => orderLock.maskFields(r, ['fullName', 'phone', 'email']) }
+  );
+  return { customers, outstanding: String(total), currency: await currencyOf(workspaceId) };
 }
 
 module.exports = { spendingOn, move, adjust, refundToCredit, assertCanSpend, spendOnOrder, onRefundProcessed, onOrderCancelled, accountOf, listHolders, install };

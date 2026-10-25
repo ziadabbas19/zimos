@@ -41,6 +41,8 @@ const send = asyncHandler(async (req, res) => {
   const workspaceId = req.tenant.workspaceId;
   const session = await db.CheckoutSession.findOne({ where: { id: req.params.sessionId, workspaceId } });
   if (!session) throw new NotFoundError('CheckoutSession');
+  // No message to the shopper while new orders are locked (402 ORDER_LOCKED, orders/orderLock).
+  await require('../orders/orderLock').assertPendingOpen(workspaceId);
 
   const subject = await require('../automations/automationContext').loadCheckoutSubject(workspaceId, session.id);
   const phone = (subject && subject.phone) || require('./lostOrderPhones').phoneOf(session);

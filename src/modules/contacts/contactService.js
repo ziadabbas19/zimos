@@ -92,7 +92,10 @@ async function buildFilter(workspaceId, { q, type, tag, consent, segmentId, rule
       // A local number typed with its leading 0 is stored with the country code.
       replacements.qPhone = `%${digits.replace(/^0+/, '')}%`;
     }
-    conditions.push(`(${parts.join(' OR ')})`);
+    // Never found by the details it hides (orders/orderLock; TRUE while nothing is locked).
+    const orderLock = require('../orders/orderLock');
+    const visible = orderLock.customerVisibleSql(await orderLock.contextFor(workspaceId), 'c');
+    conditions.push(visible === 'TRUE' ? `(${parts.join(' OR ')})` : `(${parts.join(' OR ')}) AND ${visible}`);
   }
   return { where: conditions.join('\n       AND '), replacements };
 }
@@ -126,7 +129,9 @@ async function listContacts(workspaceId, params = {}) {
   const hasMore = rows.length > limit;
   const pageRows = rows.slice(0, limit);
 
-  const result = { contacts: pageRows.map(view), nextCursor: hasMore ? encodeCursor(pageRows[pageRows.length - 1]) : null };
+  // A contact known only from locked orders comes hidden (orders/orderLock).
+  const contacts = await require('../orders/orderLock').presentCustomers(workspaceId, pageRows.map(view));
+  const result = { contacts, nextCursor: hasMore ? encodeCursor(pageRows[pageRows.length - 1]) : null };
   // The total and the lead/customer split belong to the first page only.
   if (!params.cursor) Object.assign(result, await countContacts(workspaceId, params));
   return result;
@@ -165,7 +170,9 @@ async function exportContacts(workspaceId, params, req) {
     { replacements, type: QueryTypes.SELECT }
   );
   const header = ['name', 'phone', 'email', 'type', 'tags', 'orders', 'total_spent', 'last_order_at', 'delivery_rate', 'governorate', 'marketing_consent', 'source', 'created_at'];
-  const lines = rows.map(view).map((c) =>
+  // Hidden contacts export as •••• (orders/orderLock).
+  const shown = await require('../orders/orderLock').presentCustomers(workspaceId, rows.map(view));
+  const lines = shown.map((c) =>
     [
       c.fullName,
       c.phoneNormalized,
@@ -215,7 +222,7 @@ async function getContact(workspaceId, customerId) {
     db.WhatsappConversation.findOne({ where: { workspaceId, phoneNormalized: row.phone_normalized }, attributes: ['id'] }),
   ]);
   return {
-    contact: view(row),
+    contact: (await require('../orders/orderLock').presentCustomers(workspaceId, [view(row)]))[0],
     submissions: submissions.map(require('./formService').view),
     conversationId: conversation ? conversation.id : null,
   };
@@ -228,7 +235,10 @@ async function createContact(workspaceId, data, req) {
 
   const existing = await db.Customer.findOne({ where: { workspaceId, phoneNormalized }, attributes: ['id'] });
   if (existing) {
-    throw new AppError('PHONE_TAKEN', 'A contact with that phone number already exists', 409, { customerId: existing.id });
+    // A contact who comes hidden is not named: the id would tie the typed phone to them (orders/orderLock).
+    const orderLock = require('../orders/orderLock');
+    const hidden = (await orderLock.lockedCustomerIds(await orderLock.contextFor(workspaceId), workspaceId, [existing.id])).size > 0;
+    throw new AppError('PHONE_TAKEN', 'A contact with that phone number already exists', 409, { customerId: hidden ? null : existing.id });
   }
   const customer = await db.Customer.create({
     workspaceId,

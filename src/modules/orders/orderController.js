@@ -13,13 +13,22 @@ const orderFulfill = require('./orderFulfill');
 const orderDocuments = require('./orderDocuments');
 const trackingImport = require('./trackingImport');
 const { invoicePdf: buildInvoicePdf } = require('./orderInvoicePdf');
+const orderLock = require('./orderLock');
+
+// Every order a handler answers with goes out through the lock (orderLock):
+// a locked order's customer details hidden, `contactLocked` on every order.
+const present = (req, order) => {
+  if (!order) return order;
+  const plain = typeof order.toJSON === 'function' ? order.toJSON() : order;
+  return 'contactLocked' in plain ? plain : orderLock.presentOrder(req.tenant.workspaceId, plain);
+};
 
 const create = asyncHandler(async (req, res) => {
   const { shippingAmount, ...body } = req.body;
   const { order, items } = await service.createOrder(req.tenant.workspaceId, body, req, {
     shippingOverride: manualOrder.shippingOverrideOf({ shippingAmount }),
   });
-  res.status(201).json({ order: { ...order.toJSON(), items } });
+  res.status(201).json({ order: await present(req, { ...order.toJSON(), items }) });
 });
 
 const manualPreview = asyncHandler(async (req, res) => {
@@ -49,9 +58,21 @@ const pipeline = asyncHandler(async (req, res) => {
   res.json(await service.orderPipeline(req.tenant.workspaceId, req.query));
 });
 
+// GET /orders/locked-summary — { enabled, mode, reason, canPay, count, due, totals, fee?, balance?, freeLeft? }
+const lockedSummary = asyncHandler(async (req, res) => {
+  res.json({ locked: await orderLock.lockedSummary(req.tenant.workspaceId) });
+});
+
+// POST /orders/locked/settle — the fees of orders paid online while the
+// balance could not pay them, taken now while it can; then the summary.
+const settleLocked = asyncHandler(async (req, res) => {
+  const result = await require('../billing/confirmFeeService').settleDue(req.tenant.workspaceId);
+  res.json({ ...result, locked: await orderLock.lockedSummary(req.tenant.workspaceId) });
+});
+
 const cancel = asyncHandler(async (req, res) => {
   const order = await service.cancelOrder(req.tenant.workspaceId, req.params.orderId, req.body, req);
-  res.json({ order });
+  res.json({ order: await present(req, order) });
 });
 
 // Confirm from the order page: the same outcome a queue call records.
@@ -77,7 +98,7 @@ const previewItems = asyncHandler(async (req, res) => {
 });
 
 const updateItems = asyncHandler(async (req, res) => {
-  res.json({ order: await itemsEdit.updateItems(req.tenant.workspaceId, req.params.orderId, req.body, req) });
+  res.json({ order: await present(req, await itemsEdit.updateItems(req.tenant.workspaceId, req.params.orderId, req.body, req)) });
 });
 
 const refundQuote = asyncHandler(async (req, res) => {
@@ -85,7 +106,7 @@ const refundQuote = asyncHandler(async (req, res) => {
 });
 
 const fulfill = asyncHandler(async (req, res) => {
-  res.json({ order: await orderFulfill.fulfill(req.tenant.workspaceId, req.params.orderId, req.body, req) });
+  res.json({ order: await present(req, await orderFulfill.fulfill(req.tenant.workspaceId, req.params.orderId, req.body, req)) });
 });
 
 // `?as=base64` answers JSON { filename, contentType, base64 } for clients
@@ -126,12 +147,14 @@ const timeline = asyncHandler(async (req, res) => {
 });
 
 const neighbors = asyncHandler(async (req, res) => {
-  res.json(
-    await orderTimeline.neighbors(req.tenant.workspaceId, req.params.orderId, req.query, service.applySearchAndDates)
-  );
+  // The search the neighbours page through never matches a locked order's customer.
+  const lockCtx = await orderLock.contextFor(req.tenant.workspaceId);
+  const search = (conditions, bind, query) => service.applySearchAndDates(conditions, bind, query, lockCtx);
+  res.json(await orderTimeline.neighbors(req.tenant.workspaceId, req.params.orderId, req.query, search));
 });
 
 const updateMeta = asyncHandler(async (req, res) => {
+  // The meta only (tags, flags): no customer details in it.
   res.json({ order: await orderMeta.updateMeta(req.tenant.workspaceId, req.params.orderId, req.body, req) });
 });
 
@@ -155,7 +178,7 @@ const deleteNote = asyncHandler(async (req, res) => {
 
 const update = asyncHandler(async (req, res) => {
   const order = await service.updateOrderLimited(req.tenant.workspaceId, req.params.orderId, req.body, req);
-  res.json({ order });
+  res.json({ order: await present(req, order) });
 });
 
 const listShipments = asyncHandler(async (req, res) => {
@@ -183,6 +206,8 @@ module.exports = {
   get,
   list,
   pipeline,
+  lockedSummary,
+  settleLocked,
   cancel,
   confirm,
   changeStatus,

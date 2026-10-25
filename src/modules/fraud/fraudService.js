@@ -7,6 +7,7 @@ const { recordAudit } = require('../audit/auditService');
 const customerService = require('../customers/customerService');
 const { resolveCursor } = require('../orders/orderService');
 const { STAGE_SQL, ORDERS_WITH_STAGE_FROM } = require('../orders/orderStage');
+const orderLock = require('../orders/orderLock');
 
 // The stages in which a flagged order still wants a decision: the COD call
 // has not settled it yet. Anything past these (confirmed, shipped, cancelled,
@@ -50,6 +51,7 @@ function toFlaggedOrder(row) {
  * order in an open stage is never a cancelled one.
  */
 async function listFlaggedOrders(workspaceId, { limit = 30, before, includeResolved = false } = {}) {
+  const lockCtx = await orderLock.contextFor(workspaceId);
   const conditions = ['o.workspace_id = $workspaceId', 'cardinality(o.risk_flags) > 0'];
   const bind = { workspaceId, limit: limit + 1 };
 
@@ -78,7 +80,8 @@ async function listFlaggedOrders(workspaceId, { limit = 30, before, includeResol
             o.risk_reasons,
             o.ip_address,
             o.ip_country,
-            (${STAGE_SQL}) = 'cancelled' AS cancelled
+            (${STAGE_SQL}) = 'cancelled' AS cancelled,
+            ${orderLock.visibleSql(lockCtx, 'o')} AS visible
        FROM ${ORDERS_WITH_STAGE_FROM}
       WHERE ${conditions.join(' AND ')}
       ORDER BY o.created_at DESC, o.id DESC
@@ -88,7 +91,14 @@ async function listFlaggedOrders(workspaceId, { limit = 30, before, includeResol
 
   const hasMore = rows.length > limit;
   const page = rows.slice(0, limit);
-  return { orders: page.map(toFlaggedOrder), nextCursor: hasMore ? page[page.length - 1].id : null };
+  // A locked order's customer hidden (orders/orderLock): its flags and score still show.
+  const shown = (row) => {
+    const order = toFlaggedOrder(row);
+    if (!lockCtx.enabled) return order;
+    if (row.visible) return { ...order, contactLocked: false };
+    return { ...order, customerName: order.customerName && orderLock.MASK, phone: order.phone && orderLock.MASK, ipAddress: order.ipAddress && orderLock.MASK, contactLocked: true };
+  };
+  return { orders: page.map(shown), nextCursor: hasMore ? page[page.length - 1].id : null };
 }
 
 /**

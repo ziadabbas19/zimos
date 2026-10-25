@@ -353,6 +353,11 @@ async function resolveAddressSource(connection, carrierAddress) {
  * the price, and only this order's row pays it.
  */
 async function createCarrierShipment(workspaceId, orderId, data, req) {
+  // A locked order's customer is never sent to a courier (orders/orderLock):
+  // 402 ORDER_LOCKED before anything is asked. Every booking comes through
+  // here — the order page, the bulk action, the batches, the automatic
+  // booking on order.confirmed / order.paid, the public API.
+  await require('../orders/orderLock').assertUnlocked(workspaceId, orderId);
   const connection = await accounts.loadConnection(workspaceId, data.carrierCode);
   const { adapter, account, credentials } = connection;
   // Checked again at booking: a store that left the test list keeps its

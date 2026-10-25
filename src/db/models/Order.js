@@ -110,6 +110,9 @@ module.exports = (sequelize, DataTypes) => {
       // When the current confirmation happened; null while not confirmed —
       // migration 115, written by orderStateService.setConfirmationState.
       confirmedAt: { type: DataTypes.DATE, allowNull: true, field: 'confirmed_at' },
+      // unlocked | due | null — whether the customer's details stay visible
+      // once the order is confirmed (migration 718, orders/orderLock.js).
+      contactLock: { type: DataTypes.STRING(10), allowNull: true, field: 'contact_lock' },
       // When the order became a sale — see modules/orders/orderCompletion.js.
       completedAt: { type: DataTypes.DATE, allowNull: true, field: 'completed_at' },
       // Unpaid online orders — see migration 099. The token hash is never

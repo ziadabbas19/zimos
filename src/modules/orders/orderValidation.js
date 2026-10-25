@@ -1,6 +1,7 @@
 'use strict';
 const Joi = require('joi');
 const joiEmail = require('../../core/utils/joiEmail');
+const { refusesHidden } = require('../../core/utils/refusesHidden');
 const { STAGES } = require('./orderStage');
 const { ORDER_SORT_KEYS, DEFAULT_ORDER_SORT } = require('./orderSort');
 const { CHANNELS: CONFIRMATION_CHANNELS } = require('../cod/confirmationValidation');
@@ -68,9 +69,11 @@ const address = Joi.object({
 });
 
 module.exports = {
+  lockedSummary: { params: Joi.object({ workspaceId: uuid.required() }) },
+  settleLocked: { params: Joi.object({ workspaceId: uuid.required() }), body: Joi.object({}).default({}) },
   create: {
     params: Joi.object({ workspaceId: uuid.required() }),
-    body: Joi.object({
+    body: refusesHidden(Joi.object({
       items: Joi.array()
         .items(
           Joi.object({
@@ -90,7 +93,7 @@ module.exports = {
       notes: Joi.string().max(2000).allow('').optional(),
       // Staff may set the shipping themselves (minor units); omitted, it is calculated.
       shippingAmount: Joi.number().integer().min(0).max(100000000).optional(),
-    }),
+    })),
   },
   // POST /manual/preview — the same body, priced and not saved; the customer may still be blank.
   manualPreview: {
@@ -291,17 +294,17 @@ module.exports = {
   },
   update: {
     params: Joi.object({ workspaceId: uuid.required(), orderId: uuid.required() }),
-    body: Joi.object({
+    body: refusesHidden(Joi.object({
       shippingAddress: address.optional(),
       notes: Joi.string().max(2000).allow('', null).optional(),
       // The customer's details as written on the order (a typo in the name or number).
       contact: contact.optional(),
-    }).min(1),
+    }).min(1)),
   },
   listShipments: { params: Joi.object({ workspaceId: uuid.required(), orderId: uuid.required() }) },
   createShipment: {
     params: Joi.object({ workspaceId: uuid.required(), orderId: uuid.required() }),
-    body: Joi.object({
+    body: refusesHidden(Joi.object({
       carrierCode: Joi.string().min(1).max(100).required(),
       waybillNumber: Joi.string().max(100).allow(null, '').optional(),
       trackingUrl: Joi.string().uri().max(500).allow(null, '').optional(),
@@ -327,7 +330,7 @@ module.exports = {
       // Connected couriers only: book as this weight tier instead of the one
       // stored on the order at checkout.
       tierId: uuid.optional(),
-    }),
+    })),
   },
   updateShipment: {
     params: Joi.object({ workspaceId: uuid.required(), orderId: uuid.required(), shipmentId: uuid.required() }),

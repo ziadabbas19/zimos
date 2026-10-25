@@ -9,6 +9,11 @@ its order is cancelled after it goes off.
 
 Code: `src/modules/billing/walletService.js`. Migration 131.
 
+With `ORDERS_LOCK_ENABLED` on, the fee is taken once when an order is
+confirmed instead of when it is placed, never below zero and never given back;
+an empty balance hides new orders' customer details instead of closing the
+store. See `docs/orders-lock.md`.
+
 ## The plan
 
 - **A pay-per-order plan:** a plan with `per_order_fee_amount > 0` (minor

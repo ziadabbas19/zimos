@@ -14,6 +14,7 @@ const { presentOrderItems } = require('../customerUploads/customerUploadService'
 const { QUEUE_DEFAULT_SORT, orderSort, orderByClause, afterAnchorClause, anchorValue } = require('../orders/orderSort');
 const wallet = require('../billing/walletService');
 const manualPayments = require('../manualPayments/manualPaymentService');
+const orderLock = require('../orders/orderLock');
 
 /*
  * Task lifecycle
@@ -134,6 +135,16 @@ async function loadTasks(workspaceId, ids, transaction) {
       task.order.manualPayment = await manualPayments.presentForStaff(workspaceId, task.order.id, transaction);
     }
   }
+  // A locked order's customer details hidden in the queue too, each order marked (orders/orderLock).
+  const withOrders = tasks.filter((task) => task.order);
+  const presented = await orderLock.presentOrders(
+    workspaceId,
+    withOrders.map((task) => task.order),
+    { transaction }
+  );
+  withOrders.forEach((task, i) => {
+    task.order = presented[i];
+  });
   return tasks;
 }
 

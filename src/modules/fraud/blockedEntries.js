@@ -2,12 +2,13 @@
 
 const crypto = require('crypto');
 const net = require('net');
-const { Op } = require('sequelize');
+const { Op, QueryTypes } = require('sequelize');
 const db = require('../../db/models');
 const { NotFoundError, ValidationError } = require('../../core/errors/AppError');
 const { normalizePhone } = require('../../core/utils/phone');
 const { recordAudit } = require('../audit/auditService');
 const visitorGate = require('../risk/visitorGate');
+const orderLock = require('../orders/orderLock');
 
 /**
  * The store's blacklist (`blocked_entries`, migration 140).
@@ -115,6 +116,12 @@ function auditState(entry) {
   return { type: entry.type, value: entry.value, label: entry.label, scope: entry.scope, reason: entry.reason };
 }
 
+// True for an entry that is not the phone of a customer who comes hidden (orders/orderLock.customerVisibleSql).
+const phoneShownSql = (ctx) => `("BlockedEntry"."type" <> 'phone' OR NOT EXISTS (
+  SELECT 1 FROM customers bc
+   WHERE bc.workspace_id = "BlockedEntry"."workspace_id" AND bc.phone_normalized = "BlockedEntry"."value"
+     AND NOT ${orderLock.customerVisibleSql(ctx, 'bc')}))`;
+
 async function customerIdsByPhone(workspaceId, entries, transaction) {
   const phones = entries.filter((e) => e.type === 'phone').map((e) => e.value);
   if (phones.length === 0) return new Map();
@@ -126,24 +133,101 @@ async function customerIdsByPhone(workspaceId, entries, transaction) {
   return new Map(customers.map((c) => [c.phoneNormalized, c.id]));
 }
 
+// The entry types that carry what an order was placed with, not the customer row's phone.
+const CONTACT_TYPES = ['email', 'name_address'];
+const NO_CONTACT = Object.freeze({ emails: new Set(), nameAddresses: new Set() });
+
+/**
+ * Locked orders (orders/orderLock): the e-mails and name + address values,
+ * as entries store them, of the customers who come hidden now — read from
+ * their orders (every one of them is locked, so only locked orders are read)
+ * and their customer rows' e-mail. Nothing is read while nothing is locked,
+ * or when the store has no entry of those types.
+ */
+async function hiddenContactValues(ctx, workspaceId, { transaction } = {}) {
+  if (orderLock.isOpenContext(ctx)) return NO_CONTACT;
+  if (!(await db.BlockedEntry.findOne({ where: { workspaceId, type: CONTACT_TYPES }, attributes: ['id'], transaction }))) return NO_CONTACT;
+  const rows = await db.sequelize.query(
+    `SELECT o.customer_id, o.contact_snapshot->>'email' AS email, o.contact_snapshot->>'fullName' AS full_name,
+            o.shipping_address_snapshot->>'addressLine' AS address_line
+       FROM orders o
+      WHERE o.workspace_id = :workspaceId AND NOT ${orderLock.visibleSql(ctx, 'o')}`,
+    { replacements: { workspaceId }, type: QueryTypes.SELECT, transaction }
+  );
+  const hidden = await orderLock.lockedCustomerIds(ctx, workspaceId, rows.map((r) => r.customer_id), { transaction });
+  const values = { emails: new Set(), nameAddresses: new Set() };
+  const addEmail = (email) => {
+    const value = String(email || '').trim().toLowerCase();
+    if (value) values.emails.add(value);
+  };
+  for (const row of rows.filter((r) => hidden.has(r.customer_id))) {
+    addEmail(row.email);
+    const pair = nameAddressValue(row.full_name, row.address_line);
+    if (pair) values.nameAddresses.add(pair);
+  }
+  if (hidden.size > 0) {
+    const customers = await db.Customer.findAll({ where: { workspaceId, id: [...hidden] }, attributes: ['email'], transaction });
+    for (const c of customers) addEmail(c.email);
+  }
+  return values;
+}
+
+/**
+ * Locked orders (orders/orderLock): a test for entries — rows, or the
+ * { type, value } the activity log keeps of them — that stand for a customer
+ * who comes hidden now: their phone (the customer row), or an e-mail or a
+ * name + address one of their orders was placed with. Such an entry shows,
+ * its value and label do not. False for every entry, without a query, while
+ * nothing is locked.
+ */
+async function hiddenEntryTest(ctx, workspaceId, entries, { transaction } = {}) {
+  const list = entries.filter((e) => e && e.type && e.value);
+  if (orderLock.isOpenContext(ctx) || list.length === 0) return () => false;
+  const byPhone = await customerIdsByPhone(workspaceId, list, transaction);
+  const hiddenCustomers = await orderLock.lockedCustomerIds(ctx, workspaceId, [...byPhone.values()], { transaction });
+  const contact = list.some((e) => CONTACT_TYPES.includes(e.type)) ? await hiddenContactValues(ctx, workspaceId, { transaction }) : NO_CONTACT;
+  return (e) => {
+    if (!e) return false;
+    if (e.type === 'phone') return hiddenCustomers.has(byPhone.get(e.value));
+    if (e.type === 'email') return contact.emails.has(e.value);
+    if (e.type === 'name_address') return contact.nameAddresses.has(e.value);
+    return false;
+  };
+}
+
 /**
  * Newest first, keyset-paged: `cursor` is the last entry id of the previous
  * page. `counts` is the number of entries per type under the same scope
  * filter, for the type chips of the screen.
  */
 async function listEntries(workspaceId, { type, scope, q, limit = LIST_LIMIT_DEFAULT, cursor } = {}) {
+  const lockCtx = await orderLock.contextFor(workspaceId);
+  let contact = null;
+  const contactValues = async () => (contact = contact || (await hiddenContactValues(lockCtx, workspaceId)));
   const where = { workspaceId };
   if (type) where.type = type;
   if (scope) where.scope = scope;
   if (q) {
     const term = `%${q.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
     const phone = normalizePhone(q);
-    where[Op.or] = [
+    const byNumber = [
       { label: { [Op.iLike]: term } },
-      { reason: { [Op.iLike]: term } },
       { value: { [Op.iLike]: term } },
       ...(phone ? [{ type: 'phone', value: phone }] : []),
     ];
+    // The phone, e-mail or name and address of a customer who comes hidden (orders/orderLock) is never
+    // found by what it holds.
+    const shownOnly = [];
+    if (!orderLock.isOpenContext(lockCtx)) {
+      shownOnly.push(db.sequelize.literal(phoneShownSql(lockCtx)));
+      const known = !type || CONTACT_TYPES.includes(type) ? await contactValues() : NO_CONTACT;
+      const hiddenContact = [
+        ...(known.emails.size ? [{ type: 'email', value: [...known.emails] }] : []),
+        ...(known.nameAddresses.size ? [{ type: 'name_address', value: [...known.nameAddresses] }] : []),
+      ];
+      if (hiddenContact.length) shownOnly.push({ [Op.not]: { [Op.or]: hiddenContact } });
+    }
+    where[Op.or] = [{ reason: { [Op.iLike]: term } }, shownOnly.length ? { [Op.and]: [{ [Op.or]: byNumber }, ...shownOnly] } : { [Op.or]: byNumber }];
   }
   const and = [];
   if (cursor) {
@@ -176,11 +260,22 @@ async function listEntries(workspaceId, { type, scope, q, limit = LIST_LIMIT_DEF
   const hasMore = rows.length > limit;
   const page = rows.slice(0, limit);
   const customers = await customerIdsByPhone(workspaceId, page);
+  const hidden = await orderLock.lockedCustomerIds(lockCtx, workspaceId, [...customers.values()]);
+  const shownContact = page.some((e) => CONTACT_TYPES.includes(e.type)) ? await contactValues() : NO_CONTACT;
   const counts = Object.fromEntries(TYPES.map((t) => [t, 0]));
   for (const row of grouped) counts[row.type] = Number(row.count);
 
   return {
-    entries: page.map((e) => serializeEntry(e, e.type === 'phone' ? customers.get(e.value) || null : null)),
+    entries: page.map((e) => {
+      const customerId = e.type === 'phone' ? customers.get(e.value) || null : null;
+      const hiddenEntry =
+        (customerId && hidden.has(customerId)) ||
+        (e.type === 'email' && shownContact.emails.has(e.value)) ||
+        (e.type === 'name_address' && shownContact.nameAddresses.has(e.value));
+      if (!hiddenEntry) return serializeEntry(e, customerId);
+      // A hidden customer's phone, e-mail or name and address: the entry shows, what it holds and the customer do not.
+      return { ...serializeEntry(e, null), value: orderLock.MASK, label: e.label ? orderLock.MASK : e.label, contactLocked: true };
+    }),
     nextCursor: hasMore ? page[page.length - 1].id : null,
     counts,
   };
@@ -257,6 +352,10 @@ async function addEntry(workspaceId, { type = 'phone', value, name, address, sco
         });
       }
       entries.push(entry);
+    }
+    // A customer who comes hidden is not named: the answer would tie the typed phone to them (orders/orderLock).
+    if (customerId && (await orderLock.lockedCustomerIds(await orderLock.contextFor(workspaceId, { transaction }), workspaceId, [customerId], { transaction })).size > 0) {
+      customerId = null;
     }
     return { created: anyCreated, entries: entries.map((e) => serializeEntry(e, e.type === 'phone' ? customerId : null)) };
   }).then((result) => {
@@ -447,6 +546,7 @@ module.exports = {
   normalizeText,
   normalizeIdentifier,
   listEntries,
+  hiddenEntryTest,
   addEntry,
   removeEntry,
   importCsv,
