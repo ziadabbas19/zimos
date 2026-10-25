@@ -24,8 +24,12 @@ const FEATURE_CATALOG = Object.freeze(
     // the Next storefront doesn't serve custom hosts (REPORT-plan-features).
     { key: 'custom_domain', available: true, label: { en: 'Custom domain', ar: 'نطاق خاص' } },
     { key: 'funnels', available: true, label: { en: 'Sales funnels', ar: 'مسارات البيع' } },
-    // The confirmation queue's WhatsApp button and message (sent by the
-    // merchant's own WhatsApp; nothing is sent automatically).
+    // Order confirmation on the store's own WhatsApp number: the ready-made
+    // automation that sends the confirmation message and the customer's
+    // Confirm / Cancel taps (whatsapp/quickReplyConfirmation.js). With
+    // WHATSAPP_REQUIRE_PLAN_FEATURE, connecting a number and switching that
+    // automation on need it; a number already connected keeps working
+    // (whatsapp/whatsappPlanGate.js).
     { key: 'whatsapp_confirmation', available: true, label: { en: 'WhatsApp order confirmation', ar: 'تأكيد الطلبات عبر واتساب' } },
     // The abandoned-checkout list and its follow-up status (no message is sent).
     { key: 'abandoned_cart', available: true, label: { en: 'Abandoned cart recovery', ar: 'استرجاع السلات المتروكة' } },

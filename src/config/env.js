@@ -403,6 +403,17 @@ const env = {
     enforcement: process.env.NODE_ENV !== 'test' && process.env.PLAN_FEATURE_ENFORCEMENT === 'true',
   },
 
+  // WHATSAPP_REQUIRE_PLAN_FEATURE=true: connecting a WhatsApp number and
+  // switching on the ready-made WhatsApp order confirmation need the plan's
+  // whatsapp_confirmation — refused only while PLAN_FEATURE_ENFORCEMENT is on
+  // too (whatsapp/whatsappPlanGate.js). A number already connected keeps
+  // working and can still be edited or disconnected; a rule already switched
+  // on keeps running. Off (the default): as before. Under NODE_ENV=test it
+  // starts off; a test sets it.
+  whatsapp: {
+    requirePlanFeature: process.env.NODE_ENV !== 'test' && process.env.WHATSAPP_REQUIRE_PLAN_FEATURE === 'true',
+  },
+
   // Account settings (auth/accountService). Changing the phone number by an
   // SMS code is off unless exactly "true": off, a request is answered the
   // same way and nothing is sent or changed.

@@ -10,6 +10,7 @@ const { resolveTenant } = require('../../core/middleware/tenantContext');
 const { requirePermission } = require('../../core/middleware/rbac');
 const { PERMISSIONS } = require('../../core/security/permissions');
 const service = require('./whatsappService');
+const planGate = require('./whatsappPlanGate');
 
 const uuid = Joi.string().uuid();
 const ws = { workspaceId: uuid.required() };
@@ -33,7 +34,11 @@ staff.get(
   '/integration',
   requirePermission(PERMISSIONS.ORDERS_CONFIRM),
   validate({ params: Joi.object(ws) }),
-  asyncHandler(async (req, res) => res.json({ integration: service.integrationView(await service.getIntegration(req.tenant.workspaceId), apiBase(req)) }))
+  asyncHandler(async (req, res) => {
+    const view = service.integrationView(await service.getIntegration(req.tenant.workspaceId), apiBase(req));
+    // planLocked: a new connection would be refused for the plan (whatsappPlanGate.js), so the dashboard says so first.
+    res.json({ integration: { ...view, planLocked: await planGate.lockedForPlan(req.tenant.workspaceId) } });
+  })
 );
 
 staff.put(
@@ -49,6 +54,8 @@ staff.put(
       appSecret: Joi.string().min(16).max(200).allow('', null).optional(),
     }),
   }),
+  // WHATSAPP_REQUIRE_PLAN_FEATURE: a first connection needs whatsapp_confirmation (whatsappPlanGate.js).
+  planGate.newConnectionGate,
   asyncHandler(async (req, res) => {
     const integration = await service.connect(req.tenant.workspaceId, req.body, req);
     res.json({ integration: service.integrationView(integration, apiBase(req)) });
