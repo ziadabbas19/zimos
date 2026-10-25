@@ -1,5 +1,8 @@
 'use strict';
 
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 const { capPayload } = require('../../src/modules/webhooks/webhookPayloadCap');
 
 // The webhook body cap (webhooks/webhookPayloadCap.js): small events pass as
@@ -36,7 +39,11 @@ describe('capPayload', () => {
 });
 
 describe('WEBHOOKS_MAX_PAYLOAD_BYTES', () => {
-  /** env.webhooks.maxPayloadBytes as the app would read it at start with this value (undefined: not set at all). */
+  /**
+   * env.webhooks.maxPayloadBytes as the app would read it at start with this
+   * value (undefined: not set at all) — with dotenv stubbed, so a .env file
+   * where the run happens cannot fill the variable in.
+   */
   function capFor(value) {
     const saved = process.env.WEBHOOKS_MAX_PAYLOAD_BYTES;
     if (value === undefined) delete process.env.WEBHOOKS_MAX_PAYLOAD_BYTES;
@@ -44,9 +51,11 @@ describe('WEBHOOKS_MAX_PAYLOAD_BYTES', () => {
     let max;
     try {
       jest.isolateModules(() => {
+        jest.doMock('dotenv', () => ({ config: () => ({ parsed: {} }) }));
         max = require('../../src/config/env').webhooks.maxPayloadBytes;
       });
     } finally {
+      jest.dontMock('dotenv');
       if (saved === undefined) delete process.env.WEBHOOKS_MAX_PAYLOAD_BYTES;
       else process.env.WEBHOOKS_MAX_PAYLOAD_BYTES = saved;
     }
@@ -58,6 +67,19 @@ describe('WEBHOOKS_MAX_PAYLOAD_BYTES', () => {
     expect(capFor('')).toBe(262144);
     expect(capFor('  ')).toBe(262144);
     expect(capFor('256KB')).toBe(262144);
+  });
+
+  it('is 256 KB when not set even where a .env file turns the cap off', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cap-env-'));
+    fs.writeFileSync(path.join(dir, '.env'), 'WEBHOOKS_MAX_PAYLOAD_BYTES=0\n');
+    const cwd = process.cwd();
+    try {
+      process.chdir(dir);
+      expect(capFor(undefined)).toBe(262144);
+    } finally {
+      process.chdir(cwd);
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('takes a number of bytes as given, and 0 as off', () => {
