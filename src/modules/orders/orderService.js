@@ -1283,7 +1283,9 @@ async function riskCounts(workspaceId, { q, from, to, riskLevel, ...filters }, l
  * uncollected shipment, closes open confirmation tasks and records the
  * reason. Refused once a parcel has shipped — use a return after that.
  */
-async function cancelOrder(workspaceId, orderId, { reason, acknowledgeManualCancel = false, notifyCustomer }, req) {
+// onlyWhilePendingCod: a customer's "Cancel" tap on WhatsApp (whatsapp/quickReplyConfirmation.js) —
+// refused with 409 ORDER_NOT_PENDING once the order is no longer a COD order waiting for its confirmation.
+async function cancelOrder(workspaceId, orderId, { reason, acknowledgeManualCancel = false, notifyCustomer, onlyWhilePendingCod = false }, req) {
   // The gateway is asked about an open card or wallet attempt first (best effort, as expiry does), so a payment
   // that already went through is recorded before the cancel closes the attempt.
   const known = await db.Order.findOne({ where: { id: orderId, workspaceId }, attributes: ['id', 'cancelledAt'] });
@@ -1301,6 +1303,9 @@ async function cancelOrder(workspaceId, orderId, { reason, acknowledgeManualCanc
     if (!order) throw new NotFoundError('Order');
     if (order.cancelledAt) {
       throw new AppError('ORDER_ALREADY_CANCELLED', 'This order is already cancelled', 409);
+    }
+    if (onlyWhilePendingCod && (order.paymentMethod !== 'cod' || order.confirmationState !== 'pending')) {
+      throw new AppError('ORDER_NOT_PENDING', 'This order is no longer waiting for its confirmation', 409);
     }
     await assertNotShipped(order, transaction);
     await outbox.record(transaction, 'order.cancelled', {

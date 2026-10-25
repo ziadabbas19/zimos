@@ -22,10 +22,18 @@ const logger = require('../../core/utils/logger');
  * What counts as a reply: a button tap always; typed text only when it is
  * exactly one of the words below *and* it quotes one of our order messages.
  * Anything else stays an ordinary inbox message for a person to read.
+ *
+ * "Cancel" cancels only when it answers the confirmation message itself
+ * (the `order_confirmation` template) about a cash-on-delivery order still
+ * waiting for its confirmation. A "no" to any other message changes nothing;
+ * a cancel the order is past (confirmed already, postponed, paid online…) is
+ * passed to the team instead of cancelling.
  */
 
 const JOB = 'whatsapp.quick_reply';
 const WINDOW_MS = 3 * 24 * 60 * 60 * 1000;
+// The confirmation message: the ready-made automation's and the order page's (orders/whatsappConfirm.js).
+const CONFIRMATION_TEMPLATE = 'order_confirmation';
 
 const normalise = (text) =>
   String(text || '')
@@ -80,31 +88,43 @@ async function enqueue(workspaceId, msg, phoneNormalized) {
   }
 }
 
-async function findOrder(workspaceId, { phoneNormalized, repliedToWaMessageId, isButton }) {
+/** { order } for the reply, or { order: null, reason } when it answers nothing it may act on. */
+async function findOrder(workspaceId, { phoneNormalized, repliedToWaMessageId, isButton, intent }) {
   if (repliedToWaMessageId) {
     const sent = await db.WhatsappMessage.findOne({
       where: { workspaceId, waMessageId: repliedToWaMessageId, direction: 'out', orderId: { [Op.ne]: null } },
-      attributes: ['orderId'],
+      attributes: ['orderId', 'templateName'],
     });
-    if (sent) return db.Order.findOne({ where: { id: sent.orderId, workspaceId } });
+    if (sent) {
+      // A "no" to a shipping, delivery or review message is not a cancellation.
+      if (intent === 'cancel' && sent.templateName !== CONFIRMATION_TEMPLATE) return { order: null, reason: 'not an answer to the confirmation message' };
+      return { order: await db.Order.findOne({ where: { id: sent.orderId, workspaceId } }) };
+    }
   }
   // Typed text must quote one of our order messages; only a button tap may fall back.
-  if (!isButton) return null;
+  if (!isButton) return { order: null };
   const conversation = await db.WhatsappConversation.findOne({ where: { workspaceId, phoneNormalized }, attributes: ['id'] });
-  if (!conversation) return null;
+  if (!conversation) return { order: null };
   const recent = await db.WhatsappMessage.findAll({
-    where: { workspaceId, conversationId: conversation.id, direction: 'out', orderId: { [Op.ne]: null }, createdAt: { [Op.gt]: new Date(Date.now() - WINDOW_MS) } },
+    where: {
+      workspaceId,
+      conversationId: conversation.id,
+      direction: 'out',
+      orderId: { [Op.ne]: null },
+      createdAt: { [Op.gt]: new Date(Date.now() - WINDOW_MS) },
+      ...(intent === 'cancel' ? { templateName: CONFIRMATION_TEMPLATE } : {}),
+    },
     attributes: ['orderId'],
   });
   const orderIds = [...new Set(recent.map((m) => m.orderId))];
-  if (orderIds.length === 0) return null;
+  if (orderIds.length === 0) return { order: null };
   const open = await db.Order.findAll({
     where: { workspaceId, id: orderIds, paymentMethod: 'cod', confirmationState: 'pending', cancelledAt: null },
   });
-  return open.length === 1 ? open[0] : null;
+  return { order: open.length === 1 ? open[0] : null };
 }
 
-async function tellTeam(workspaceId, order, message) {
+async function tellTeam(workspaceId, order, message, dedupeKey = null) {
   const merchantNotifications = require('../notifications/merchantNotificationService');
   await merchantNotifications.create(workspaceId, {
     type: 'automation',
@@ -112,19 +132,37 @@ async function tellTeam(workspaceId, order, message) {
     body: message,
     link: `/orders/${order.id}`,
     data: { message, orderId: order.id },
+    dedupeKey,
   });
 }
+
+/** A tap cancels only a cash-on-delivery order still waiting for its confirmation. */
+const cancellableByTap = (order) => order.paymentMethod === 'cod' && order.confirmationState === 'pending';
 
 /** The queue job. Returns what it did, for the job log. */
 async function process(job) {
   const { workspaceId } = job;
   const { intent } = job.payload;
-  const order = await findOrder(workspaceId, job.payload);
-  if (!order) return { done: false, reason: 'no matching order' };
+  const { order, reason } = await findOrder(workspaceId, job.payload);
+  if (!order) return { done: false, reason: reason || 'no matching order' };
 
   // Already where the customer wants it (a second tap, or an agent got there first).
   if (intent === 'confirm' && order.confirmationState === 'confirmed') return { done: false, reason: 'already confirmed' };
-  if (order.cancelledAt) return { done: false, reason: 'already cancelled' };
+  if (order.cancelledAt || (intent === 'cancel' && order.confirmationState === 'rejected')) return { done: false, reason: 'already cancelled' };
+
+  // "Cancel" on an order that is past waiting for its confirmation: nothing changes, a person
+  // talks to the customer. Told once per order, however many times the button is tapped.
+  if (intent === 'cancel' && !cancellableByTap(order)) {
+    await tellTeam(
+      workspaceId,
+      order,
+      order.confirmationState === 'confirmed'
+        ? 'العميل ضغط "إلغاء" على رسالة التأكيد بعد تأكيد الطلب، فلم يُلغَ الطلب. تواصلوا مع العميل قبل الشحن.'
+        : 'العميل ضغط "إلغاء" على رسالة التأكيد، ولم يُلغَ الطلب تلقائيًا لأنه ليس طلب دفع عند الاستلام في انتظار التأكيد. راجعوه مع العميل.',
+      `waqr.cancel_refused:${order.id}`
+    );
+    return { done: false, reason: 'not a cash-on-delivery order waiting for its confirmation', orderId: order.id };
+  }
 
   // Lazy requires: these modules reach back into whatsapp through automations.
   const { systemRequest } = require('../automations/automationSteps');
@@ -133,7 +171,8 @@ async function process(job) {
     if (intent === 'confirm') {
       await require('../cod/confirmationService').confirmFromOrder(workspaceId, order.id, { notes: 'العميل أكّد الطلب بزر واتساب', channel: 'whatsapp' }, req);
     } else {
-      await require('../orders/orderService').cancelOrder(workspaceId, order.id, { reason: 'العميل ألغى الطلب بزر واتساب' }, req);
+      // Checked again under the order's lock: an agent may confirm it in the meantime.
+      await require('../orders/orderService').cancelOrder(workspaceId, order.id, { reason: 'العميل ألغى الطلب بزر واتساب', onlyWhilePendingCod: true }, req);
     }
     return { done: true, intent, orderId: order.id };
   } catch (err) {
