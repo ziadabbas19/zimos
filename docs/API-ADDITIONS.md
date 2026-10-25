@@ -62,7 +62,7 @@ into the request — a failed run is recorded, not raised.
 ### WhatsApp Cloud API — `/whatsapp`
 | Method | Path | Notes |
 |---|---|---|
-| GET/PUT/DELETE | `/whatsapp/integration` | credentials are AES-256-GCM encrypted at rest (`INTEGRATIONS_ENCRYPTION_KEY`); the response only ever returns a masked token |
+| GET/PUT/DELETE | `/whatsapp/integration` | credentials are AES-256-GCM encrypted at rest (`INTEGRATIONS_ENCRYPTION_KEY`) and sealed before the token is checked with Meta; the response only ever returns a masked token. PUT needs the App Secret unless one is saved (422 `WHATSAPP_APP_SECRET_REQUIRED`). GET answers `planLocked`: with `WHATSAPP_REQUIRE_PLAN_FEATURE` and `PLAN_FEATURE_ENFORCEMENT` on, a first connection needs `whatsapp_confirmation` (403 `PLAN_FEATURE_REQUIRED`); a store already connected keeps its number |
 | GET | `/whatsapp/conversations` | `?status&search&limit&before` |
 | PATCH | `/whatsapp/conversations/:conversationId` | close / reopen |
 | GET | `/whatsapp/conversations/:conversationId/messages` | |
@@ -70,7 +70,16 @@ into the request — a failed run is recorded, not raised.
 
 Public webhook, outside the workspace mount:
 `GET|POST /api/v1/webhooks/whatsapp/:workspaceId` — verified with
-`X-Hub-Signature-256` against the app secret, using `req.rawBody`.
+`X-Hub-Signature-256` against the app secret, using `req.rawBody`. Only
+messages and statuses whose `metadata.phone_number_id` is the store's connected
+number are kept; another number's (a second store on the same Meta app) are
+logged, counted as `ignored` and answered 200. A message is stored once per
+Meta id (unique index, migration 720).
+
+A customer's "Confirm order" tap confirms the order; "Cancel" cancels it only
+when it answers the `order_confirmation` message about a cash-on-delivery order
+still waiting for its confirmation. A cancel on an order past that point
+changes nothing and notifies the team (`whatsapp/quickReplyConfirmation.js`).
 
 ### Server-side ad pixels — `/server-pixels`
 | Method | Path | Notes |
