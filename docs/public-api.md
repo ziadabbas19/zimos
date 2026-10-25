@@ -369,8 +369,7 @@ itself (number, lines, amounts) is whole. The endpoint list says which
 delivery log follows the same rule for whoever opens it, and resending past
 orders needs that permission.
 
-**Large events.** When the platform sets a size limit (256 KB is the
-suggested one), a body larger than it is sent with ids only and
+**Large events.** A body larger than 256 KB is sent with ids only and
 `"truncated": true` — `data.order` becomes `{ "id", "orderNumber" }`; read the
 rest with `GET /orders/{orderId}`. The event id is unchanged.
 

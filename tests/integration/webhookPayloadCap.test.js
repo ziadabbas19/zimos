@@ -65,8 +65,8 @@ it('sends an order over the cap as ids only, signed, and logs the same body', as
   expect(logged.payload).toEqual(hit.json);
 });
 
-it('leaves every order whole when no cap is set (the default)', async () => {
-  expect(env.webhooks.maxPayloadBytes).toBe(0);
+it('leaves an ordinary order whole under the default cap (256 KB)', async () => {
+  expect(env.webhooks.maxPayloadBytes).toBe(262144);
   const { auth, workspace, variant } = await setupWorkspaceWithProduct();
   await request(app).post(`/api/v1/workspaces/${workspace.id}/webhooks`).set(bearer(auth.accessToken)).send({ url: receiver.url, events: ['order.created'] });
   await request(app)

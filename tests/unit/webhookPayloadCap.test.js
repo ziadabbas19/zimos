@@ -34,3 +34,35 @@ describe('capPayload', () => {
     expect(capPayload(payload, 0)).toBe(payload);
   });
 });
+
+describe('WEBHOOKS_MAX_PAYLOAD_BYTES', () => {
+  /** env.webhooks.maxPayloadBytes as the app would read it at start with this value (undefined: not set at all). */
+  function capFor(value) {
+    const saved = process.env.WEBHOOKS_MAX_PAYLOAD_BYTES;
+    if (value === undefined) delete process.env.WEBHOOKS_MAX_PAYLOAD_BYTES;
+    else process.env.WEBHOOKS_MAX_PAYLOAD_BYTES = value;
+    let max;
+    try {
+      jest.isolateModules(() => {
+        max = require('../../src/config/env').webhooks.maxPayloadBytes;
+      });
+    } finally {
+      if (saved === undefined) delete process.env.WEBHOOKS_MAX_PAYLOAD_BYTES;
+      else process.env.WEBHOOKS_MAX_PAYLOAD_BYTES = saved;
+    }
+    return max;
+  }
+
+  it('is 256 KB when not set, left empty (as .env.example ships it) or not a number', () => {
+    expect(capFor(undefined)).toBe(262144);
+    expect(capFor('')).toBe(262144);
+    expect(capFor('  ')).toBe(262144);
+    expect(capFor('256KB')).toBe(262144);
+  });
+
+  it('takes a number of bytes as given, and 0 as off', () => {
+    expect(capFor('1048576')).toBe(1048576);
+    expect(capFor(' 900 ')).toBe(900);
+    expect(capFor('0')).toBe(0);
+  });
+});
