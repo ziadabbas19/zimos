@@ -57,6 +57,11 @@ describe('adding a webhook endpoint and the plan', () => {
 
     const base = `/api/v1/workspaces/${ctx.wid}/webhooks/${existing.id}`;
     expect((await request(app).patch(base).set(ctx.H).send({ isActive: false })).status).toBe(200);
+    // The plan is asked only when an endpoint is added, never when one is used
+    // or changed: a new address and order.accepted on an existing one pass.
+    const moved = await request(app).patch(base).set(ctx.H).send({ url: 'https://hooks.example.com/moved', events: ['order.created', 'order.accepted'] });
+    expect(moved.status).toBe(200);
+    expect(moved.body.endpoint.events).toEqual(['order.created', 'order.accepted']);
     expect((await request(app).get(`/api/v1/workspaces/${ctx.wid}/webhooks`).set(ctx.H)).status).toBe(200);
     expect((await request(app).delete(base).set(ctx.H)).status).toBe(200);
   });
