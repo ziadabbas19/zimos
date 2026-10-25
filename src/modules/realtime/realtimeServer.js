@@ -8,7 +8,9 @@ const sessionGate = require('../../core/security/sessionGate');
 const { verifyAccessToken } = require('../../core/security/tokens');
 const { clientIpOfUpgrade } = require('../../core/middleware/clientIp');
 const { roomsByUser } = require('./rooms');
-const { CHANNEL_PREFIX } = require('./publisher');
+const { CHANNEL_PREFIX, RESYNC_EVENT } = require('./publisher');
+// The model hooks that end an account's sockets as soon as its access changes.
+require('./control');
 
 /**
  * The Socket.IO server of the live updates, on the API's own HTTP server.
@@ -35,9 +37,12 @@ const { CHANNEL_PREFIX } = require('./publisher');
  *    names one, and sends nothing: any event from it ends the connection.
  *
  * Afterwards: the connection ends when its access token expires (the client
- * reconnects with a fresh one), and within SESSION_CHECK_MS of its session
- * ending. Every ROOMS_CHECK_MS the rooms are worked out again, so a removed
- * teammate, a changed role or a suspended account stops receiving.
+ * reconnects with a fresh one). When the account's access changes — removed
+ * or given another role in a store, a session ended, suspended — its sockets
+ * are closed on every server as soon as the change commits (control.js), and
+ * the next handshake sees the change: the session is read from the database
+ * there, not from sessionGate's 10-second cache. As a safety net, sessions are
+ * checked every SESSION_CHECK_MS and rooms every ROOMS_CHECK_MS.
  */
 
 const PATH = `/api/${env.apiVersion}/realtime/socket.io`;
@@ -61,6 +66,12 @@ function refused(code) {
   const err = new Error(code);
   err.data = { code };
   return err;
+}
+
+/** Whether the token's session still stands, read from the database every time (no cache). A token without one, from before sessions were named, passes as in sessionGate. */
+async function sessionStands(sid) {
+  if (!sid) return true;
+  return Boolean(await sessionGate.currentSessionId(sid));
 }
 
 /** Calls `fn` the first time only. */
@@ -200,7 +211,7 @@ function createRealtimeServer(httpServer, { app, connections }) {
 
     attempts.busy = true;
     try {
-      if (!(await sessionGate.isActive(payload.sid))) {
+      if (!(await sessionStands(payload.sid))) {
         giveBack();
         return refuse('session_ended');
       }
@@ -237,15 +248,16 @@ function createRealtimeServer(httpServer, { app, connections }) {
 
   const localSockets = () => [...io.of('/').sockets.values()];
 
-  /** Ends the connections whose token has expired or whose session has ended. */
-  async function checkSessions() {
+  /** Ends the connections whose token has expired or whose session has ended; `fresh` reads every session from the database. */
+  async function checkSessions({ fresh = false } = {}) {
     for (const socket of localSockets()) {
       if (socket.data.expiresAt && socket.data.expiresAt <= Date.now()) {
         socket.disconnect(true);
         continue;
       }
       try {
-        if (!(await sessionGate.isActive(socket.data.sid))) socket.disconnect(true);
+        const stands = fresh ? await sessionStands(socket.data.sid) : await sessionGate.isActive(socket.data.sid);
+        if (!stands) socket.disconnect(true);
       } catch {
         /* the next check asks again */
       }
@@ -274,6 +286,12 @@ function createRealtimeServer(httpServer, { app, connections }) {
       socket.data.rooms = rooms;
     }
   }
+
+  // A change that did not say whose access it touched (control.js): every server checks everything now.
+  io.of('/').on(RESYNC_EVENT, () => {
+    void checkSessions({ fresh: true });
+    void syncRooms();
+  });
 
   const sessionTimer = setInterval(() => void checkSessions(), SESSION_CHECK_MS);
   const roomsTimer = setInterval(() => void syncRooms(), ROOMS_CHECK_MS);

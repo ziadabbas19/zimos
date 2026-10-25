@@ -5,6 +5,8 @@ const logger = require('../../core/utils/logger');
 const pgPool = require('./pgPool');
 const publisher = require('./publisher');
 const { createRealtimeServer, PATH } = require('./realtimeServer');
+// The model hooks that end an account's sockets as soon as its access changes (no-op while off).
+require('./control');
 
 /**
  * The live updates (REALTIME_ENABLED): a socket server on the API's HTTP

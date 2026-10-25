@@ -12,6 +12,7 @@ const db = require('../../src/db/models');
 const env = require('../../src/config/env');
 const billingService = require('../../src/modules/billing/billingService');
 const realtime = require('../../src/modules/realtime');
+const publisher = require('../../src/modules/realtime/publisher');
 const registry = require('../../src/core/queue/registry');
 
 const LIVE_ONLY = ['order.stage_changed', 'merchant.created', 'ticket.created', 'subscription.paid'];
@@ -60,7 +61,17 @@ describe('REALTIME_ENABLED off', () => {
     await request(app).post(`/api/v1/admin/workspaces/${ctx.workspace.id}/charges`).set(admin.H).expect(201);
     const charge = (await request(app).get(`/api/v1/admin/workspaces/${ctx.workspace.id}/charges`).set(admin.H)).body.charges[0];
     await request(app).post(`/api/v1/admin/charges/${charge.id}/record-payment`).set(admin.H).send({ amountReceived: Number((await db.BillingInvoice.findByPk(charge.id)).amount) }).expect(200);
-    await registerAndActivate({ fullName: 'Another Sign-up' });
+    const another = await registerAndActivate({ fullName: 'Another Sign-up' });
+
+    // The hooks that end sockets on an access change (realtime/control.js) do nothing.
+    const disconnect = jest.spyOn(publisher, 'disconnectUser');
+    const resync = jest.spyOn(publisher, 'resyncAll');
+    await db.User.update({ status: 'suspended' }, { where: { id: another.userId } });
+    await request(app).post('/api/v1/auth/logout').send({ refreshToken: ctx.auth.refreshToken }).expect(200);
+    expect(disconnect).not.toHaveBeenCalled();
+    expect(resync).not.toHaveBeenCalled();
+    disconnect.mockRestore();
+    resync.mockRestore();
 
     const types = (await db.DomainEvent.findAll({ attributes: ['type'] })).map((e) => e.type);
     expect(types).toContain('order.created');

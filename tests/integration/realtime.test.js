@@ -14,6 +14,7 @@
 
 const fs = require('fs');
 const http = require('http');
+const { Op } = require('sequelize');
 const path = require('path');
 const { Server } = require('socket.io');
 const { Adapter } = require('socket.io-adapter');
@@ -350,22 +351,113 @@ describe('store isolation', () => {
     expect(b.received).toEqual([]);
   });
 
-  it('a removed teammate and an ended session stop receiving', async () => {
+  it('the periodic checks still catch a change no model hook saw (the safety net)', async () => {
     const A = await store('Store A');
     const operator = await addMemberWithRole(A.auth.accessToken, A.workspace.id, 'order_operator', 'Leaving');
     const op = await connected(operator.accessToken);
     const owner = await connected(A.auth.accessToken);
 
-    await db.Membership.destroy({ where: { workspaceId: A.workspace.id, userId: operator.userId } });
+    // Plain SQL: no hook runs, so only the 60-second rooms check (called here) sees it.
+    await db.sequelize.query('DELETE FROM memberships WHERE workspace_id = :w AND user_id = :u', { replacements: { w: A.workspace.id, u: operator.userId } });
     await realtime.syncRooms();
     await placeOrder(A.auth.accessToken, A.workspace.id, A.variant.id);
     await waitFor(named(owner, 'order.created'), 'owner order.created');
     await sleep(300);
     expect(op.received).toEqual([]);
 
-    await db.Session.update({ revokedAt: new Date() }, { where: { userId: A.auth.userId } });
-    await realtime.checkSessions();
+    await db.sequelize.query('UPDATE sessions SET revoked_at = now() WHERE user_id = :u', { replacements: { u: A.auth.userId } });
+    await realtime.checkSessions({ fresh: true });
     await waitFor(() => owner.closed.length > 0, 'the owner socket to close');
+  });
+});
+
+describe('the moment access changes', () => {
+  // Far below the periodic checks (sessions 15 s, rooms 60 s): only the cut on commit can be this quick.
+  const QUICK_MS = 3000;
+  const bearerOf = (auth) => bearer(auth.accessToken);
+  const membershipOf = (workspaceId, userId) => db.Membership.findOne({ where: { workspaceId, userId } });
+
+  async function closesQuickly(client, change) {
+    const t0 = Date.now();
+    await change();
+    await waitFor(() => client.closed.length > 0, 'the socket to be closed', QUICK_MS);
+    return Date.now() - t0;
+  }
+
+  it('a teammate removed from the store: closed on commit, and back in without the store', async () => {
+    const A = await store('Store A');
+    const operator = await addMemberWithRole(A.auth.accessToken, A.workspace.id, 'order_operator', 'Leaving');
+    const op = await connected(operator.accessToken);
+    const owner = await connected(A.auth.accessToken);
+    const membership = await membershipOf(A.workspace.id, operator.userId);
+
+    const took = await closesQuickly(op, () =>
+      request(app).delete(`/api/v1/workspaces/${A.workspace.id}/members/${membership.id}`).set(bearerOf(A.auth)).expect(200)
+    );
+    expect(took).toBeLessThan(QUICK_MS);
+    expect(owner.closed).toEqual([]);
+
+    const again = await connected(operator.accessToken);
+    await placeOrder(A.auth.accessToken, A.workspace.id, A.variant.id);
+    await waitFor(named(owner, 'order.created'), 'owner order.created');
+    await sleep(300);
+    expect(again.received).toEqual([]);
+  });
+
+  it("a teammate's role changed: closed on commit, and back in with the new role's rooms only", async () => {
+    const A = await store('Store A');
+    const operator = await addMemberWithRole(A.auth.accessToken, A.workspace.id, 'order_operator', 'Moved');
+    const op = await connected(operator.accessToken);
+    const owner = await connected(A.auth.accessToken);
+    const membership = await membershipOf(A.workspace.id, operator.userId);
+    const editor = await db.Role.findOne({ where: { workspaceId: A.workspace.id, key: 'editor' } });
+
+    await closesQuickly(op, () =>
+      request(app).patch(`/api/v1/workspaces/${A.workspace.id}/members/${membership.id}`).set(bearerOf(A.auth)).send({ roleId: editor.id }).expect(200)
+    );
+
+    const again = await connected(operator.accessToken);
+    await placeOrder(A.auth.accessToken, A.workspace.id, A.variant.id);
+    await waitFor(named(owner, 'order.created'), 'owner order.created');
+    await sleep(300);
+    expect(names(again).filter((n) => n.startsWith('order.'))).toEqual([]);
+  });
+
+  it('a sign-out: closed on commit, and refused when it tries again', async () => {
+    const owner = await registerAndActivate();
+    const socket = await connected(owner.accessToken);
+    await closesQuickly(socket, () => request(app).post('/api/v1/auth/logout').send({ refreshToken: owner.refreshToken }).expect(200));
+    expect((await refusal({ token: owner.accessToken })).message).toBe('session_ended');
+  });
+
+  it('an account suspended: closed on commit', async () => {
+    const owner = await registerAndActivate();
+    const socket = await connected(owner.accessToken);
+    await closesQuickly(socket, () => db.User.update({ status: 'suspended' }, { where: { id: owner.userId } }));
+    expect((await refusal({ token: owner.accessToken })).message).toBe('unauthorized');
+  });
+
+  it("a change that names no account: every server checks its sockets at once", async () => {
+    const A = await store('Store A');
+    const operator = await addMemberWithRole(A.auth.accessToken, A.workspace.id, 'order_operator', 'Paused');
+    const op = await connected(operator.accessToken);
+    const owner = await connected(A.auth.accessToken);
+    // Every membership of the store but the owner's, by role: the where names no user.
+    const ownerRole = await db.Role.findOne({ where: { workspaceId: A.workspace.id, key: 'owner' } });
+    await db.Membership.update({ status: 'suspended' }, { where: { workspaceId: A.workspace.id, roleId: { [Op.ne]: ownerRole.id } } });
+    await waitFor(() => !realtime.io.of('/').adapter.rooms.get(`w:${A.workspace.id}:orders.view`)?.has(op.socket.id), 'the rooms to be worked out again', QUICK_MS);
+    await placeOrder(A.auth.accessToken, A.workspace.id, A.variant.id);
+    await waitFor(named(owner, 'order.created'), 'owner order.created');
+    await sleep(300);
+    expect(names(op).filter((n) => n.startsWith('order.'))).toEqual([]);
+  });
+
+  it('a refresh, which only rotates the session, does not end the socket', async () => {
+    const owner = await registerAndActivate();
+    const socket = await connected(owner.accessToken);
+    await request(app).post('/api/v1/auth/refresh').send({ refreshToken: owner.refreshToken }).expect(200);
+    await sleep(1500);
+    expect(socket.closed).toEqual([]);
   });
 });
 
