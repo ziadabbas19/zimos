@@ -18,8 +18,9 @@ const { acceptanceOf } = require('../orders/orderAccepted');
  * of it — "ready" does not ship and "completed" does not deliver; those stay
  * the shipment's and the courier's. It is set only on an accepted order of
  * the key's own store (orders/orderAccepted.js), in any order of statuses:
- * the till is the one that knows. Integrations read it back as `pos` on the
- * order (publicOrderOptions.serializeOrders).
+ * the till is the one that knows. One status per order, shared by the store's
+ * keys (the last write wins; api_key_id says which key wrote it). Integrations
+ * read it back as `pos` on the order (publicOrderOptions.serializeOrders).
  */
 
 const STATUSES = ['received', 'preparing', 'ready', 'completed'];
