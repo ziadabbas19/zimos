@@ -265,9 +265,22 @@ describe('scripts/seal-webhook-secrets.js', () => {
     expect(() => sealScript.readArgs(['--everything'])).toThrow('Unknown argument');
     expect(() => sealScript.readArgs(['--confirm-production'])).toThrow('Unknown argument');
 
-    expect(() => sealScript.assertTarget({ apply: false }, 'railway')).not.toThrow();
-    expect(() => sealScript.assertTarget({ apply: true, confirmDb: null }, 'railway')).toThrow('--confirm-db railway');
-    expect(() => sealScript.assertTarget({ apply: true, confirmDb: 'zimos_test' }, 'railway')).toThrow('nothing written');
-    expect(() => sealScript.assertTarget({ apply: true, confirmDb: 'railway' }, 'railway')).not.toThrow();
+    const target = 'db.prod.example:5432/railway';
+    expect(() => sealScript.assertTarget({ apply: false }, target)).not.toThrow();
+    expect(() => sealScript.assertTarget({ apply: true, confirmDb: null }, target)).toThrow('--confirm-db <host:port/name>');
+    // A name alone is not enough: production and staging may share it.
+    expect(() => sealScript.assertTarget({ apply: true, confirmDb: 'railway' }, target)).toThrow('nothing written');
+    expect(() => sealScript.assertTarget({ apply: true, confirmDb: 'db.staging.example:5432/railway' }, target)).toThrow('nothing written');
+    expect(() => sealScript.assertTarget({ apply: true, confirmDb: target }, target)).not.toThrow();
+    // A refusal never hands over the target to copy.
+    for (const confirmDb of [null, 'railway']) {
+      let message = '';
+      try {
+        sealScript.assertTarget({ apply: true, confirmDb }, target);
+      } catch (err) {
+        message = err.message;
+      }
+      expect(message).not.toContain('db.prod.example');
+    }
   });
 });

@@ -17,17 +17,20 @@
  * neither means this is not the API's key — and how many endpoints would
  * change. Nothing is written.
  *
- * --apply writes, and needs --confirm-db <name>: the name of the database
- * this run is connected to, the way scripts/launch-reset.js asks for it, so
- * a production URL in the environment can never be written to by accident.
+ * --apply writes, and needs --confirm-db <host:port/name>: the database this
+ * run is connected to, exactly as the dry run prints it (host, port and
+ * name; never the user or the password) — so a production URL in the
+ * environment can never be written to by accident, and two databases with
+ * the same name (production and staging) are told apart by their host. A
+ * refusal never names the target: run the dry run first and read it there.
  * Each endpoint is locked, read again, changed, checked by opening the
  * result back to the same secret, and saved in its own transaction. A
  * secret is never printed.
  *
  *   node scripts/seal-webhook-secrets.js                                     # dry run
- *   node scripts/seal-webhook-secrets.js --apply --confirm-db <name>          # seal
- *   node scripts/seal-webhook-secrets.js --reseal --apply --confirm-db <name> # rotate
- *   node scripts/seal-webhook-secrets.js --unseal --apply --confirm-db <name> # back in clear
+ *   node scripts/seal-webhook-secrets.js --apply --confirm-db <host:port/name>          # seal
+ *   node scripts/seal-webhook-secrets.js --reseal --apply --confirm-db <host:port/name> # rotate
+ *   node scripts/seal-webhook-secrets.js --unseal --apply --confirm-db <host:port/name> # back in clear
  *   node scripts/seal-webhook-secrets.js --workspace <uuid> …                 # one store
  *
  * Runs against whatever database src/config/env resolves (DATABASE_URL / DB_*).
@@ -55,16 +58,22 @@ function readArgs(argv) {
   return args;
 }
 
-/** Refuses --apply unless --confirm-db names the database actually connected. */
-function assertTarget(args, databaseName) {
+/**
+ * Refuses --apply unless --confirm-db names the database actually connected
+ * (host:port/name). The refusal does not say which one that is: copying it
+ * from an error would defeat the check.
+ */
+function assertTarget(args, target) {
   if (!args.apply) return;
-  if (!args.confirmDb) throw new Error(`--apply needs --confirm-db ${databaseName}: the name of the database this run would change`);
-  if (args.confirmDb !== databaseName) throw new Error(`--confirm-db says "${args.confirmDb}" but this run is connected to "${databaseName}": nothing written`);
+  if (!args.confirmDb) throw new Error('--apply needs --confirm-db <host:port/name>: the database this run would change, as the dry run (without --apply) prints it');
+  if (args.confirmDb !== target) throw new Error(`--confirm-db says "${args.confirmDb}", which is not the database this run is connected to: nothing written. Run without --apply to see where it is connected`);
 }
 
-async function currentDatabase() {
+/** host:port/name of the database this run writes to — the name as the server reports it. */
+async function currentTarget() {
   const [[row]] = await db.sequelize.query('SELECT current_database() AS name');
-  return row.name;
+  const { host, port } = db.sequelize.config;
+  return `${host}:${port}/${row.name}`;
 }
 
 async function candidates({ mode, workspace }) {
@@ -124,10 +133,10 @@ async function main() {
   if (!key) throw new Error('WEBHOOK_SECRETS_KEY is not set (or is not 32 bytes of base64): nothing can be sealed or opened');
   const previous = secretStore.previousKey();
   if (args.mode === 'reseal' && !previous) throw new Error('--reseal needs WEBHOOK_SECRETS_KEY_PREVIOUS: the key the secrets are sealed with now');
-  const databaseName = await currentDatabase();
-  assertTarget(args, databaseName);
+  const target = await currentTarget();
+  assertTarget(args, target);
 
-  console.log(`Database: ${databaseName}. Key fingerprint: ${secretStore.fingerprint(key)}${previous ? `, previous key: ${secretStore.fingerprint(previous)}` : ''}.`);
+  console.log(`Database: ${target}. Key fingerprint: ${secretStore.fingerprint(key)}${previous ? `, previous key: ${secretStore.fingerprint(previous)}` : ''}.`);
   const sealed = await candidates({ mode: 'unseal', workspace: args.workspace });
   const seen = census(sealed);
   console.log(`Sealed secrets: ${sealed.length} — ${seen.current} open with the key, ${seen.previous} with the previous key, ${seen.neither} with neither.`);
@@ -136,7 +145,7 @@ async function main() {
   const rows = args.mode === 'unseal' ? sealed : await candidates(args);
   console.log(`${rows.length} endpoint(s) to ${args.mode}${args.workspace ? ` in workspace ${args.workspace}` : ''}.`);
   if (!args.apply) {
-    console.log('Dry run: nothing written. Add --apply --confirm-db <database> to write.');
+    console.log(`Dry run: nothing written. To write here: --apply --confirm-db ${target}`);
     return;
   }
 
