@@ -95,6 +95,22 @@ describe('the rule, store by store', () => {
     expectShown(await h.getOrder(store, second.id));
   });
 
+  it('pay per order: an order cancelled before it was confirmed reads like a pending one — shown while the balance can pay, hidden when it cannot, open again on a top-up', async () => {
+    const store = await h.payPerOrderStore({ balance: h.FEE });
+    const cancelled = await h.placed(store);
+    const other = await h.placed(store);
+    expect((await api(store, 'post', `/orders/${cancelled.id}/cancel`).send({ reason: 'Duplicate' })).status).toBe(200);
+    expectShown(await h.getOrder(store, cancelled.id));
+
+    // The balance pays the other order's fee: the cancelled one hides with the pending ones.
+    expect((await h.confirm(store, other.id)).status).toBe(200);
+    expect(await h.balanceOf(store)).toBe(0);
+    expect((await h.getOrder(store, cancelled.id)).contactLocked).toBe(true);
+
+    await h.topUp(store, 500);
+    expectShown(await h.getOrder(store, cancelled.id));
+  });
+
   it('pay per order with free orders left and no balance shows its pending orders', async () => {
     const store = await h.payPerOrderStore({ balance: 0, freeOrders: 10 });
     const order = await h.placed(store);

@@ -22,9 +22,10 @@ const { AppError } = require('../../core/errors/AppError');
  *       (orders.contact_lock 'unlocked': confirmed while entitled, its fee
  *       paid, or a free order used), or reached it before that column
  *       existed (contact_lock null);
- *   (c) the order is still open and unconfirmed, and the store pays per
- *       order and can pay the fee now (a free order left, or a balance of at
- *       least one fee).
+ *   (c) the order never reached its confirmed stage — pending, or cancelled
+ *       or rejected before it was confirmed — and the store pays per order
+ *       and can pay the fee now (a free order left, or a balance of at least
+ *       one fee).
  * Otherwise it is locked. A funnel add-on placed as its own order (source
  * 'upsell', linked_from_order_id) shares its customer with the order it
  * follows and is locked exactly when that order is.
@@ -94,9 +95,6 @@ async function contextFor(workspaceId, { transaction, now = new Date() } = {}) {
 
 const isOpenContext = (ctx) => !ctx || !ctx.enabled || ctx.mode === 'open';
 
-/** Cancelled or rejected: the order is closed. */
-const isClosed = (order) => Boolean(order.cancelledAt) || order.confirmationState === 'rejected';
-
 /** The order reached its confirmed stage: a COD confirmation, or an online payment that landed. */
 function reachedConfirmation(order) {
   if (order.confirmationState === 'confirmed') return true;
@@ -110,7 +108,8 @@ function ownVisibility(ctx, order) {
   if (isOpenContext(ctx)) return true;
   if (order.contactLock === 'unlocked') return true;
   if (order.contactLock == null && reachedConfirmation(order)) return true;
-  if (ctx.mode === 'pay_per_order' && ctx.canPay && !isClosed(order) && !reachedConfirmation(order)) return true;
+  // (c) A cancelled or rejected order that was never confirmed counts as pending (Ziad, 2026-10-25).
+  if (ctx.mode === 'pay_per_order' && ctx.canPay && !reachedConfirmation(order)) return true;
   return false;
 }
 
@@ -165,9 +164,7 @@ function visibleSql(ctx, alias = 'o') {
     const reached = `(${a}.confirmation_state = 'confirmed' OR (${a}.payment_method <> 'cod' AND ${a}.financial_state IN ${PAID_STATES_SQL}))`;
     // COALESCE: a null contact_lock must give false here, never NULL, so NOT (...) still counts the row.
     const arms = [`COALESCE(${a}.contact_lock, '') = 'unlocked'`, `(${a}.contact_lock IS NULL AND ${reached})`];
-    if (ctx.mode === 'pay_per_order' && ctx.canPay) {
-      arms.push(`(${a}.cancelled_at IS NULL AND ${a}.confirmation_state <> 'rejected' AND NOT ${reached})`);
-    }
+    if (ctx.mode === 'pay_per_order' && ctx.canPay) arms.push(`(NOT ${reached})`);
     return `(${arms.join(' OR ')})`;
   };
   return `(${own(alias)} OR (${alias}.linked_from_order_id IS NOT NULL AND ${alias}.source = 'upsell' AND EXISTS (
