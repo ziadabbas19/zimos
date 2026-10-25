@@ -23,7 +23,7 @@ afterEach(() => {
   jest.restoreAllMocks();
 });
 
-const { CONTACT } = h;
+const { CONTACT, ADDRESS } = h;
 const api = (store, method, path) => request(app)[method](`/api/v1/workspaces/${store.wid}${path}`).set(h.bearer(store.token));
 
 /** A lapsed store and one shopper order on it: the order locked, its customer hidden. */
@@ -61,6 +61,29 @@ describe('the blacklist (C1)', () => {
     expect(open).toHaveLength(1);
     expect(open[0].customerId).toBe(customerId);
     expect(open[0].value).toContain('7777');
+  });
+
+  it("an e-mail or a name and address entry of a hidden customer shows neither, and the search does not find it", async () => {
+    const { store } = await lockedOrder();
+    const email = await api(store, 'post', '/fraud/blocklist').send({ type: 'email', value: CONTACT.email, reason: 'Fake orders' });
+    const pair = await api(store, 'post', '/fraud/blocklist').send({ type: 'name_address', name: CONTACT.fullName, address: ADDRESS.addressLine, reason: 'Fake orders' });
+    const other = await api(store, 'post', '/fraud/blocklist').send({ type: 'email', value: 'someone@elsewhere.com', reason: 'Fake orders' });
+    for (const res of [email, pair, other]) expect([200, 201]).toContain(res.status);
+
+    const entries = (await api(store, 'get', '/fraud/blocklist')).body.entries;
+    const byId = (res) => entries.find((e) => e.id === res.body.entry.id);
+    expect(byId(email)).toMatchObject({ type: 'email', value: MASK, label: MASK, customerId: null, contactLocked: true });
+    expect(byId(pair)).toMatchObject({ type: 'name_address', value: MASK, label: MASK, contactLocked: true });
+    expect(byId(other)).toMatchObject({ value: 'someone@elsewhere.com' });
+    expect(JSON.stringify(entries)).not.toMatch(/buyer@example|Locked Buyer|Tahrir/);
+    expect((await api(store, 'get', '/fraud/blocklist?q=buyer@example')).body.entries).toEqual([]);
+    expect((await api(store, 'get', '/fraud/blocklist?q=Tahrir')).body.entries).toEqual([]);
+    expect((await api(store, 'get', '/fraud/blocklist?type=email&q=example')).body.entries).toEqual([]);
+    expect((await api(store, 'get', '/fraud/blocklist?q=elsewhere')).body.entries.map((e) => e.id)).toEqual([other.body.entry.id]);
+
+    await h.renew(store);
+    expect((await api(store, 'get', '/fraud/blocklist?q=buyer@example')).body.entries.map((e) => e.value)).toEqual([CONTACT.email]);
+    expect((await api(store, 'get', '/fraud/blocklist?q=Tahrir')).body.entries.map((e) => e.id)).toEqual([pair.body.entry.id]);
   });
 });
 
@@ -118,6 +141,49 @@ describe("the store's activity log (H2)", () => {
     expect((await api(store, 'delete', `/checkout-sessions/${session.id}`)).status).toBe(200);
     const row = await db.AuditLog.findOne({ where: { workspaceId: store.wid, action: 'checkout_session.deleted' } });
     expect(JSON.stringify(row.beforeState)).not.toContain('8888');
+  });
+
+  it("a gift card or a shipment of a locked order, and a hidden customer's blacklist entry, come with the customer's keys masked", async () => {
+    env.storeFeatures.push('gift_cards');
+    const { store, orderId } = await lockedOrder();
+    // Rows as the services write them (recordAudit), written straight in: no domain events with them.
+    const audit = (row) => db.AuditLog.create({ workspaceId: store.wid, ...row });
+    const { giftCard } = await giftCards.issue(store.wid, { amount: 1000, currency: 'EGP', sendEmail: false }, { source: 'order', orderId });
+    const cardId = giftCard ? giftCard.id : (await db.GiftCard.findOne({ where: { orderId } })).id;
+    const recipient = { status: 'active', recipientName: CONTACT.fullName, recipientEmail: CONTACT.email, message: 'Happy birthday' };
+    await audit({ action: 'gift_card.update', entityType: 'GiftCard', entityId: cardId, beforeState: { ...recipient, status: 'disabled' }, afterState: recipient });
+    const shipment = await db.Shipment.create({
+      workspaceId: store.wid,
+      orderId,
+      trackingCode: `zg${String(Date.now()).slice(-9)}`,
+      carrierCode: 'manual',
+      waybillNumber: 'WB-1',
+      carrierResponse: { receiver: CONTACT.fullName, phone: CONTACT.phone },
+    });
+    await audit({ action: 'shipment.create', entityType: 'Shipment', entityId: shipment.id, afterState: shipment.toJSON() });
+    for (const body of [{ type: 'phone', value: CONTACT.phone }, { type: 'email', value: CONTACT.email }]) {
+      expect([200, 201]).toContain((await api(store, 'post', '/fraud/blocklist').send({ ...body, reason: 'Fake orders' })).status);
+    }
+
+    const logs = (await api(store, 'get', '/audit-logs?limit=100')).body.logs;
+    const card = logs.find((l) => l.action === 'gift_card.update');
+    expect(card).toMatchObject({ contactLocked: true, before: { status: 'disabled', recipientName: MASK }, after: { status: 'active', recipientEmail: MASK, message: MASK } });
+    const shipped = logs.find((l) => l.action === 'shipment.create');
+    expect(shipped).toMatchObject({ contactLocked: true, after: { status: 'created', waybillNumber: 'WB-1', carrierResponse: { receiver: MASK, phone: MASK } } });
+    const blocked = logs.filter((l) => l.action === 'blocklist.entry_added');
+    expect(blocked.map((l) => [l.after.type, l.after.value, l.after.label, l.contactLocked])).toEqual(
+      expect.arrayContaining([
+        ['phone', MASK, MASK, true],
+        ['email', MASK, MASK, true],
+      ])
+    );
+    expect(JSON.stringify([card, shipped, ...blocked])).not.toMatch(/Locked Buyer|buyer@example|7777|Happy birthday/);
+
+    await h.renew(store);
+    const open = (await api(store, 'get', '/audit-logs?limit=100')).body.logs;
+    expect(open.find((l) => l.action === 'gift_card.update').after.recipientName).toBe(CONTACT.fullName);
+    expect(open.find((l) => l.action === 'shipment.create').after.carrierResponse.receiver).toBe(CONTACT.fullName);
+    expect(open.filter((l) => l.action === 'blocklist.entry_added').map((l) => l.after.value)).toEqual(expect.arrayContaining([CONTACT.email]));
   });
 });
 
@@ -200,13 +266,18 @@ describe('the reports and the other lists (M1, M3, M4, M5)', () => {
   });
 
   it('the manual order lookup and a new contact do not tie a typed phone to a hidden customer', async () => {
-    const { store } = await lockedOrder();
+    const { store, customerId } = await lockedOrder();
     const lookup = (await api(store, 'get', `/orders/manual/customer?phone=${CONTACT.phone}`)).body.customer;
-    expect(lookup).toMatchObject({ contactLocked: true, fullName: MASK, totalOrders: null, totalRejectedOrders: null, lastOrder: null });
+    // Not the id either: every order in GET /orders carries it.
+    expect(lookup).toMatchObject({ id: null, contactLocked: true, fullName: MASK, totalOrders: null, totalRejectedOrders: null, lastOrder: null });
+    expect(JSON.stringify(lookup)).not.toContain(customerId);
 
     const taken = await api(store, 'post', '/contacts').send({ phone: CONTACT.phone });
     expect(taken.status).toBe(409);
     expect(taken.body.error.details.customerId).toBeNull();
+
+    await h.renew(store);
+    expect((await api(store, 'get', `/orders/manual/customer?phone=${CONTACT.phone}`)).body.customer).toMatchObject({ id: customerId, contactLocked: false });
   });
 });
 
@@ -256,8 +327,11 @@ describe('the order timeline (L5)', () => {
 describe('writes that would save "••••" (FE-H2..H4) and the shipment draft (FE-H3)', () => {
   it('hiddenPath finds the placeholder at any depth', () => {
     expect(hiddenPath({ contact: { fullName: 'Ali' }, address: { city: 'Cairo', addressLine: `${MASK}` } })).toBe('address.addressLine');
-    expect(hiddenPath({ names: ['Giza', MASK] })).toBe('names.1');
+    expect(hiddenPath({ names: ['Giza', ` ${MASK} `] })).toBe('names.1');
     expect(hiddenPath({ contact: { fullName: 'Ali' }, n: 3, ok: true })).toBeNull();
+    // Only the placeholder itself: a text that contains it is the merchant's own.
+    expect(hiddenPath({ notes: `Paid by Visa ${MASK} 4242`, contact: { fullName: `Ali ${MASK}` } })).toBeNull();
+    expect(hiddenPath({ notes: '', contact: { email: null } })).toBeNull();
   });
 
   it('refuses "••••" in an order, its edit and a customer edit — even on a store that locks nothing', async () => {
@@ -268,10 +342,21 @@ describe('writes that would save "••••" (FE-H2..H4) and the shipment dra
     expect(JSON.stringify(typed.body)).toContain('contact.fullName');
     expect((await api(store, 'patch', `/orders/${order.id}`).send({ notes: MASK })).status).toBe(422);
     const customerId = (await db.Order.findByPk(order.id)).customerId;
-    expect((await api(store, 'patch', `/customers/${customerId}`).send({ fullName: `Ali ${MASK}` })).status).toBe(422);
+    expect((await api(store, 'patch', `/customers/${customerId}`).send({ fullName: ` ${MASK} ` })).status).toBe(422);
     expect((await api(store, 'post', '/contacts').send({ phone: '01000009999', fullName: MASK })).status).toBe(422);
     // The details as they were.
     expect((await h.getOrder(store, order.id)).contactSnapshot.fullName).toBe(CONTACT.fullName);
+  });
+
+  it('saves a text that only contains "••••", and an empty field', async () => {
+    const store = await h.monthlyStore();
+    const order = await h.placed(store);
+    const notes = `Paid by Visa ${MASK} 4242`;
+    expect((await api(store, 'patch', `/orders/${order.id}`).send({ notes })).status).toBe(200);
+    expect((await db.Order.findByPk(order.id)).notes).toBe(notes);
+    expect((await api(store, 'patch', `/orders/${order.id}`).send({ notes: '' })).status).toBe(200);
+    const customerId = (await db.Order.findByPk(order.id)).customerId;
+    expect((await api(store, 'patch', `/customers/${customerId}`).send({ email: '', alternatePhone: null })).status).toBe(200);
   });
 
   it('the shipment draft of a locked order is refused', async () => {

@@ -91,7 +91,8 @@ async function customerByPhone(workspaceId, phone) {
   const lastLocked = lastOrder ? (await orderLock.lockedIds(ctx, [lastOrder])).has(lastOrder.id) : false;
   const shown = (value) => (hidden && value ? orderLock.MASK : value);
   return {
-    id: customer.id,
+    // Not a hidden customer's id either: GET /orders carries it on every order, so it would lead to theirs.
+    id: hidden ? null : customer.id,
     fullName: shown(customer.fullName),
     phone: customer.phoneRaw || phone,
     alternatePhone: shown(customer.alternatePhone),

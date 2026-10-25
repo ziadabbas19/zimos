@@ -106,7 +106,9 @@ A renewal — a subscription charge paid (`subscriptionChargeService.settlePaid`
 whatever paid it) or the console's activate / extend / plan change
 (`manualSubscriptionService`) — marks the store's `due` orders `unlocked`
 once it commits, without a fee, when the store is entitled again; otherwise
-they would lock again with the next lapse. It moves no money.
+they would lock again with the next lapse. It moves no money: each order is
+decided again under its own lock without taking a fee, so a store that moved
+to pay per order in between keeps its `due` orders for its next top-up.
 
 ## Every path, and what it does with a locked order
 
@@ -135,20 +137,27 @@ Merchant answers (hidden, `contactLocked: true` and `lockReason`):
   without the `customerId`;
 - the dashboard search (Ctrl K) `GET /search`: orders and customers;
 - the manual order form's lookup `GET /orders/manual/customer`: a hidden
-  customer comes without `totalOrders`, `totalRejectedOrders` or `lastOrder`
-  (null), so a typed phone is not tied to their locked orders;
-- the store's blacklist `GET /fraud/blocklist`: a hidden customer's phone entry
-  shows its number and label as `••••` and no `customerId`, and the `q` search
-  never finds it by its number; `POST /fraud/blocklist` does not name a hidden
+  customer comes without `id`, `totalOrders`, `totalRejectedOrders` or
+  `lastOrder` (null), so a typed phone is not tied to their locked orders
+  (every order in `GET /orders` carries its `customerId`);
+- the store's blacklist `GET /fraud/blocklist`: an entry that stands for a
+  hidden customer — their phone, or an e-mail or a name + address one of
+  their orders was placed with (`blockedEntries.hiddenEntryTest`) — shows its
+  value and label as `••••` and no `customerId`, and the `q` search never
+  finds it by what it holds; `POST /fraud/blocklist` does not name a hidden
   customer;
 - the transfer of an order paid by InstaPay / a wallet
   (`GET /manual-payments/orders/:id` and the approve / reject answers): the
   payer's number hidden, no screenshot link;
 - the store's activity log `GET /audit-logs`: a row about a locked order, a
   hidden customer or a lost checkout while lost checkouts are hidden shows its
-  before / after as `••••`; with the switch on, a row no staff member wrote (a
+  before / after as `••••`; a row about a gift card or a shipment of a locked
+  order, or a blacklist entry that stands for a hidden customer, shows them
+  with the customer's keys as `••••` (the recipient and message; the
+  courier's answer and tracking state; the entry's value and label) and the
+  rest as it was; with the switch on, a row no staff member wrote (a
   shopper's checkout) comes without its IP. Deleting a lost order no longer
-  records its phone;
+  records its phone, whatever the switch says;
 - store credit `GET /store-credit`: a hidden holder's name, phone and e-mail;
   `POST /store-credit/customers/:id/adjust` for a hidden customer is refused
   (402);
@@ -197,11 +206,13 @@ nothing sent:
   checkout it is about is locked now.
 
 Refused with 422 `VALIDATION_ERROR`, whatever the lock says: a dashboard write
-whose name, phone, e-mail, address, notes or shipment draft carries `••••`
-(`core/utils/refusesHidden`: creating an order, `PATCH /orders/:id`, a
-shipment and its draft, the customer and address edits, a new contact, a lost
-order converted). A form filled from a hidden view would otherwise save the
-placeholder over the real details.
+whose name, phone, e-mail, address, notes or shipment draft is `••••` (spaces
+around it aside) (`core/utils/refusesHidden`: creating an order,
+`PATCH /orders/:id`, a shipment and its draft, the customer and address
+edits, a new contact, a lost order converted). A form filled from a hidden
+view would otherwise save the placeholder over the real details; a hidden
+view shows every hidden field as exactly `••••`, so a text that only
+contains it ("Visa •••• 4242") is the merchant's own and saves.
 
 Not tried at all:
 

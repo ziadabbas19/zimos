@@ -12,6 +12,7 @@ const db = require('../../src/db/models');
 const env = require('../../src/config/env');
 const wallet = require('../../src/modules/billing/walletService');
 const confirmFee = require('../../src/modules/billing/confirmFeeService');
+const orderLock = require('../../src/modules/orders/orderLock');
 const ledgerCheck = require('../../scripts/check-wallet-ledger');
 const h = require('../helpers/lockedStores');
 
@@ -308,6 +309,36 @@ describe('an order paid online while the fee could not be paid', () => {
     // Lapsing again does not lock it: it was settled.
     await h.lapse(store);
     expect((await h.getOrder(store, order.id)).contactLocked).toBe(false);
+  });
+
+  it("a renewal's release takes no fee from a store that is on pay per order by the time it reads the order", async () => {
+    const store = await h.payPerOrderStore({ balance: 0 });
+    const order = await paidOnline(store);
+    expect((await db.Order.findByPk(order.id)).contactLock).toBe('due');
+    // The balance can pay now, but nothing settled it: a correction written straight in.
+    await db.sequelize.transaction(async (t) => {
+      const w = await wallet.lockWallet(store.wid, t);
+      await db.WalletLedgerEntry.create(
+        { workspaceId: store.wid, entryType: 'adjustment', cashDelta: 300, balanceAfter: 300, currency: 'EGP', idempotencyKey: `adj:${crypto.randomUUID()}` },
+        { transaction: t }
+      );
+      await w.update({ cashBalance: 300 }, { transaction: t });
+    });
+    // The release's first look sees an entitled store (a renewal that just committed); by the time it
+    // reads the order the store pays per order (a switch applied in between).
+    const spy = jest.spyOn(orderLock, 'contextFor').mockImplementationOnce(async () => ({ enabled: true, mode: 'open', canPay: true }));
+    try {
+      expect(await confirmFee.settleDue(store.wid, { takeFees: false })).toEqual({ settled: 0, left: 1 });
+    } finally {
+      spy.mockRestore();
+    }
+    expect((await db.Order.findByPk(order.id)).contactLock).toBe('due');
+    expect((await h.feeEntries(order.id)).filter((e) => e.entryType === 'order_confirm_fee')).toEqual([]);
+    expect(await h.balanceOf(store)).toBe(300);
+
+    // Its fee waits for the merchant's own settle (or a top-up), as before.
+    expect(await confirmFee.settleDue(store.wid)).toEqual({ settled: 1, left: 0 });
+    expect(await h.balanceOf(store)).toBe(300 - FEE);
   });
 });
 

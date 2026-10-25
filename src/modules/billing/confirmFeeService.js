@@ -85,9 +85,11 @@ async function takeFee(order, terms, { actorUserId = null } = {}, transaction) {
  * the order's row locked. Resolves the orders.contact_lock to write with
  * that change: 'unlocked' or (not strict only) 'due'. Strict refuses with
  * 402 ORDER_LOCKED instead of 'due'. With the switch off: 'unlocked', and no
- * fee here (the old fee was taken when the order was placed).
+ * fee here (the old fee was taken when the order was placed). takeFees
+ * false (a renewal's release) never takes one: a store on pay per order by
+ * the time this reads it keeps the order as it is.
  */
-async function settleOnConfirmation(order, { strict, actorUserId = null } = {}, transaction) {
+async function settleOnConfirmation(order, { strict, actorUserId = null, takeFees = true } = {}, transaction) {
   if (!orderLock.enabled()) return 'unlocked';
   if (order.contactLock === 'unlocked') return 'unlocked';
   const ctx = await orderLock.contextFor(order.workspaceId, { transaction });
@@ -105,7 +107,7 @@ async function settleOnConfirmation(order, { strict, actorUserId = null } = {}, 
     if (parent && (parent.contactLock === 'unlocked' || (parent.contactLock == null && orderLock.reachedConfirmation(parent)))) return 'unlocked';
   }
 
-  if (ctx.mode === 'pay_per_order') {
+  if (ctx.mode === 'pay_per_order' && takeFees) {
     const terms = await wallet.termsDue(order.workspaceId, transaction);
     const settled = terms ? await takeFee(order, terms, { actorUserId }, transaction) : 'unlocked';
     if (settled) return settled;
@@ -146,7 +148,9 @@ async function markOnPayment(order, transaction) {
  */
 async function settleDue(workspaceId, { orderIds = null, limit = 200, takeFees = true } = {}) {
   if (!orderLock.enabled()) return { settled: 0, left: 0 };
-  // takeFees false (a renewal): only a store entitled now, whose due orders open without a fee.
+  // takeFees false (a renewal): only a store entitled now, whose due orders open without a fee. Each
+  // order is decided again under its own lock with takeFees passed on, so a store that moved to pay per
+  // order meanwhile pays nothing from here (no scheduled job moves the balance's money).
   if (!takeFees && !orderLock.isOpenContext(await orderLock.contextFor(workspaceId))) return { settled: 0, left: 0 };
   // A due order cancelled since (refunded) is left as it is: no fee for it.
   const rows = await db.sequelize.query(
@@ -164,7 +168,7 @@ async function settleDue(workspaceId, { orderIds = null, limit = 200, takeFees =
     const done = await db.sequelize.transaction(async (transaction) => {
       const order = await db.Order.findOne({ where: { id, workspaceId }, transaction, lock: transaction.LOCK.UPDATE });
       if (!order || order.contactLock !== 'due') return 'skip';
-      const result = await settleOnConfirmation(order, { strict: false }, transaction);
+      const result = await settleOnConfirmation(order, { strict: false, takeFees }, transaction);
       if (result !== 'unlocked') return null;
       await order.update({ contactLock: 'unlocked' }, { transaction });
       return 'unlocked';
