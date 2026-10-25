@@ -239,10 +239,12 @@ it existed: 404, and 422 for `GET /orders/accepted` (read as
   ids that are not this store's orders are listed as unknown, and nothing is written for them.
 - Phones are partly hidden in the feed, as in `GET /orders` (full numbers
   when the key also has `customers:read` and its creator may see them). This
-  is a convenience, **not a privacy boundary**: the same key reads one order
-  with `GET /orders/{orderId}` and gets the full number, and names, emails,
+  is a convenience, **not a privacy boundary**: a key with an order read
+  scope (`orders:read`, `orders:write`…) reads one order with
+  `GET /orders/{orderId}` and gets the full number, and names, emails,
   addresses and notes are never hidden. What a key can read is set by its
-  scopes and its creator's role — give a till's key only what the till needs.
+  scopes and its creator's role — give a till's key only what the till needs:
+  a key with `orders:pos_status` alone reads the feed and no other order.
 - `pos-status` is set only on an accepted order (409 `ORDER_NOT_ACCEPTED`
   otherwise). It is a note: "ready" does not ship and "completed" does not
   deliver — those stay the shipment's and the courier's.
@@ -324,7 +326,7 @@ when created and when rotated, never otherwise). **Send test** posts a
 | ---------------------- | ----------------------------------------------------------------------------------------------------------- |
 | `order.created`        | a new order is placed                                                                                       |
 | `order.status_changed` | the order's `stage`, any of its three states, or its latest shipment's status changes — whoever changed it: the dashboard, a courier, your own API calls |
-| `order.accepted`       | the order was **accepted**: a cash-on-delivery (or manually paid) order was confirmed, or an online order was paid. Once per order, with `data.acceptedVia` (`confirmation` / `payment`) and `data.acceptedAt`. The event id is `order.accepted:<orderId>`. Every attempt checks the order first: one cancelled before your server answered is not sent (the delivery ends saying so). Listen to `order.cancelled` too — an order cancelled after you took it is told there |
+| `order.accepted`       | the order was **accepted**: a cash-on-delivery (or manually paid) order was confirmed, or an online order was paid. Once per order, with `data.acceptedVia` (`confirmation` / `payment`) and `data.acceptedAt`. The event id is `order.accepted:<orderId>`. Every attempt checks the order first: one cancelled before your server answered is not sent (the delivery ends saying so). Listen to `order.cancelled` too — an order cancelled after you took it is told there — and to `order.uncancelled`: an order reopened after that is not sent as `order.accepted` again (its event id is the same, and its delivery ended when it was cancelled). Redeliver that delivery from the log once the order stands again, or take it from the accepted-orders feed, which lists it while your key has not acknowledged it (and the order was accepted within the feed's `since`) |
 | `*`                    | subscribe to everything, including events added later — **except `order.accepted`**, which an endpoint lists by name (beside `*` if it likes) |
 
 Events usually arrive **within about 5 seconds** of the change.
@@ -365,9 +367,14 @@ numbers in the orders list and the export — and is still a member of the store
 Otherwise they arrive masked — `M*** A***`, `+2010*****567`, `m***@example.com`,
 and the address keeps its country, governorate and city — while the order
 itself (number, lines, amounts) is whole. The endpoint list says which
-(`sendsCustomerData`); an owner saving the address again makes it full. The
-delivery log follows the same rule for whoever opens it, and resending past
-orders needs that permission.
+(`sendsCustomerData`); a teammate who holds the permission saving the address
+again makes it full. The rule is checked again at every attempt: once an
+endpoint is masked — its address set by someone without the permission — a
+retry, Redeliver or Resend of an older delivery goes out masked too, and the
+log keeps what was sent. An address set through an API key counts only when
+the key itself has `customers:read`; through a key without it the endpoint is
+sent customers masked. The delivery log follows the same rule for whoever
+opens it, and resending past orders needs that permission.
 
 **Large events.** A body larger than 256 KB is sent with ids only and
 `"truncated": true` — `data.order` becomes `{ "id", "orderNumber" }`; read the
