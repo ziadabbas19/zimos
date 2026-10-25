@@ -1,7 +1,7 @@
 'use strict';
 
-const { guarded } = require('../migrationGuards');
 const { createIndexConcurrently, dropIndexConcurrently } = require('../concurrentIndex');
+const { withShortLock } = require('../shortLock');
 
 /**
  * Locked orders and the fee charged when an order is confirmed
@@ -36,9 +36,20 @@ const { createIndexConcurrently, dropIndexConcurrently } = require('../concurren
  *   events go out as if it had just changed (and the row goes). checked_at
  *   paces how often a held order is looked at again.
  *
- * No data is written. Run-twice safe, without a transaction (CONCURRENTLY).
- * Down drops the table, the indexes and the column; entries of the new type
- * stay (the ledger is append-only) and the old type CHECK comes back NOT VALID.
+ * Locks (db/shortLock): every statement that takes a heavy lock — the
+ * column, the CHECKs, the table with its foreign keys to orders and
+ * workspaces — runs in its own short transaction under SET LOCAL
+ * lock_timeout = 3s, tried again when the lock is not granted, so a long
+ * transaction on orders at deploy time never queues the checkout behind it.
+ * Both CHECKs go in NOT VALID and are validated by a step of their own (that
+ * lock lets reads and writes go on); the indexes are built CONCURRENTLY.
+ *
+ * No data is written. Run-twice safe: each step looks first. Down drops the
+ * table, the indexes and the column — the 'due' marks go with it, so a later
+ * run of up reads those orders as confirmed before the column existed
+ * (visible, no fee) — and the held webhooks are forgotten; entries of the new
+ * type stay (the ledger is append-only) and the old type CHECK comes back NOT
+ * VALID.
  */
 
 const FEE_TYPE = 'order_confirm_fee';
@@ -46,6 +57,7 @@ const TYPE_CHECK = 'wallet_ledger_entries_type_check';
 const LOCK_CHECK = 'orders_contact_lock_check';
 const DUE_INDEX = 'orders_contact_lock_due_idx';
 const ONCE_INDEX = 'wallet_ledger_entries_confirm_fee_once';
+const HOLDS_INDEX = 'webhook_order_holds_checked_at_idx';
 
 const list = (values) => values.map((v) => `'${v}'`).join(', ');
 
@@ -61,31 +73,29 @@ async function ledgerTypes(queryInterface) {
   return row ? [...row.def.matchAll(/'([^']+)'/g)].map((m) => m[1]) : null;
 }
 
-async function setLedgerTypes(queryInterface, types, { notValid = false } = {}) {
-  await queryInterface.sequelize.transaction(async (transaction) => {
-    await queryInterface.sequelize.query(`ALTER TABLE wallet_ledger_entries DROP CONSTRAINT IF EXISTS ${TYPE_CHECK}`, { transaction });
-    await queryInterface.sequelize.query(
-      `ALTER TABLE wallet_ledger_entries ADD CONSTRAINT ${TYPE_CHECK} CHECK (entry_type IN (${list(types)}))${notValid ? ' NOT VALID' : ''}`,
-      { transaction }
-    );
-  });
+// The type CHECK replaced in one short transaction, NOT VALID: no scan while the table is held.
+async function setLedgerTypes(queryInterface, types) {
+  await withShortLock(queryInterface, [
+    `ALTER TABLE wallet_ledger_entries DROP CONSTRAINT IF EXISTS ${TYPE_CHECK}`,
+    `ALTER TABLE wallet_ledger_entries ADD CONSTRAINT ${TYPE_CHECK} CHECK (entry_type IN (${list(types)})) NOT VALID`,
+  ]);
+}
+
+async function validate(queryInterface, table, name) {
+  const row = await constraintDef(queryInterface, name);
+  if (row && !row.convalidated) await withShortLock(queryInterface, `ALTER TABLE ${table} VALIDATE CONSTRAINT ${name}`);
 }
 
 module.exports = {
-  up: async (queryInterface, Sequelize) => {
-    const qi = guarded(queryInterface);
-    const { DataTypes } = Sequelize;
-
-    await qi.addColumn('orders', 'contact_lock', { type: DataTypes.STRING(10), allowNull: true });
-    const lockCheck = await constraintDef(queryInterface, LOCK_CHECK);
-    if (!lockCheck) {
-      await queryInterface.sequelize.query(
+  up: async (queryInterface) => {
+    await withShortLock(queryInterface, 'ALTER TABLE orders ADD COLUMN IF NOT EXISTS contact_lock VARCHAR(10)');
+    if (!(await constraintDef(queryInterface, LOCK_CHECK))) {
+      await withShortLock(
+        queryInterface,
         `ALTER TABLE orders ADD CONSTRAINT ${LOCK_CHECK} CHECK (contact_lock IS NULL OR contact_lock IN ('unlocked', 'due')) NOT VALID`
       );
     }
-    if (!lockCheck || !lockCheck.convalidated) {
-      await queryInterface.sequelize.query(`ALTER TABLE orders VALIDATE CONSTRAINT ${LOCK_CHECK}`);
-    }
+    await validate(queryInterface, 'orders', LOCK_CHECK);
     await createIndexConcurrently(queryInterface, {
       name: DUE_INDEX,
       table: 'orders',
@@ -94,6 +104,7 @@ module.exports = {
 
     const types = await ledgerTypes(queryInterface);
     if (types && !types.includes(FEE_TYPE)) await setLedgerTypes(queryInterface, [...types, FEE_TYPE]);
+    await validate(queryInterface, 'wallet_ledger_entries', TYPE_CHECK);
     await createIndexConcurrently(queryInterface, {
       name: ONCE_INDEX,
       table: 'wallet_ledger_entries',
@@ -101,46 +112,38 @@ module.exports = {
       unique: true,
     });
 
-    await qi.createTable('webhook_order_holds', {
-      order_id: {
-        type: DataTypes.UUID,
-        primaryKey: true,
-        allowNull: false,
-        references: { model: 'orders', key: 'id' },
-        onDelete: 'CASCADE',
-        onUpdate: 'CASCADE',
-      },
-      workspace_id: {
-        type: DataTypes.UUID,
-        allowNull: false,
-        references: { model: 'workspaces', key: 'id' },
-        onDelete: 'CASCADE',
-        onUpdate: 'CASCADE',
-      },
-      held_at: { type: DataTypes.DATE, allowNull: false },
-      checked_at: { type: DataTypes.DATE, allowNull: false },
-      created_at: { type: DataTypes.DATE, allowNull: false, defaultValue: Sequelize.literal('NOW()') },
-      updated_at: { type: DataTypes.DATE, allowNull: false, defaultValue: Sequelize.literal('NOW()') },
-    });
-    // Skipped when it exists (a second run); built concurrently if the table was there already.
-    await qi.addIndex('webhook_order_holds', ['checked_at'], { name: 'webhook_order_holds_checked_at_idx' });
+    // A new, empty table: its foreign keys hold orders and workspaces (SHARE ROW EXCLUSIVE) only
+    // for this short transaction, and have nothing to check.
+    await withShortLock(
+      queryInterface,
+      `CREATE TABLE IF NOT EXISTS webhook_order_holds (
+         order_id UUID NOT NULL PRIMARY KEY REFERENCES orders (id) ON DELETE CASCADE ON UPDATE CASCADE,
+         workspace_id UUID NOT NULL REFERENCES workspaces (id) ON DELETE CASCADE ON UPDATE CASCADE,
+         held_at TIMESTAMP WITH TIME ZONE NOT NULL,
+         checked_at TIMESTAMP WITH TIME ZONE NOT NULL,
+         created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+         updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+       )`
+    );
+    await createIndexConcurrently(queryInterface, { name: HOLDS_INDEX, table: 'webhook_order_holds', definition: '(checked_at)' });
   },
 
   down: async (queryInterface) => {
-    const qi = guarded(queryInterface);
-    await qi.dropTable('webhook_order_holds');
+    // Its foreign keys go with it: orders and workspaces held for this short transaction only.
+    await withShortLock(queryInterface, 'DROP TABLE IF EXISTS webhook_order_holds');
     await dropIndexConcurrently(queryInterface, ONCE_INDEX);
     const types = await ledgerTypes(queryInterface);
     if (types && types.includes(FEE_TYPE)) {
       await setLedgerTypes(
         queryInterface,
-        types.filter((t) => t !== FEE_TYPE),
-        { notValid: true }
+        types.filter((t) => t !== FEE_TYPE)
       );
     }
 
     await dropIndexConcurrently(queryInterface, DUE_INDEX);
-    await queryInterface.sequelize.query(`ALTER TABLE orders DROP CONSTRAINT IF EXISTS ${LOCK_CHECK}`);
-    await qi.removeColumn('orders', 'contact_lock');
+    await withShortLock(queryInterface, [
+      `ALTER TABLE orders DROP CONSTRAINT IF EXISTS ${LOCK_CHECK}`,
+      'ALTER TABLE orders DROP COLUMN IF EXISTS contact_lock',
+    ]);
   },
 };
