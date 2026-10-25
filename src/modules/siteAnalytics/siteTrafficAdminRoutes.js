@@ -28,6 +28,8 @@ const schemas = {
 // summary above. While SITE_TRAFFIC_DETAILS_ENABLED is off they answer 404,
 // like paths that do not exist.
 const detailsOn = (req, res, next) => (env.siteAnalytics.detailsEnabled ? next() : notFoundHandler(req, res, next));
+// The Live view: behind SITE_LIVE_ENABLED, its own switch, 404 while it is off.
+const liveOn = (req, res, next) => (env.siteAnalytics.liveEnabled ? next() : notFoundHandler(req, res, next));
 const filters = {
   range: Joi.string().valid(...Object.keys(details.RANGES)).default('7d'),
   country: Joi.string().pattern(/^[A-Za-z]{2}$/).uppercase().optional(),
@@ -83,11 +85,11 @@ router.get(
   asyncHandler(async (req, res) => res.json(await details.sessionTimeline(req.params.sessionId)))
 );
 // The Live view: sessions seen in the last five minutes (siteTrafficLive.js).
-// The console asks every 15 seconds; behind the same switch as the details.
+// The console asks every 15 seconds.
 router.get(
   '/site-traffic/live',
   can(P.OVERVIEW_VIEW),
-  detailsOn,
+  liveOn,
   asyncHandler(async (req, res) => res.json(await live.live()))
 );
 router.get(

@@ -1,9 +1,9 @@
 'use strict';
 
-// The console's Live view of zimos.co (siteAnalytics/siteTrafficLive.js), the
-// operating system the beacon now keeps (migration 709), and the deletion of
-// old visits (SITE_VISITS_RETENTION_DAYS) — each off by default, and off
-// nothing changes.
+// The console's Live view of zimos.co (siteAnalytics/siteTrafficLive.js) and
+// the operating system the beacon keeps for it (migration 709), both behind
+// SITE_LIVE_ENABLED; and the deletion of old visits (SITE_VISITS_RETENTION_DAYS).
+// Each off by default, and off nothing changes.
 
 const { QueryTypes } = require('sequelize');
 const { app, request, makePlatformUser } = require('../helpers/factories');
@@ -41,6 +41,7 @@ function insertVisit({ sessionId, event = 'view', path = '/', ago, country = nul
 beforeEach(async () => {
   env.siteAnalytics.enabled = true;
   env.siteAnalytics.detailsEnabled = true;
+  env.siteAnalytics.liveEnabled = true;
   env.siteAnalytics.origins = [ORIGIN];
   env.analytics.geoHeaders = ['cloudflare'];
   await db.sequelize.query('DELETE FROM user_acquisition');
@@ -50,6 +51,7 @@ beforeEach(async () => {
 afterEach(() => {
   env.siteAnalytics.enabled = false;
   env.siteAnalytics.detailsEnabled = false;
+  env.siteAnalytics.liveEnabled = false;
   env.siteAnalytics.origins = [];
   env.analytics.geoHeaders = SAVED.geo;
   env.siteVisitsRetentionDays = SAVED.retention;
@@ -62,14 +64,40 @@ async function consoleApi(permissions = ['overview.view']) {
 }
 
 describe('the Live view', () => {
-  it('off: answers 404, and the beacon keeps no operating system', async () => {
-    env.siteAnalytics.detailsEnabled = false;
-    expect((await send(ev())).status).toBe(204);
-    const [row] = await rows();
-    expect(row.os).toBe(null);
-    expect(row.browser).toBe(null);
+  it('SITE_LIVE_ENABLED off: answers 404, and the beacon sends the very statement it sent before, with or without the details', async () => {
+    env.siteAnalytics.liveEnabled = false;
+    const query = jest.spyOn(db.sequelize, 'query');
+    try {
+      for (const details of [true, false]) {
+        env.siteAnalytics.detailsEnabled = details;
+        expect((await send(ev())).status).toBe(204);
+      }
+      const inserts = query.mock.calls.map(([sql]) => String(sql)).filter((sql) => sql.includes('INSERT INTO site_visits'));
+      expect(inserts).toHaveLength(2);
+      for (const sql of inserts) expect(sql).not.toMatch(/[(,]\s*os[,)]|:os\b/);
+    } finally {
+      query.mockRestore();
+    }
+    for (const row of await rows()) expect(row.os).toBe(null);
     const live = await consoleApi();
     expect((await live()).status).toBe(404);
+  });
+
+  it('on without the details: lists what every visit keeps, its system included, and no governorate, browser or link kind', async () => {
+    env.siteAnalytics.detailsEnabled = false;
+    expect((await send(ev({ utmSource: 'facebook' }))).status).toBe(204);
+    expect((await send(ev({ event: 'cta_click', path: '/pricing' }))).status).toBe(204);
+    const expected = getClientInfo({ userAgent: IPHONE });
+    const [row] = await rows();
+    expect(row.os).toBe(expected.os);
+    expect(row.browser).toBe(null);
+
+    const res = await (await consoleApi())();
+    expect(res.status).toBe(200);
+    const [visitor] = res.body.visitors;
+    expect(visitor).toMatchObject({ country: 'EG', governorate: null, browser: null, os: expected.os, device: 'mobile', source: 'facebook', currentPath: '/pricing' });
+    // Which link was clicked is kept only with the details.
+    expect(visitor.lastCta.kind).toBe(null);
   });
 
   it('needs overview.view', async () => {

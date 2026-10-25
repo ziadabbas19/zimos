@@ -3,9 +3,11 @@
 const { readOnly } = require('../analytics/traffic/visitorInsightsService');
 
 /**
- * The console's Live view of zimos.co: the sessions seen in the last five
- * minutes, newest first. The console asks every 15 seconds; nothing here is
- * pushed (a ping every 15 seconds per visitor would flood the outbox).
+ * The console's Live view of zimos.co (SITE_LIVE_ENABLED): the sessions seen
+ * in the last five minutes, newest first. The console asks every 15 seconds;
+ * nothing here is pushed (a ping every 15 seconds per visitor would flood the
+ * outbox). The governorate, the browser and which link a click was are kept
+ * only with SITE_TRAFFIC_DETAILS_ENABLED; without it they are null here.
  *
  * Per session: where it is from (country, governorate), where it came from
  * (UTM, else the referring host, else direct), the device, browser and
@@ -84,8 +86,8 @@ async function live() {
       os: r.os || null,
       locale: r.locale || null,
       currentPath: r.current_path || null,
-      // A click recorded before the link kind was kept (cta_kind null) is shown as a sign-up click, as in the funnel.
-      lastCta: r.cta_at ? { kind: r.cta_kind || 'register', at: r.cta_at } : null,
+      // kind null: which link it was is not kept (SITE_TRAFFIC_DETAILS_ENABLED off, or before it was).
+      lastCta: r.cta_at ? { kind: r.cta_kind || null, at: r.cta_at } : null,
     }));
     return {
       at: new Date().toISOString(),

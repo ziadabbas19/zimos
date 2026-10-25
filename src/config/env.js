@@ -863,6 +863,15 @@ const env = {
     // console's detailed Site visits endpoints answer. Off: today's behaviour
     // exactly, and those endpoints answer 404. Starts off under NODE_ENV=test.
     detailsEnabled: process.env.NODE_ENV !== 'test' && process.env.SITE_TRAFFIC_DETAILS_ENABLED === 'true',
+    // SITE_LIVE_ENABLED (exactly "true"): the console's Live view of zimos.co
+    // answers (GET /admin/site-traffic/live, siteAnalytics/siteTrafficLive.js),
+    // and each visit also keeps its operating system's family (site_visits.os,
+    // migration 709). Off: that endpoint answers 404 and the beacon stores what
+    // it did before this switch existed. Apart from SITE_TRAFFIC_DETAILS_ENABLED:
+    // without that one, Live shows what every visit keeps (country, source and
+    // UTM, device, page) and no governorate, browser or link kind. Starts off
+    // under NODE_ENV=test; a test flips it on this object.
+    liveEnabled: process.env.NODE_ENV !== 'test' && process.env.SITE_LIVE_ENABLED === 'true',
   },
 
   // The storefront events guard (analytics/traffic). Off unless exactly

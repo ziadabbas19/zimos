@@ -9,8 +9,8 @@ const { createIndexConcurrently, dropIndexConcurrently } = require('../concurren
  *
  * site_visits
  *   os   the operating system's family (analytics/clientDetect), like the
- *        browser; written only while SITE_TRAFFIC_DETAILS_ENABLED is on, null
- *        before and without it. Not personal data: the same family thousands
+ *        browser; written only while SITE_LIVE_ENABLED is on, null before and
+ *        without it. Not personal data: the same family thousands
  *        of visitors share. Nullable with no default, so adding it changes
  *        the catalogue only and does not rewrite the table.
  *
