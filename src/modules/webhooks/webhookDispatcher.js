@@ -7,6 +7,7 @@ const logger = require('../../core/utils/logger');
 const { signatureHeader } = require('./webhookSigning');
 const { readSecret } = require('./signingSecretStore');
 const { send } = require('./webhookSender');
+const { revealsByEndpoint, maskCustomerData } = require('./customerData');
 
 /**
  * Sends what is due from webhook_deliveries — the outbox the change detector
@@ -109,7 +110,15 @@ async function attemptDelivery(deliveryId, { now = new Date() } = {}) {
     return delivery;
   }
 
-  const body = JSON.stringify(delivery.payload);
+  // Customers go out in full only while the endpoint's configurer may see
+  // them now (customerData.js), whatever the row was stored with: an address
+  // changed by a teammate without customers.reveal_sensitive, then a retry
+  // still due, a Redeliver or a Resend, sends the stored row masked. The row
+  // then keeps what was sent, as the payload cap does.
+  const reveals = (await revealsByEndpoint(endpoint.workspaceId, [endpoint])).get(endpoint.id);
+  const payload = reveals ? delivery.payload : maskCustomerData(delivery.payload);
+  const body = JSON.stringify(payload);
+  const masked = body !== JSON.stringify(delivery.payload);
   const timestamp = Math.floor(now.getTime() / 1000);
   const result = await send({
     url: endpoint.url,
@@ -143,7 +152,7 @@ async function attemptDelivery(deliveryId, { now = new Date() } = {}) {
     changes.lastError = (result.error || `Receiver answered HTTP ${result.status}`).slice(0, 500);
   }
 
-  await delivery.update({ ...changes, attemptCount, lastResponseStatus: result.status });
+  await delivery.update({ ...changes, attemptCount, lastResponseStatus: result.status, ...(masked ? { payload } : {}) });
   // Three days of nothing but failures switches the endpoint off (webhookHealth.js).
   await require('./webhookHealth').recordOutcome(endpoint, ok, now);
   return delivery;

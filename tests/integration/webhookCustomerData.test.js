@@ -12,6 +12,7 @@ const { Sequelize } = require('sequelize');
 const { app, request, setupWorkspaceWithProduct, addMemberWithRole } = require('../helpers/factories');
 const db = require('../../src/db/models');
 const { runOnce } = require('../../src/modules/webhooks/webhookWorker');
+const { scanOnce } = require('../../src/modules/webhooks/orderChangeDetector');
 const migration719 = require('../../src/db/migrations/719-webhook-configurer-and-feed-index');
 
 const bearer = (t) => ({ Authorization: `Bearer ${t}` });
@@ -142,6 +143,70 @@ describe('customers in webhook deliveries', () => {
     const sent = await request(app).post(`${ctx.hooks}/resend-orders`).set(bearer(ctx.auth.accessToken)).send({ orderIds: [order.id] });
     expect(sent.status).toBe(200);
     expect(sent.body.deliveries).toBe(1);
+  });
+
+  it('rows stored in full go out masked once a teammate without reveal_sensitive moves the address: a retry still due, Redeliver and Resend', async () => {
+    const ctx = await setup();
+    const endpoint = await addEndpoint(ctx, ctx.auth.accessToken, '/owner');
+    await placeOrder(ctx);
+    await runOnce();
+    expect(contactOf(receiver.received[0]).fullName).toBe('Mona Adel');
+    // A second order is stored in full (the detector's pass alone) and waits for its first attempt.
+    await placeOrder(ctx);
+    await scanOnce({ now: new Date() });
+    const stored = await db.WebhookDelivery.findAll({ where: { endpointId: endpoint.id }, order: [['createdAt', 'ASC']] });
+    expect(stored).toHaveLength(2);
+    expect(JSON.stringify(stored[1].payload)).toContain('Mona Adel');
+
+    // The manager points the endpoint at a server of their own.
+    const moved = await request(app).patch(`${ctx.hooks}/${endpoint.id}`).set(bearer(ctx.manager.accessToken)).send({ url: `${receiver.base}/manager` });
+    expect(moved.body.endpoint.sendsCustomerData).toBe(false);
+
+    await runOnce();
+    const ids = (await request(app).get(`${ctx.hooks}/deliveries`).set(bearer(ctx.manager.accessToken))).body.deliveries.map((d) => d.id);
+    expect(ids).toEqual(expect.arrayContaining(stored.map((d) => d.id)));
+    expect((await request(app).post(`${ctx.hooks}/${endpoint.id}/deliveries/${stored[0].id}/redeliver`).set(bearer(ctx.manager.accessToken))).status).toBe(200);
+    expect((await request(app).post(`${ctx.hooks}/deliveries/${stored[0].id}/resend`).set(bearer(ctx.manager.accessToken))).status).toBe(200);
+
+    const atManager = receiver.received.filter((r) => r.path === '/manager');
+    expect(atManager).toHaveLength(3);
+    for (const hit of atManager) {
+      const text = JSON.stringify(hit.json);
+      for (const secret of ['Mona Adel', '1234567', 'mona.adel@', 'Abbas El Akkad']) expect(text).not.toContain(secret);
+      expect(contactOf(hit).fullName).toBe('M*** A***');
+      expect(hit.json.data.order.items).toHaveLength(1);
+    }
+    // The rows keep what was sent: even the owner's log no longer holds them in full.
+    for (const row of await db.WebhookDelivery.findAll({ where: { endpointId: endpoint.id } })) expect(JSON.stringify(row.payload)).not.toContain('Mona Adel');
+  });
+
+  it('an endpoint added or moved through an API key without customers:read is sent customers masked; with it, in full', async () => {
+    const ctx = await setup();
+    const mint = async (scopes) => {
+      const res = await request(app).post(`/api/v1/workspaces/${ctx.workspace.id}/api-keys`).set(bearer(ctx.auth.accessToken)).send({ name: scopes.join(' '), scopes });
+      if (res.status !== 201) throw new Error(`mint ${res.status} ${JSON.stringify(res.body)}`);
+      return bearer(res.body.secret);
+    };
+    const without = await mint(['orders:read', 'webhooks:write']);
+    const withCustomers = await mint(['orders:read', 'webhooks:write', 'customers:read']);
+    const add = async (key, path) => {
+      const res = await request(app).post('/api/v1/public/webhooks').set(key).send({ url: `${receiver.base}${path}`, events: ['order.created'] });
+      expect(res.status).toBe(201);
+      return res.body.endpoint;
+    };
+    expect((await add(without, '/without')).sendsCustomerData).toBe(false);
+    const full = await add(withCustomers, '/with');
+    expect(full.sendsCustomerData).toBe(true);
+
+    await placeOrder(ctx);
+    await runOnce();
+    expect(contactOf(receiver.received.find((r) => r.path === '/without')).fullName).toBe('M*** A***');
+    expect(contactOf(receiver.received.find((r) => r.path === '/with')).fullName).toBe('Mona Adel');
+
+    // Moving the full one through the key without customers:read masks it from then on.
+    const moved = await request(app).patch(`/api/v1/public/webhooks/${full.id}`).set(without).send({ url: `${receiver.base}/with-moved` });
+    expect(moved.status).toBe(200);
+    expect(moved.body.endpoint.sendsCustomerData).toBe(false);
   });
 
   it('migration 719 backfills the configurer from the activity log: the creator, or the latest editor of the URL', async () => {

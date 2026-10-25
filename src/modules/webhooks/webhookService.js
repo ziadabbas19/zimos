@@ -146,7 +146,7 @@ async function createEndpoint(workspaceId, { url, events, isActive = true, filte
         workspaceId,
         url: cleanUrl,
         // Whose role decides whether its deliveries carry customers in full (customerData.js).
-        configuredByUserId: req.user.id,
+        configuredByUserId: customerData.configurerFor(req),
         events: normaliseEvents(events),
         ...secretStore.storedFields(workspaceId, id, signingSecret),
         isActive,
@@ -175,8 +175,9 @@ async function updateEndpoint(workspaceId, endpointId, changes, req) {
     const before = { url: auditUrl(endpoint.url), events: endpoint.events, isActive: endpoint.isActive };
     const next = {};
     // Setting the address — even to the same one — makes this teammate the
-    // one whose role decides what it is sent (customerData.js).
-    if (changes.url !== undefined) Object.assign(next, { url: checkUrl(changes.url), configuredByUserId: req.user.id });
+    // one whose role decides what it is sent; through an API key without
+    // customers:read, nobody (customerData.configurerFor).
+    if (changes.url !== undefined) Object.assign(next, { url: checkUrl(changes.url), configuredByUserId: customerData.configurerFor(req) });
     if (changes.events !== undefined) next.events = normaliseEvents(changes.events);
     if (changes.isActive !== undefined) next.isActive = changes.isActive;
     if (changes.filter !== undefined) next.filter = normaliseFilter(changes.filter);

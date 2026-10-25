@@ -14,7 +14,12 @@ const { PERMISSIONS } = require('../../core/security/permissions');
  *                         migration 719) is an active member of the store
  *                         whose role holds customers.reveal_sensitive. An
  *                         endpoint with no known configurer, or one who lost
- *                         the permission or left, gets the masked form.
+ *                         the permission or left, gets the masked form. An
+ *                         address set through an API key without
+ *                         customers:read has no configurer. Checked when the
+ *                         row is written and again at every attempt
+ *                         (webhookDispatcher.js): a stored row goes out
+ *                         masked once its endpoint is.
  *   shown in the log      in full only to a viewer holding the permission.
  *
  * Masked: names (initials), phones (operator prefix and last digits), emails
@@ -107,4 +112,12 @@ const forEndpoint = (payload, reveals) => (reveals ? payload : maskCustomerData(
 /** Whether the teammate behind this request sees customers in full (dashboard or API key). */
 const viewerReveals = (req) => Boolean(req && req.tenant && req.tenant.hasPermission(PERMISSIONS.CUSTOMERS_REVEAL_SENSITIVE));
 
-module.exports = { maskCustomerData, revealsByEndpoint, forEndpoint, viewerReveals };
+/**
+ * The configurer an endpoint is saved with when this request sets its
+ * address: the teammate behind it — or nobody when it comes through an API
+ * key that may not read customers in full itself (no customers:read), so the
+ * endpoint is sent them masked, as that key reads them.
+ */
+const configurerFor = (req) => (req.apiKey && !viewerReveals(req) ? null : req.user.id);
+
+module.exports = { maskCustomerData, revealsByEndpoint, forEndpoint, viewerReveals, configurerFor };
