@@ -203,6 +203,11 @@ function createRealtimeServer(httpServer, { app, connections }) {
     } catch {
       return refuse('unauthorized');
     }
+    // Nothing that signs in stays on the socket: the adapter answers a FETCH_SOCKETS request, which
+    // anyone connected to the database can send, with every socket's handshake.
+    socket.handshake.auth = {};
+    delete socket.handshake.headers.cookie;
+    delete socket.handshake.headers.authorization;
     // The account's place, taken before anything asks the database.
     const userId = payload.sub;
     if (!userId || !slots.take(userId)) return refuse('too_many_connections');

@@ -246,6 +246,16 @@ describe('handshake', () => {
     expect(results.filter((r) => r.status === 'rejected').map((r) => r.reason.message)).toEqual(Array(4).fill('too_many_connections'));
   });
 
+  it('keeps nothing that signs in on the socket once the handshake is done', async () => {
+    const owner = await registerAndActivate();
+    await connected(owner.accessToken, { headers: { Cookie: 'zimos_known=1; other=2', Authorization: `Bearer ${owner.accessToken}` } });
+    const [found] = await realtime.io.in(`u:${owner.userId}`).fetchSockets();
+    expect(found.handshake.auth).toEqual({});
+    expect(found.handshake.headers.cookie).toBeUndefined();
+    expect(found.handshake.headers.authorization).toBeUndefined();
+    expect(JSON.stringify(found.handshake)).not.toContain(owner.accessToken);
+  });
+
   it('limits connection attempts per IP (REALTIME_HANDSHAKES_PER_MINUTE)', async () => {
     env.realtime.handshakesPerMinute = 2;
     const owner = await registerAndActivate();
