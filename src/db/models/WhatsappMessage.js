@@ -22,7 +22,14 @@ module.exports = (sequelize, DataTypes) => {
       // quick-reply to it can confirm or cancel that order.
       orderId: { type: DataTypes.UUID, allowNull: true, field: 'order_id' },
     },
-    { tableName: 'whatsapp_messages', indexes: [{ fields: ['conversation_id', 'created_at'] }] }
+    {
+      tableName: 'whatsapp_messages',
+      indexes: [
+        { fields: ['conversation_id', 'created_at'] },
+        // One row per Meta message id in a store (migration 720); a failed send has none.
+        { unique: true, fields: ['workspace_id', 'wa_message_id'], name: 'whatsapp_messages_ws_wamid_unique' },
+      ],
+    }
   );
   WhatsappMessage.associate = (models) => {
     WhatsappMessage.belongsTo(models.WhatsappConversation, { foreignKey: 'conversationId', as: 'conversation' });
