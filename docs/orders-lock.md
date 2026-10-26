@@ -13,9 +13,10 @@ and `src/modules/billing/confirmFeeService.js` (the fee).
 ## The rule
 
 An order's customer details — the name, the phones, the e-mail, the address
-below the governorate, the notes, the checkout answers, a gift message, the
-IP / browser / device, a transfer's payer number and screenshot — are shown to
-the merchant when
+below the governorate, the notes, the checkout answers, the answers on the
+order's lines (a product's custom fields: the text typed, the photo uploaded),
+a gift message, the IP / browser / device, a transfer's payer number and
+screenshot — are shown to the merchant when
 
 - (a) the store is entitled now: its subscription is in any phase but
   `restricted` (`workspaceAccessService.billingLifecycle`: more than a day past
@@ -128,19 +129,12 @@ Merchant answers (hidden, `contactLocked: true` and `lockReason`):
 - the public API (`/api/v1/public`): `GET /orders`, `/orders/:id`,
   `/by-number`, the confirmation / cancel / COD-collected answers, with
   `contactLocked: true`;
-- the accepted-orders feed `GET /public/orders/accepted` (it reads the orders
-  list): a locked order — paid online, its fee due — is listed with its
-  customer's details hidden and `contactLocked: true`; its ETag changes when
-  the order opens, even with nothing written (a renewal);
 - the webhook delivery log (`GET /webhooks/deliveries`,
   `GET /webhooks/:id/deliveries`, and the rows Send test / Redeliver / Resend
   answer): a delivery about a locked order, a hidden customer, or a lost
   checkout while those are hidden shows its payload's customer details as
   `••••` and `contactLocked: true`, for every viewer
   (`webhooks/deliveryLock.js`);
-- the kitchen ticket printed from the order page: a locked order's ticket
-  leaves the customer's name and the note off (it already carries no phone,
-  address or email);
 - customers `GET /customers`, `GET /customers/:id` (a customer is hidden when
   every order they placed is locked; a lead with no order is not);
   `PATCH /customers/:id`, the address edits and the blacklist switch
@@ -200,6 +194,15 @@ Merchant answers (hidden, `contactLocked: true` and `lockReason`):
 - the team's new-order notification (bell, e-mail, WhatsApp alert): the
   customer is not named.
 
+Left out until it opens, then given in full (decided 2026-10-26: the till and
+the kitchen wait for the order to open):
+
+- the accepted-orders feed `GET /public/orders/accepted`: a locked order — paid
+  online, its fee due — is not listed (`orderLock.visibleSql` in its query);
+  once it opens it is listed with everything, and the feed's ETag changes;
+- `order.accepted`: sent when the order opens and is accepted (below);
+- the kitchen ticket on the order page: its button is off for a locked order.
+
 Refused with 402 `ORDER_LOCKED` (`details.reason` `subscription` | `balance`),
 nothing sent:
 
@@ -214,6 +217,10 @@ nothing sent:
 - block-and-cancel from the fraud screen (it would list the phone and IP in
   the blocklist); cancelling alone still works;
 - lost orders: reveal the phone, the WhatsApp message, convert to an order;
+- the feed's receipt for one order (`POST /public/orders/:id/ack`) and the
+  kitchen status (`PUT /public/orders/:id/pos-status`); the receipt for many
+  (`POST /public/orders/ack`) writes none for a locked order and lists it
+  under `locked`;
 - sending a stored webhook delivery again
   (`POST /webhooks/deliveries/:id/resend`, and Redeliver
   `POST /webhooks/:id/deliveries/:deliveryId/redeliver`) when the order,
@@ -268,10 +275,6 @@ Unchanged on purpose (they do not show the details to the merchant):
 
 - the shopper's own order (checkout answer, tracking, account, recovery link);
 - the payment gateways (the shopper is paying);
-- the accepted-orders feed's receipts (`POST /public/orders/ack`, one or many)
-  and the kitchen status (`PUT /public/orders/:id/pos-status`): they carry no
-  customer detail and work on a locked order — the kitchen can make a paid
-  order whose customer is hidden;
 - a gift card's own e-mail when it is issued for a paid order (the shopper
   paid for it);
 - the ad platforms' conversion APIs (hashed details);
