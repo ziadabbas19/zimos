@@ -389,6 +389,15 @@ const env = {
     ipPerHour: limitOrOff('CHECKOUT_OTP_IP_PER_HOUR'),
   },
 
+  // Phone-verification codes (POST /auth/verify-phone/request) one client
+  // (an IPv6 /56) may have sent in 24 hours, whatever the accounts asking,
+  // counted in otp_codes.request_ip. Past it the request answers 429
+  // OTP_RATE_LIMITED and nothing is sent. 0 or unset is off: each account
+  // keeps its own 5 a day, as before. Under NODE_ENV=test it is off.
+  verifyPhone: {
+    ipPerDay: limitOrOff('VERIFY_PHONE_PER_IP_PER_DAY'),
+  },
+
   // Public endpoints that stay closed until their identity checks are
   // stronger. Exactly "true" opens one. Under
   // NODE_ENV=test they start off whatever the .env says; a test that needs
