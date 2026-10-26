@@ -3,8 +3,12 @@
 const { QueryTypes } = require('sequelize');
 const db = require('../../db/models');
 const env = require('../../config/env');
+const logger = require('../../core/utils/logger');
 const { signatureHeader } = require('./webhookSigning');
+const { readSecret } = require('./signingSecretStore');
 const { send } = require('./webhookSender');
+const { revealsByEndpoint, maskCustomerData } = require('./customerData');
+const { lockedIn } = require('./deliveryLock');
 
 /**
  * Sends what is due from webhook_deliveries — the outbox the change detector
@@ -32,6 +36,9 @@ const MAX_ATTEMPTS = BACKOFF_MINUTES.length + 1;
 const LEASE_MS = 2 * 60 * 1000;
 const CONCURRENCY = 5;
 const USER_AGENT = 'Zimos-Webhooks/1.0';
+const SECRET_RETRY_MS = 5 * 60 * 1000;
+// How long a delivery keeps waiting for its secret to become readable before it ends.
+const SECRET_GIVE_UP_MS = 3 * 24 * 60 * 60 * 1000;
 
 async function claimDue({ limit, now }) {
   const rows = await db.sequelize.query(
@@ -70,7 +77,58 @@ async function attemptDelivery(deliveryId, { now = new Date() } = {}) {
     return delivery;
   }
 
-  const body = JSON.stringify(delivery.payload);
+  // order.accepted is news only while it is still true. A receiver that was
+  // down gets the retry hours later: an order cancelled in between is not
+  // sent as accepted. The row ends (exhausted) saying why; Redeliver asks again.
+  if (delivery.eventType === 'order.accepted') {
+    const order = delivery.payload && delivery.payload.data && delivery.payload.data.order;
+    const acceptance = order && order.id ? await require('../orders/orderAccepted').acceptanceOf(delivery.workspaceId, order.id) : null;
+    if (!acceptance || !acceptance.accepted) {
+      await delivery.update({ status: 'exhausted', nextAttemptAt: null, lastError: 'Not sent: the order is no longer accepted (cancelled since)' });
+      return delivery;
+    }
+  }
+
+  // About an order, a customer or a lost checkout locked now (deliveryLock.js,
+  // orders/orderLock): not sent — a retry still due, Redeliver or Resend
+  // alike. The row stops (failed, unscheduled) saying why; when the order
+  // opens, the change scanner sends where it stands and Redeliver works again.
+  if ((await lockedIn(delivery.workspaceId, [delivery])).has(delivery.id)) {
+    await delivery.update({ status: 'failed', nextAttemptAt: null, lastError: 'Not sent: what it is about is locked now (ORDER_LOCKED); Redeliver once it opens' });
+    return delivery;
+  }
+
+  // A sealed secret this server cannot open (WEBHOOK_SECRETS_KEY missing or
+  // changed): nothing is sent unsigned, and the attempt is not counted
+  // against the receiver — it comes due again until the key is back.
+  // Three days of that and the row ends (exhausted) instead of coming back
+  // every 5 minutes for ever; Redeliver sends it once the key is back. A row
+  // with no secret at all (both columns empty, which the CHECK of migration
+  // 714 refuses) is treated the same way.
+  let secret;
+  try {
+    secret = readSecret(endpoint);
+    if (!secret) throw new Error('No signing secret is stored for this endpoint');
+  } catch (err) {
+    logger.error('Webhook signing secret unreadable', { endpointId: endpoint.id, workspaceId: endpoint.workspaceId, reason: err.message });
+    const giveUp = now.getTime() - new Date(delivery.createdAt).getTime() >= SECRET_GIVE_UP_MS;
+    await delivery.update(
+      giveUp
+        ? { status: 'exhausted', nextAttemptAt: null, lastError: 'The signing secret could not be read on our side for 3 days: not sent' }
+        : { status: 'failed', nextAttemptAt: new Date(now.getTime() + SECRET_RETRY_MS), lastError: 'The signing secret could not be read on our side; retried automatically' }
+    );
+    return delivery;
+  }
+
+  // Customers go out in full only while the endpoint's configurer may see
+  // them now (customerData.js), whatever the row was stored with: an address
+  // changed by a teammate without customers.reveal_sensitive, then a retry
+  // still due, a Redeliver or a Resend, sends the stored row masked. The row
+  // then keeps what was sent, as the payload cap does.
+  const reveals = (await revealsByEndpoint(endpoint.workspaceId, [endpoint])).get(endpoint.id);
+  const payload = reveals ? delivery.payload : maskCustomerData(delivery.payload);
+  const body = JSON.stringify(payload);
+  const masked = body !== JSON.stringify(delivery.payload);
   const timestamp = Math.floor(now.getTime() / 1000);
   const result = await send({
     url: endpoint.url,
@@ -85,7 +143,7 @@ async function attemptDelivery(deliveryId, { now = new Date() } = {}) {
       'X-Zimos-Event-Id': delivery.eventId,
       'X-Zimos-Delivery-Id': delivery.id,
       'X-Zimos-Timestamp': String(timestamp),
-      'X-Zimos-Signature': signatureHeader(endpoint.signingSecret, timestamp, body),
+      'X-Zimos-Signature': signatureHeader(secret, timestamp, body),
     },
   });
 
@@ -104,7 +162,7 @@ async function attemptDelivery(deliveryId, { now = new Date() } = {}) {
     changes.lastError = (result.error || `Receiver answered HTTP ${result.status}`).slice(0, 500);
   }
 
-  await delivery.update({ ...changes, attemptCount, lastResponseStatus: result.status });
+  await delivery.update({ ...changes, attemptCount, lastResponseStatus: result.status, ...(masked ? { payload } : {}) });
   // Three days of nothing but failures switches the endpoint off (webhookHealth.js).
   await require('./webhookHealth').recordOutcome(endpoint, ok, now);
   return delivery;

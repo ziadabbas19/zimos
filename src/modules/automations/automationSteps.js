@@ -4,6 +4,7 @@ const db = require('../../db/models');
 const notify = require('../notifications/notify');
 const { checkUrl } = require('../webhooks/webhookUrlGuard');
 const webhookSender = require('../webhooks/webhookSender');
+const customerData = require('../webhooks/customerData');
 const { PERMISSIONS } = require('../../core/security/permissions');
 const { render } = require('./automationContext');
 
@@ -97,13 +98,18 @@ const RUNNERS = {
 
   async webhook(step, subject, { workspaceId, trigger, rule }) {
     const url = checkUrl(step.url);
+    // The customer's name and the order's links in full only while the
+    // teammate who last saved the rule's steps may see customers in full
+    // (automation_rules.configured_by_user_id, migration 722) — the rule
+    // webhook endpoints follow (webhooks/customerData.js). Unknown: masked.
+    const reveals = rule ? (await customerData.revealsByEndpoint(workspaceId, [rule])).get(rule.id) : false;
     const body = JSON.stringify({
       event: trigger,
       automation: { id: rule ? rule.id : null, name: rule ? rule.name : null },
       workspaceId,
       orderId: subject.kind === 'order' ? subject.order.id : null,
       checkoutSessionId: subject.kind === 'checkout' ? subject.session.id : null,
-      data: subject.vars,
+      data: reveals ? subject.vars : customerData.maskAutomationVars(subject.vars),
       sentAt: new Date().toISOString(),
     });
     const result = await webhookSender.send({ url, body, headers: { 'Content-Type': 'application/json', 'User-Agent': 'Zimos-Automations' }, timeoutMs: 10000 });

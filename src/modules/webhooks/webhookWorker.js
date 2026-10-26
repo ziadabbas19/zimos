@@ -34,6 +34,8 @@ async function tick() {
   try {
     const result = await runOnce();
     if (result.events > 0 || result.attempted > 0) logger.info('Webhook pass', result);
+    // WEBHOOK_DELIVERY_RETENTION_DAYS: the log's old deliveries, once a day (deliveryRetention.js).
+    await require('./deliveryRetention').maybePrune();
   } catch (err) {
     logger.error('Webhook pass failed', { message: err.message, stack: err.stack });
   } finally {

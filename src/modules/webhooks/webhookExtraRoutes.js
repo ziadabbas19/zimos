@@ -10,6 +10,10 @@ const { NotFoundError } = require('../../core/errors/AppError');
 const { recordAudit } = require('../audit/auditService');
 const { attemptDelivery } = require('./webhookDispatcher');
 const { resendOrders } = require('./webhookFanout');
+const { maskCustomerData, viewerReveals } = require('./customerData');
+const deliveryLock = require('./deliveryLock');
+const { requirePermission } = require('../../core/middleware/rbac');
+const { PERMISSIONS } = require('../../core/security/permissions');
 
 /**
  * The store-wide delivery log and "resend order to webhook" (SPEC §16.1).
@@ -23,7 +27,10 @@ const ws = { workspaceId: uuid.required() };
 
 const STATUS_GROUPS = { succeeded: ['delivered'], failed: ['failed', 'exhausted'], pending: ['pending'] };
 
-const view = (delivery) => ({
+// The payload's names, phones, emails and addresses masked for a viewer
+// without customers.reveal_sensitive (customerData.js); hidden as "••••" for
+// anyone while what it is about is locked (deliveryLock.js).
+const view = (delivery, reveal, locked = false) => ({
   id: delivery.id,
   endpointId: delivery.endpointId,
   url: delivery.endpoint ? delivery.endpoint.url : null,
@@ -34,7 +41,8 @@ const view = (delivery) => ({
   nextAttemptAt: delivery.nextAttemptAt,
   lastResponseStatus: delivery.lastResponseStatus,
   lastError: delivery.lastError,
-  payload: delivery.payload,
+  payload: locked ? deliveryLock.hide(delivery.payload) : reveal ? delivery.payload : maskCustomerData(delivery.payload),
+  ...(locked ? { contactLocked: true } : {}),
   createdAt: delivery.createdAt,
   updatedAt: delivery.updatedAt,
 });
@@ -66,27 +74,13 @@ router.get(
       limit: limit + 1,
     });
     const page = rows.slice(0, limit);
+    const locked = await deliveryLock.lockedIn(req.tenant.workspaceId, page);
     res.json({
-      deliveries: page.map(view),
+      deliveries: page.map((d) => view(d, viewerReveals(req), locked.has(d.id))),
       nextCursor: rows.length > limit ? page[page.length - 1].createdAt.toISOString() : null,
     });
   })
 );
-
-/**
- * A stored payload was written while its subject was visible: sent again
- * by hand it is refused (402 ORDER_LOCKED) when the order, the customer or
- * the lost checkout it is about is locked now (orders/orderLock).
- */
-async function assertSendable(workspaceId, delivery) {
-  const orderLock = require('../orders/orderLock');
-  if (!orderLock.enabled()) return;
-  const data = (delivery.payload && delivery.payload.data) || {};
-  const orderId = (data.order && data.order.id) || data.orderId || null;
-  if (orderId) await orderLock.assertUnlocked(workspaceId, orderId);
-  else if (data.customer && data.customer.id) await orderLock.assertCustomerVisible(workspaceId, data.customer.id);
-  else if (String(delivery.eventType).startsWith('checkout.')) await orderLock.assertPendingOpen(workspaceId);
-}
 
 // POST /webhooks/deliveries/:deliveryId/resend — send this delivery again now.
 router.post(
@@ -95,18 +89,22 @@ router.post(
   asyncHandler(async (req, res) => {
     const delivery = await db.WebhookDelivery.findOne({ where: { id: req.params.deliveryId, workspaceId: req.tenant.workspaceId } });
     if (!delivery) throw new NotFoundError('WebhookDelivery');
-    await assertSendable(req.tenant.workspaceId, delivery);
+    // Written while its subject was visible: refused (402 ORDER_LOCKED) while it is locked now (deliveryLock.js).
+    await deliveryLock.assertSendable(req.tenant.workspaceId, delivery);
     const sent = await attemptDelivery(delivery.id);
     const fresh = await db.WebhookDelivery.findByPk(sent.id, {
       include: [{ model: db.WebhookEndpoint, as: 'endpoint', attributes: ['id', 'url'] }],
     });
-    res.json({ delivery: view(fresh) });
+    res.json({ delivery: view(fresh, viewerReveals(req)) });
   })
 );
 
 // POST /webhooks/resend-orders { orderIds: [...], endpointId? } — from the order page and bulk actions.
+// Sends past orders, customers included, to a URL of the caller's choosing:
+// only a teammate who may see customers in full (customers.reveal_sensitive).
 router.post(
   '/resend-orders',
+  requirePermission(PERMISSIONS.CUSTOMERS_REVEAL_SENSITIVE),
   validate({
     params: Joi.object(ws),
     body: Joi.object({

@@ -38,7 +38,15 @@ const ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789';
  * A permission no scope lists is never reachable with a key.
  */
 const SCOPES = Object.freeze({
+  // Also the accepted-orders feed and this key's own receipts of it
+  // (publicApi/acceptedOrdersFeed.js): a receipt changes nothing on the order.
   'orders:read': [PERMISSIONS.ORDERS_VIEW],
+  // A till / kitchen system: the accepted-orders feed, its receipts, and
+  // where an order stands in the till (publicApi/posStatus.js) — a note
+  // beside the order, never its stage. Nothing else: the order reads ask for
+  // another order scope by name (publicApiRoutes.js), and it grants no
+  // orders.manage, so no write route can open to it.
+  'orders:pos_status': [PERMISSIONS.ORDERS_VIEW],
   // Writing an order's status means reading it back too.
   'orders:write': [PERMISSIONS.ORDERS_VIEW, PERMISSIONS.ORDERS_MANAGE, PERMISSIONS.ORDERS_CONFIRM],
   // The finer scopes of SPEC §16.2. Role permissions do not tell "create"

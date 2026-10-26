@@ -12,6 +12,8 @@ module.exports = (sequelize, DataTypes) => {
       priceDeltaAmount: { type: DataTypes.BIGINT, allowNull: false, defaultValue: 0, field: 'price_delta_amount' },
       active: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: true },
       sortOrder: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0, field: 'sort_order' },
+      // The choice's code in the merchant's own till / kitchen system (migration 715); never shown to shoppers.
+      externalCode: { type: DataTypes.STRING(120), allowNull: true, field: 'external_code' },
     },
     { tableName: 'product_option_choices' }
   );

@@ -110,6 +110,24 @@ function variantText(options) {
     .join(', ');
 }
 
+/** "2 x Burger (Size: Large) [الحجم: كبير · إضافات: جبنة] = 260.00": quantity, product, variant, menu options, line total. */
+function itemsDetailed(o) {
+  const optionsLabel = require('../catalog/menuOptions').optionsLabel;
+  return (o.items || [])
+    .map((i) => {
+      const variant = variantText(i.variantOptionsSnapshot);
+      const options = optionsLabel(i.optionsSnapshot);
+      return `${i.quantity} x ${i.productNameSnapshot}${variant ? ` (${variant})` : ''}${options ? ` [${options}]` : ''} = ${money(i.lineTotalAmount)}`;
+    })
+    .join(' | ');
+}
+
+/** Governorate, city, street and the address notes, in one cell. */
+function fullAddress(o) {
+  const a = address(o);
+  return [a.region || a.province || a.governorate, a.city, a.addressLine, a.notes].filter(Boolean).join(' - ');
+}
+
 function itemsSummary(o) {
   return (o.items || [])
     .map((i) => {
@@ -166,6 +184,8 @@ const COLUMNS = [
   },
   { key: 'itemsCount', en: 'Items', ar: 'عدد القطع', value: (o) => (o.items || []).reduce((n, i) => n + i.quantity, 0) },
   { key: 'items', en: 'Products', ar: 'المنتجات', value: (o) => itemsSummary(o) },
+  { key: 'itemsDetailed', en: 'Products, options and prices', ar: 'المنتجات والإضافات والأسعار', value: (o) => itemsDetailed(o) },
+  { key: 'fullAddress', en: 'Full address', ar: 'العنوان كامل', value: (o) => fullAddress(o) },
   { key: 'source', en: 'Source', ar: 'المصدر', value: (o, i, x) => x.label('source', o.funnelId ? 'funnel' : 'store') },
   { key: 'carrier', en: 'Courier', ar: 'شركة الشحن', value: (o) => (o.shipment ? o.shipment.carrierCode : '') },
   { key: 'waybillNumber', en: 'Waybill', ar: 'رقم البوليصة', value: (o) => (o.shipment ? o.shipment.waybillNumber : '') },
@@ -232,25 +252,86 @@ const DEFAULT_ITEM_COLUMNS = [
   'currency',
 ];
 
+/**
+ * Ready-made exports with fixed columns, in a fixed order, so the file is the
+ * same every time (a merchant's accountant imports it as it is).
+ *
+ *   accepted  the accepted orders (orders/orderAccepted.js: confirmed, or
+ *             paid online; not cancelled), one row per order: number, date,
+ *             customer, phone, address, the lines with quantities, options
+ *             and prices, delivery, discount, total, currency, payment method
+ *             and payment state. The list's date range and stage still apply.
+ */
+const PRESETS = Object.freeze({
+  accepted: {
+    columns: ['orderNumber', 'createdAt', 'customerName', 'phone', 'fullAddress', 'itemsDetailed', 'shipping', 'discount', 'total', 'currency', 'paymentMethod', 'financialState'],
+    rowPer: 'order',
+    filters: { accepted: true },
+    fileName: 'orders-accepted',
+  },
+});
+const PRESET_NAMES = Object.keys(PRESETS);
+
+/**
+ * The export's options with its preset applied: the preset's columns, rows
+ * and filters win over anything sent. No preset: the options as they are.
+ */
+function applyPreset({ preset, columns, rowPer, ...filters }) {
+  if (!preset) return { preset: null, columns, rowPer, filters, fileName: 'orders' };
+  const p = PRESETS[preset];
+  return { preset, columns: p.columns, rowPer: p.rowPer, filters: { ...filters, ...p.filters }, fileName: p.fileName };
+}
+
+/**
+ * A preset's direct download is for a short range of orders: past either
+ * limit the dashboard builds the file in the background instead
+ * (exportFiles.js), where MAX_ORDERS still bounds it.
+ */
+const DIRECT_MAX_ORDERS = 2000;
+const DIRECT_MAX_DAYS = 31;
+
+/** null when the selection may download now, else why not (and how many orders it holds). */
+async function directTooLarge(workspaceId, filters) {
+  const { from, to } = filters;
+  const days = from && to ? (new Date(to) - new Date(from)) / (24 * 60 * 60 * 1000) : Infinity;
+  if (days > DIRECT_MAX_DAYS) return { reason: 'range', maxDays: DIRECT_MAX_DAYS, maxOrders: DIRECT_MAX_ORDERS };
+  const count = await orderService.countOrders(workspaceId, filters);
+  if (count > DIRECT_MAX_ORDERS) return { reason: 'rows', count, maxDays: DIRECT_MAX_DAYS, maxOrders: DIRECT_MAX_ORDERS };
+  return null;
+}
+
 /** The catalogue the dashboard's export dialog is drawn from. */
 function columnCatalogue() {
   return {
     columns: COLUMNS.map(({ key, en, ar, item }) => ({ key, label: { en, ar }, perItem: Boolean(item) })),
     defaults: { order: DEFAULT_ORDER_COLUMNS, item: DEFAULT_ITEM_COLUMNS },
     maxOrders: MAX_ORDERS,
+    // The ready-made exports and the limits of their direct download.
+    presets: Object.fromEntries(Object.entries(PRESETS).map(([name, p]) => [name, { columns: p.columns }])),
+    direct: { maxOrders: DIRECT_MAX_ORDERS, maxDays: DIRECT_MAX_DAYS },
   };
 }
 
+// = + - @ (and their full-width forms) after any spaces or line breaks a
+// spreadsheet may skip, or a tab / carriage return: the start of a formula.
+const FORMULA_START = /^[\s\u3000]*[=+\-@\uFF1D\uFF0B\uFF0D\uFF20]|^[\t\r]/;
+// The same after a ";" — the list separator Excel splits a CSV on in many
+// locales, so the text after it can become a cell of its own.
+const FORMULA_AFTER_SEMICOLON = /;(?=[\s\u3000]*[=+\-@\uFF1D\uFF0B\uFF0D\uFF20])/g;
+
 /**
- * One CSV cell. A value that a spreadsheet would run as a formula (it starts
- * with = + - @, tab or carriage return) is prefixed with an apostrophe: a
- * customer can type anything into a name or an address, and the file is
- * opened in Excel by staff.
+ * One CSV cell. A value that a spreadsheet would run as a formula is
+ * prefixed with an apostrophe (FORMULA_START), and so is every part of it
+ * after a ";" that would start one: a customer can type anything into a
+ * name or an address, and the file is opened in Excel by staff. A plain
+ * number ("-5", "+201001234567") stays a number: it runs nothing. A cell
+ * holding a quote, a comma, a ";", a tab or a line break is quoted.
  */
 function cell(value) {
   let text = value === null || value === undefined ? '' : String(value);
-  if (/^[=+\-@\t\r]/.test(text) && !/^[+-]?\d+(\.\d+)?$/.test(text)) text = `'${text}`;
-  return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+  if (FORMULA_START.test(text) && !/^[+-]?\d+(\.\d+)?$/.test(text)) text = `'${text}`;
+  text = text.replace(FORMULA_AFTER_SEMICOLON, ";'");
+  return /[",;\t\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
 }
 
 const line = (values) => `${values.map(cell).join(',')}\r\n`;
@@ -376,4 +457,4 @@ async function tableRows(workspaceId, filters, { columns: requested, rowPer = 'o
   return rows;
 }
 
-module.exports = { csvChunks, tableRows, columnCatalogue, COLUMN_KEYS, MAX_ORDERS };
+module.exports = { csvChunks, tableRows, columnCatalogue, applyPreset, directTooLarge, cell, COLUMN_KEYS, PRESET_NAMES, MAX_ORDERS, DIRECT_MAX_ORDERS, DIRECT_MAX_DAYS };

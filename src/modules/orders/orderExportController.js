@@ -5,6 +5,7 @@ const db = require('../../db/models');
 const exportService = require('./orderExportService');
 const { recordAudit } = require('../audit/auditService');
 const { buildXlsx } = require('./xlsxWriter');
+const { AppError } = require('../../core/errors/AppError');
 
 const columns = asyncHandler(async (req, res) => {
   res.json(exportService.columnCatalogue());
@@ -12,8 +13,17 @@ const columns = asyncHandler(async (req, res) => {
 
 /** Streams the CSV: a page of orders is written as soon as it is read. */
 const exportCsv = asyncHandler(async (req, res) => {
-  const { columns: requested, rowPer, lang, format, ...filters } = req.query;
+  const { lang, format, ...rest } = req.query;
+  // A preset (accepted orders) fixes the columns and adds its filter.
+  const { preset, columns: requested, rowPer, filters, fileName } = exportService.applyPreset(rest);
   const { workspaceId } = req.tenant;
+
+  // A preset downloads now only for a short range: past it the dashboard
+  // prepares the file in the background (POST /exports/orders).
+  if (preset) {
+    const tooLarge = await exportService.directTooLarge(workspaceId, filters);
+    if (tooLarge) throw new AppError('EXPORT_TOO_LARGE', 'Too many orders to download now: prepare the file in the background', 413, tooLarge);
+  }
 
   // Dates are written on the store's own clock, not the server's.
   const workspace = await db.Workspace.findByPk(workspaceId, { attributes: ['timezone'] });
@@ -30,11 +40,11 @@ const exportCsv = asyncHandler(async (req, res) => {
       actorUserId: req.user.id,
       action: 'order.export',
       entityType: 'Order',
-      metadata: { filters, rowPer, format, columns: requested || 'default', maskedPhones: maskPhones },
+      metadata: { filters, rowPer, format, columns: requested || 'default', maskedPhones: maskPhones, ...(preset ? { preset } : {}) },
       req,
     });
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-    res.setHeader('Content-Disposition', `attachment; filename="orders-${new Date().toISOString().slice(0, 10)}.xlsx"`);
+    res.setHeader('Content-Disposition', `attachment; filename="${fileName}-${new Date().toISOString().slice(0, 10)}.xlsx"`);
     res.setHeader('Cache-Control', 'no-store');
     res.setHeader('Content-Length', file.length);
     return res.send(file);
@@ -50,13 +60,13 @@ const exportCsv = asyncHandler(async (req, res) => {
     actorUserId: req.user.id,
     action: 'order.export',
     entityType: 'Order',
-    metadata: { filters, rowPer, columns: requested || 'default', maskedPhones: maskPhones },
+    metadata: { filters, rowPer, format, columns: requested || 'default', maskedPhones: maskPhones, ...(preset ? { preset } : {}) },
     req,
   });
 
   const stamp = new Date().toISOString().slice(0, 10);
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-  res.setHeader('Content-Disposition', `attachment; filename="orders-${stamp}.csv"`);
+  res.setHeader('Content-Disposition', `attachment; filename="${fileName}-${stamp}.csv"`);
   res.setHeader('Cache-Control', 'no-store');
   if (!first.done) res.write(first.value);
   for await (const chunk of chunks) res.write(chunk);

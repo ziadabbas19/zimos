@@ -825,6 +825,46 @@ const env = {
         : process.env.NODE_ENV !== 'production',
     timeoutMs: Math.max(1000, parseInt(process.env.WEBHOOKS_TIMEOUT_MS || '10000', 10) || 10000),
     batchSize: Math.max(1, parseInt(process.env.WEBHOOKS_BATCH_SIZE || '50', 10) || 50),
+    // WEBHOOK_SECRET_SEALING=true: a new or rotated signing secret is stored
+    // sealed (AES-256-GCM, core/utils/credentialsCipher) with
+    // WEBHOOK_SECRETS_KEY — 32 bytes, base64, its own key like the carriers'
+    // and gateways'. Off (the default): stored in clear, as before. A sealed
+    // secret is read whatever the flag says (webhooks/signingSecretStore.js).
+    // On without a usable key, creating an endpoint or rotating its secret
+    // answers 503 WEBHOOK_SECRETS_NOT_CONFIGURED. Under NODE_ENV=test it
+    // starts off; a test sets it.
+    secretSealing: process.env.NODE_ENV !== 'test' && process.env.WEBHOOK_SECRET_SEALING === 'true',
+    secretsKey: (process.env.WEBHOOK_SECRETS_KEY || '').trim(),
+    // While rotating the key: the old one, read only (a sealed secret that
+    // does not open with WEBHOOK_SECRETS_KEY is tried with it). Empty once
+    // scripts/seal-webhook-secrets.js --reseal has moved every row.
+    secretsKeyPrevious: (process.env.WEBHOOK_SECRETS_KEY_PREVIOUS || '').trim(),
+    // WEBHOOKS_REQUIRE_API_ACCESS=true: adding an endpoint needs the plan's
+    // api_access, as minting an API key does — refused only while
+    // PLAN_FEATURE_ENFORCEMENT is on too (webhooks/webhookPlanGate.js).
+    // Existing endpoints are never touched. Off (the default): as before.
+    requireApiAccess: process.env.NODE_ENV !== 'test' && process.env.WEBHOOKS_REQUIRE_API_ACCESS === 'true',
+    // Largest delivery body; an event over it is sent with ids only and
+    // `truncated: true` (webhooks/webhookPayloadCap.js). Unset (or not a
+    // number): 262144 = 256 KB, on by default by decision. 0 turns it off.
+    maxPayloadBytes: /^\d+$/.test((process.env.WEBHOOKS_MAX_PAYLOAD_BYTES || '').trim()) ? parseInt(process.env.WEBHOOKS_MAX_PAYLOAD_BYTES, 10) : 262144,
+    // Days the delivery log keeps (webhooks/deliveryRetention.js): older ones
+    // that are done are deleted once a day. Unset or 0: nothing is deleted.
+    deliveryRetentionDays: /^\d+$/.test((process.env.WEBHOOK_DELIVERY_RETENTION_DAYS || '').trim()) ? parseInt(process.env.WEBHOOK_DELIVERY_RETENTION_DAYS, 10) : 0,
+  },
+
+  // The order as integrations see it (public API, webhooks) and the pull
+  // integrations of tills and kitchens. Each off unless exactly "true"; under
+  // NODE_ENV=test each starts off and a test sets it.
+  publicApi: {
+    // ORDER_PAYLOAD_OPTIONS_ENABLED: order lines carry their menu options
+    // (with each choice's external code) and custom-field answers
+    // (publicApi/publicOrderOptions.js). Off: the order as before.
+    orderOptions: process.env.NODE_ENV !== 'test' && process.env.ORDER_PAYLOAD_OPTIONS_ENABLED === 'true',
+    // PUBLIC_API_ACK_ENABLED: the accepted-orders feed, its per-key receipts
+    // and the kitchen status (publicApi/acceptedOrdersFeed.js). Off: those
+    // routes answer 404, as before they existed.
+    ack: process.env.NODE_ENV !== 'test' && process.env.PUBLIC_API_ACK_ENABLED === 'true',
   },
 
   // Merchant courier accounts (modules/shipping/carriers). The key encrypts

@@ -6,7 +6,8 @@ const { PERMISSIONS } = require('../../core/security/permissions');
 const orderService = require('../orders/orderService');
 const confirmationService = require('../cod/confirmationService');
 const paymentService = require('../payments/paymentService');
-const { serializeOrder, serializeShipment } = require('./publicOrderSerializer');
+const { serializeShipment } = require('./publicOrderSerializer');
+const { serializeOrders } = require('./publicOrderOptions');
 
 /**
  * The public API's order operations. Nothing here decides anything about an
@@ -18,7 +19,8 @@ const { serializeOrder, serializeShipment } = require('./publicOrderSerializer')
  */
 
 async function getOrder(workspaceId, orderId) {
-  return serializeOrder(await orderService.getOrder(workspaceId, orderId));
+  const [order] = await serializeOrders(workspaceId, [await orderService.getOrder(workspaceId, orderId)]);
+  return order;
 }
 
 /** The order an integration knows only by the number printed on it ("1042" or "#1042"). */
@@ -31,7 +33,7 @@ async function getOrderByNumber(workspaceId, orderNumber) {
 
 async function listOrders(workspaceId, query) {
   const { orders, nextCursor } = await orderService.listOrders(workspaceId, query);
-  return { orders: orders.map(serializeOrder), nextCursor };
+  return { orders: await serializeOrders(workspaceId, orders), nextCursor };
 }
 
 async function listShipments(workspaceId, orderId) {

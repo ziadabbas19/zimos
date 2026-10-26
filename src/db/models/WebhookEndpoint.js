@@ -8,7 +8,13 @@ module.exports = (sequelize, DataTypes) => {
       workspaceId: { type: DataTypes.UUID, allowNull: false, field: 'workspace_id' },
       url: { type: DataTypes.STRING(500), allowNull: false },
       events: { type: DataTypes.ARRAY(DataTypes.STRING), allowNull: false, defaultValue: [] },
-      signingSecret: { type: DataTypes.STRING(100), allowNull: false, field: 'signing_secret' },
+      // In clear, or null once sealed into signingSecretSealed (migration 714,
+      // webhooks/signingSecretStore.js). Read only through that module.
+      signingSecret: { type: DataTypes.STRING(100), allowNull: true, field: 'signing_secret' },
+      signingSecretSealed: { type: DataTypes.TEXT, allowNull: true, field: 'signing_secret_sealed' },
+      // The teammate who last set the address: whose role decides whether
+      // deliveries carry customers in full (migration 719, webhooks/customerData.js).
+      configuredByUserId: { type: DataTypes.UUID, allowNull: true, field: 'configured_by_user_id' },
       isActive: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: true, field: 'is_active' },
       // { funnelIds, productIds } — only events about these (webhookFilter.js). Null = all.
       filter: { type: DataTypes.JSONB, allowNull: true },

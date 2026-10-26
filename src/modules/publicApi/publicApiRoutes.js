@@ -4,7 +4,8 @@ const { Router } = require('express');
 const validate = require('../../core/middleware/validate');
 const { requirePermission } = require('../../core/middleware/rbac');
 const { PERMISSIONS } = require('../../core/security/permissions');
-const { authenticateApiKey, apiKeyLimiter, requireScope } = require('../apiKeys/apiKeyAuth');
+const env = require('../../config/env');
+const { authenticateApiKey, apiKeyLimiter, feedLimiter, requireScope } = require('../apiKeys/apiKeyAuth');
 const controller = require('./publicOrderController');
 const schemas = require('./publicOrderValidation');
 
@@ -23,12 +24,30 @@ router.get('/me', controller.me);
 
 // The scope by name as well: orders.manage alone does not tell an update from a cancel.
 const update = requireScope('orders:update', 'orders:write');
+// Reading any order of the store. Every order scope but orders:pos_status
+// may: a till's key reads the accepted orders through its feed, nothing more.
+const readOrders = requireScope('orders:read', 'orders:write', 'orders:create', 'orders:update', 'orders:delete');
+// The accepted-orders feed and its receipts, named outright (not "any scope
+// that grants orders.view").
+const feedScope = requireScope('orders:read', 'orders:write', 'orders:pos_status');
 
-router.get('/orders', controller.listAliases, validate(schemas.list), read, controller.list);
+router.get('/orders', readOrders, controller.listAliases, validate(schemas.list), read, controller.list);
+
+// Tills and kitchens behind a local network (PUBLIC_API_ACK_ENABLED): the
+// accepted orders this key has not acknowledged, its receipts, and the
+// order's status in the till. Off, `next('route')` lets each path answer
+// exactly as it did before these routes existed. Before '/orders/:orderId'.
+const ackOn = (req, res, next) => (env.publicApi.ack === true ? next() : next('route'));
+router.get('/orders/accepted', ackOn, feedScope, feedLimiter, validate(schemas.accepted), read, controller.accepted);
+router.post('/orders/ack', ackOn, feedScope, validate(schemas.ack), read, controller.ack);
+router.post('/orders/:orderId/ack', ackOn, feedScope, validate(schemas.get), read, controller.ackOne);
+// The scope by name: a note in the till is not an order update, and orders:write does not grant it.
+// orders.view is enough of the creator's role: the status is a note, never the order's stage.
+router.put('/orders/:orderId/pos-status', ackOn, requireScope('orders:pos_status'), validate(schemas.posStatus), read, controller.posStatus);
 // Before '/orders/:orderId', or "by-number" would be read as an order id.
-router.get('/orders/by-number/:orderNumber', validate(schemas.byNumber), read, controller.getByNumber);
-router.get('/orders/:orderId', validate(schemas.get), read, controller.get);
-router.get('/orders/:orderId/shipments', validate(schemas.get), read, controller.listShipments);
+router.get('/orders/by-number/:orderNumber', readOrders, validate(schemas.byNumber), read, controller.getByNumber);
+router.get('/orders/:orderId', readOrders, validate(schemas.get), read, controller.get);
+router.get('/orders/:orderId/shipments', readOrders, validate(schemas.get), read, controller.listShipments);
 
 router.post(
   '/orders/:orderId/confirmation',

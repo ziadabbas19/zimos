@@ -291,6 +291,39 @@ describe('online checkout', () => {
     expect(detail.body.order.stage).toBe('awaiting_payment');
   });
 
+  it('a payment captured by staff makes an awaiting online order a sale, once, as the gateway would; a COD capture changes nothing of that', async () => {
+    const ctx = await store();
+    const placed = await placeOnline(ctx);
+    const init = await request(app).post(`/api/v1/workspaces/${ctx.wid}/orders/${placed.order.id}/payments`).set(bearer(ctx.token)).send({});
+    expect(init.body.payment.status).toBe('authorized');
+    const capture = () => request(app).post(`/api/v1/workspaces/${ctx.wid}/payments/${init.body.payment.id}/capture`).set(bearer(ctx.token)).send({});
+    expect((await capture()).status).toBe(200);
+
+    const order = await db.Order.findByPk(placed.order.id);
+    expect(order.financialState).toBe('paid');
+    expect(order.completedAt).toBeTruthy();
+    expect(await db.Invoice.count({ where: { orderId: order.id } })).toBe(1);
+    expect((await db.Customer.findByPk(order.customerId)).totalOrders).toBe(1);
+    // Accepted from now on: order.accepted, the feed and the accepted export see it.
+    expect(await require('../../src/modules/orders/orderAccepted').acceptanceOf(ctx.wid, order.id)).toMatchObject({ accepted: true });
+
+    // Captured again (a double click): nothing twice.
+    expect((await capture()).status).toBe(200);
+    expect(await db.Invoice.count({ where: { orderId: order.id } })).toBe(1);
+    expect((await db.Customer.findByPk(order.customerId)).totalOrders).toBe(1);
+    expect((await db.Order.findByPk(order.id)).completedAt.getTime()).toBe(order.completedAt.getTime());
+
+    // A COD order is a sale from the start: its capture leaves that alone.
+    const cod = await buyNow(ctx, { paymentMethod: 'cod' });
+    const codOrder = await db.Order.findByPk(cod.body.order.id);
+    const codInit = await request(app).post(`/api/v1/workspaces/${ctx.wid}/orders/${codOrder.id}/payments`).set(bearer(ctx.token)).send({});
+    expect((await request(app).post(`/api/v1/workspaces/${ctx.wid}/payments/${codInit.body.payment.id}/capture`).set(bearer(ctx.token)).send({})).status).toBe(200);
+    const codAfter = await db.Order.findByPk(codOrder.id);
+    expect(codAfter.completedAt.getTime()).toBe(codOrder.completedAt.getTime());
+    expect(await db.Invoice.count({ where: { orderId: codOrder.id } })).toBe(1);
+    expect((await db.Customer.findByPk(codOrder.customerId)).totalOrders).toBe(1);
+  });
+
   it('fills the {orderId} placeholder in the return URL', async () => {
     const ctx = await store();
     const res = await buyNow(ctx, { extra: { returnUrl: 'http://localhost:3001/store/x/pay/{orderId}' } });

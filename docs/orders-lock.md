@@ -13,9 +13,10 @@ and `src/modules/billing/confirmFeeService.js` (the fee).
 ## The rule
 
 An order's customer details — the name, the phones, the e-mail, the address
-below the governorate, the notes, the checkout answers, a gift message, the
-IP / browser / device, a transfer's payer number and screenshot — are shown to
-the merchant when
+below the governorate, the notes, the checkout answers, the answers on the
+order's lines (a product's custom fields: the text typed, the photo uploaded),
+a gift message, the IP / browser / device, a transfer's payer number and
+screenshot — are shown to the merchant when
 
 - (a) the store is entitled now: its subscription is in any phase but
   `restricted` (`workspaceAccessService.billingLifecycle`: more than a day past
@@ -128,6 +129,12 @@ Merchant answers (hidden, `contactLocked: true` and `lockReason`):
 - the public API (`/api/v1/public`): `GET /orders`, `/orders/:id`,
   `/by-number`, the confirmation / cancel / COD-collected answers, with
   `contactLocked: true`;
+- the webhook delivery log (`GET /webhooks/deliveries`,
+  `GET /webhooks/:id/deliveries`, and the rows Send test / Redeliver / Resend
+  answer): a delivery about a locked order, a hidden customer, or a lost
+  checkout while those are hidden shows its payload's customer details as
+  `••••` and `contactLocked: true`, for every viewer
+  (`webhooks/deliveryLock.js`);
 - customers `GET /customers`, `GET /customers/:id` (a customer is hidden when
   every order they placed is locked; a lead with no order is not);
   `PATCH /customers/:id`, the address edits and the blacklist switch
@@ -187,6 +194,15 @@ Merchant answers (hidden, `contactLocked: true` and `lockReason`):
 - the team's new-order notification (bell, e-mail, WhatsApp alert): the
   customer is not named.
 
+Left out until it opens, then given in full (decided 2026-10-26: the till and
+the kitchen wait for the order to open):
+
+- the accepted-orders feed `GET /public/orders/accepted`: a locked order — paid
+  online, its fee due — is not listed (`orderLock.visibleSql` in its query);
+  once it opens it is listed with everything, and the feed's ETag changes;
+- `order.accepted`: sent when the order opens and is accepted (below);
+- the kitchen ticket on the order page: its button is off for a locked order.
+
 Refused with 402 `ORDER_LOCKED` (`details.reason` `subscription` | `balance`),
 nothing sent:
 
@@ -201,9 +217,14 @@ nothing sent:
 - block-and-cancel from the fraud screen (it would list the phone and IP in
   the blocklist); cancelling alone still works;
 - lost orders: reveal the phone, the WhatsApp message, convert to an order;
+- the feed's receipt for one order (`POST /public/orders/:id/ack`) and the
+  kitchen status (`PUT /public/orders/:id/pos-status`); the receipt for many
+  (`POST /public/orders/ack`) writes none for a locked order and lists it
+  under `locked`;
 - sending a stored webhook delivery again
-  (`POST /webhooks/deliveries/:id/resend`) when the order, customer or lost
-  checkout it is about is locked now.
+  (`POST /webhooks/deliveries/:id/resend`, and Redeliver
+  `POST /webhooks/:id/deliveries/:deliveryId/redeliver`) when the order,
+  customer or lost checkout it is about is locked now.
 
 Refused with 422 `VALIDATION_ERROR`, whatever the lock says: a dashboard write
 whose name, phone, e-mail, address, notes or shipment draft is `••••` (spaces
@@ -223,7 +244,10 @@ Not tried at all:
 - outgoing webhooks: no delivery is queued for a locked order (domain events,
   the order change scanner, "resend to webhook", which names it under
   `locked`); `customer.*` for a hidden customer and `checkout.*` while new
-  orders would be locked are not sent.
+  orders would be locked are not sent. A delivery stored while its subject
+  was visible is not sent either once it is locked: a retry that comes due
+  stops (`failed`, unscheduled, `lastError` saying so) in
+  `webhookDispatcher.attemptDelivery`, before anything is signed.
 - the store's e-mails to the customer (`notifications/orderEmailService`):
   none for a locked order — order confirmation, shipped, cancelled, refunded,
   and the digital delivery of an order not paid online — nor the
@@ -241,7 +265,9 @@ Not tried at all:
   not. `order.created`'s event id is per order: never queued twice for an
   endpoint. The other order topics raised while it was locked (confirmed,
   cancelled, paid…) are not replayed; the status change carries where it
-  stands now. An order that locks between the scanner's lock check and its
+  stands now. One exception: an order accepted while it was locked (paid
+  online, its fee due) gets its `order.accepted` when it opens, once — its
+  event id is per order (`webhookFanout.acceptedOnOpen`). An order that locks between the scanner's lock check and its
   read of the order (its store's last fee spent meanwhile) is held the same
   way, its snapshot not moved on.
 

@@ -5,10 +5,13 @@ const db = require('../../db/models');
 const { AppError, NotFoundError } = require('../../core/errors/AppError');
 const { recordAudit } = require('../audit/auditService');
 const { checkUrl } = require('./webhookUrlGuard');
-const { generateSecret, secretHint } = require('./webhookSigning');
-const { EVENT_TYPES, TEST_EVENT, WILDCARD } = require('./webhookEvents');
+const { generateSecret } = require('./webhookSigning');
+const secretStore = require('./signingSecretStore');
+const { EVENT_TYPES, TEST_EVENT, WILDCARD, EXPLICIT_ONLY } = require('./webhookEvents');
 const { attemptDelivery } = require('./webhookDispatcher');
 const { normaliseFilter } = require('./webhookFilter');
+const customerData = require('./customerData');
+const deliveryLock = require('./deliveryLock');
 
 /**
  * A workspace's webhook endpoints, as the dashboard manages them.
@@ -21,7 +24,13 @@ const { normaliseFilter } = require('./webhookFilter');
 
 const MAX_ENDPOINTS_PER_WORKSPACE = 10;
 
-function serializeEndpoint(endpoint) {
+/**
+ * `sendsCustomerData`: whether this endpoint's deliveries carry customers in
+ * full (customerData.js) — false when the teammate who last set its address
+ * does not hold customers.reveal_sensitive or has left. Known only where the
+ * caller worked it out; absent otherwise.
+ */
+function serializeEndpoint(endpoint, reveals) {
   return {
     id: endpoint.id,
     url: endpoint.url,
@@ -34,13 +43,24 @@ function serializeEndpoint(endpoint) {
     // Set when the endpoint was switched off after three days of failures.
     disabledAt: endpoint.disabledAt || null,
     disabledReason: endpoint.disabledReason || null,
-    secretHint: secretHint(endpoint.signingSecret),
+    secretHint: secretStore.hintFor(endpoint),
+    ...(reveals instanceof Map ? { sendsCustomerData: reveals.get(endpoint.id) === true } : {}),
     createdAt: endpoint.createdAt,
     updatedAt: endpoint.updatedAt,
   };
 }
 
-function serializeDelivery(delivery) {
+/** The endpoint as the dashboard shows it, with whether it is sent customers in full. */
+async function present(workspaceId, endpoint) {
+  return serializeEndpoint(endpoint, await customerData.revealsByEndpoint(workspaceId, [endpoint]));
+}
+
+/**
+ * A delivery as the log shows it. `reveal`: whether the viewer holds
+ * customers.reveal_sensitive; without it the payload's names, phones, emails
+ * and addresses are masked, whatever the endpoint itself was sent.
+ */
+function serializeDelivery(delivery, { reveal = false, locked = false } = {}) {
   return {
     id: delivery.id,
     eventId: delivery.eventId,
@@ -50,7 +70,9 @@ function serializeDelivery(delivery) {
     nextAttemptAt: delivery.nextAttemptAt,
     lastResponseStatus: delivery.lastResponseStatus,
     lastError: delivery.lastError,
-    payload: delivery.payload,
+    // "••••" for anyone while what it is about is locked (deliveryLock.js); else masked without reveal.
+    payload: locked ? deliveryLock.hide(delivery.payload) : reveal ? delivery.payload : customerData.maskCustomerData(delivery.payload),
+    ...(locked ? { contactLocked: true } : {}),
     createdAt: delivery.createdAt,
     updatedAt: delivery.updatedAt,
   };
@@ -66,19 +88,45 @@ async function findEndpoint(workspaceId, endpointId, transaction) {
   return endpoint;
 }
 
-/** '*' stands alone: an endpoint listening to everything lists nothing else. */
-const normaliseEvents = (events) => (events.includes(WILDCARD) ? [WILDCARD] : [...new Set(events)]);
+/**
+ * An endpoint's address as the activity log keeps it: the scheme and host,
+ * and a short fingerprint of the whole URL so two different addresses on one
+ * host can be told apart. Never the path or the query: a receiver's secret
+ * often lives there (an Apps Script `?token=`, a Zapier or Make hook id), and
+ * anyone with audit_log.view reads the log.
+ */
+function auditUrl(url) {
+  let origin = '';
+  try {
+    origin = new URL(url).origin;
+  } catch {
+    origin = '';
+  }
+  const fingerprint = crypto.createHash('sha256').update(String(url)).digest('hex').slice(0, 8);
+  return `${origin}/… #${fingerprint}`;
+}
+
+/**
+ * '*' stands alone: an endpoint listening to everything lists nothing else —
+ * but the events '*' leaves out (order.accepted, webhookEvents.js), which it
+ * keeps beside it.
+ */
+const normaliseEvents = (events) =>
+  events.includes(WILDCARD) ? [WILDCARD, ...new Set(events.filter((e) => EXPLICIT_ONLY.has(e)))] : [...new Set(events)];
 
 function eventCatalogue() {
   return {
     events: Object.entries(EVENT_TYPES).map(([name, description]) => ({ name, description })),
     wildcard: WILDCARD,
+    // Events '*' does not bring: an endpoint lists them by name, beside '*' if it likes.
+    explicitOnly: [...EXPLICIT_ONLY],
   };
 }
 
 async function listEndpoints(workspaceId) {
   const endpoints = await db.WebhookEndpoint.findAll({ where: { workspaceId }, order: [['createdAt', 'ASC']] });
-  return { endpoints: endpoints.map(serializeEndpoint), ...eventCatalogue() };
+  const reveals = await customerData.revealsByEndpoint(workspaceId, endpoints);
+  return { endpoints: endpoints.map((e) => serializeEndpoint(e, reveals)), ...eventCatalogue() };
 }
 
 async function createEndpoint(workspaceId, { url, events, isActive = true, filter = null, customHeaders = [] }, req) {
@@ -93,12 +141,17 @@ async function createEndpoint(workspaceId, { url, events, isActive = true, filte
       );
     }
     const signingSecret = generateSecret();
+    // The id is known before the row is written: a sealed secret is bound to it.
+    const id = crypto.randomUUID();
     const endpoint = await db.WebhookEndpoint.create(
       {
+        id,
         workspaceId,
         url: cleanUrl,
+        // Whose role decides whether its deliveries carry customers in full (customerData.js).
+        configuredByUserId: customerData.configurerFor(req),
         events: normaliseEvents(events),
-        signingSecret,
+        ...secretStore.storedFields(workspaceId, id, signingSecret),
         isActive,
         filter: normaliseFilter(filter),
         customHeaders: require('./customHeaders').on() ? require('./customHeaders').normalise(customHeaders) : [],
@@ -112,19 +165,22 @@ async function createEndpoint(workspaceId, { url, events, isActive = true, filte
       entityType: 'WebhookEndpoint',
       entityId: endpoint.id,
       req,
-      after: { url: endpoint.url, events: endpoint.events, isActive: endpoint.isActive },
+      after: { url: auditUrl(endpoint.url), events: endpoint.events, isActive: endpoint.isActive },
       transaction,
     });
-    return { endpoint: serializeEndpoint(endpoint), signingSecret };
+    return { endpoint: serializeEndpoint(endpoint, await customerData.revealsByEndpoint(workspaceId, [endpoint])), signingSecret };
   });
 }
 
 async function updateEndpoint(workspaceId, endpointId, changes, req) {
   return db.sequelize.transaction(async (transaction) => {
     const endpoint = await findEndpoint(workspaceId, endpointId, transaction);
-    const before = { url: endpoint.url, events: endpoint.events, isActive: endpoint.isActive };
+    const before = { url: auditUrl(endpoint.url), events: endpoint.events, isActive: endpoint.isActive };
     const next = {};
-    if (changes.url !== undefined) next.url = checkUrl(changes.url);
+    // Setting the address — even to the same one — makes this teammate the
+    // one whose role decides what it is sent; through an API key without
+    // customers:read, nobody (customerData.configurerFor).
+    if (changes.url !== undefined) Object.assign(next, { url: checkUrl(changes.url), configuredByUserId: customerData.configurerFor(req) });
     if (changes.events !== undefined) next.events = normaliseEvents(changes.events);
     if (changes.isActive !== undefined) next.isActive = changes.isActive;
     if (changes.filter !== undefined) next.filter = normaliseFilter(changes.filter);
@@ -141,10 +197,10 @@ async function updateEndpoint(workspaceId, endpointId, changes, req) {
       entityId: endpoint.id,
       req,
       before,
-      after: { url: endpoint.url, events: endpoint.events, isActive: endpoint.isActive },
+      after: { url: auditUrl(endpoint.url), events: endpoint.events, isActive: endpoint.isActive },
       transaction,
     });
-    return serializeEndpoint(endpoint);
+    return present(workspaceId, endpoint);
   });
 }
 
@@ -159,7 +215,7 @@ async function deleteEndpoint(workspaceId, endpointId, req) {
       entityType: 'WebhookEndpoint',
       entityId: endpoint.id,
       req,
-      before: { url: endpoint.url, events: endpoint.events },
+      before: { url: auditUrl(endpoint.url), events: endpoint.events },
       transaction,
     });
     await endpoint.destroy({ transaction });
@@ -175,7 +231,7 @@ async function rotateSecret(workspaceId, endpointId, req) {
   return db.sequelize.transaction(async (transaction) => {
     const endpoint = await findEndpoint(workspaceId, endpointId, transaction);
     const signingSecret = generateSecret();
-    await endpoint.update({ signingSecret }, { transaction });
+    await endpoint.update(secretStore.storedFields(workspaceId, endpoint.id, signingSecret), { transaction });
     await recordAudit({
       workspaceId,
       actorUserId: req.user.id,
@@ -185,7 +241,7 @@ async function rotateSecret(workspaceId, endpointId, req) {
       req,
       transaction,
     });
-    return { endpoint: serializeEndpoint(endpoint), signingSecret };
+    return { endpoint: await present(workspaceId, endpoint), signingSecret };
   });
 }
 
@@ -196,7 +252,7 @@ async function rotateSecret(workspaceId, endpointId, req) {
  * Goes through the outbox like any delivery, so it shows in the history and
  * is retried like one if the receiver was down.
  */
-async function sendTest(workspaceId, endpointId) {
+async function sendTest(workspaceId, endpointId, { reveal = false } = {}) {
   const endpoint = await findEndpoint(workspaceId, endpointId);
   const eventId = `${TEST_EVENT}:${crypto.randomUUID()}`;
   const now = new Date();
@@ -215,26 +271,31 @@ async function sendTest(workspaceId, endpointId) {
     status: 'pending',
     nextAttemptAt: null,
   });
-  return serializeDelivery(await attemptDelivery(delivery.id, { now }));
+  return serializeDelivery(await attemptDelivery(delivery.id, { now }), { reveal });
 }
 
-async function listDeliveries(workspaceId, endpointId, { limit = 50, status } = {}) {
+async function listDeliveries(workspaceId, endpointId, { limit = 50, status } = {}, { reveal = false } = {}) {
   await findEndpoint(workspaceId, endpointId);
   const where = { workspaceId, endpointId };
   if (status) where.status = status;
   const deliveries = await db.WebhookDelivery.findAll({ where, order: [['createdAt', 'DESC']], limit });
-  return { deliveries: deliveries.map(serializeDelivery) };
+  const locked = await deliveryLock.lockedIn(workspaceId, deliveries);
+  return { deliveries: deliveries.map((d) => serializeDelivery(d, { reveal, locked: locked.has(d.id) })) };
 }
 
 /** Sends one delivery again now — after a fix on the receiver's side, or to replay an event. */
-async function redeliver(workspaceId, endpointId, deliveryId) {
+async function redeliver(workspaceId, endpointId, deliveryId, { reveal = false } = {}) {
   const delivery = await db.WebhookDelivery.findOne({ where: { id: deliveryId, endpointId, workspaceId } });
   if (!delivery) throw new NotFoundError('WebhookDelivery');
-  return serializeDelivery(await attemptDelivery(delivery.id));
+  // As Resend: refused (402 ORDER_LOCKED) while what it is about is locked now (deliveryLock.js).
+  await deliveryLock.assertSendable(workspaceId, delivery);
+  return serializeDelivery(await attemptDelivery(delivery.id), { reveal });
 }
 
 module.exports = {
   MAX_ENDPOINTS_PER_WORKSPACE,
+  auditUrl,
+  serializeDelivery,
   eventCatalogue,
   listEndpoints,
   createEndpoint,

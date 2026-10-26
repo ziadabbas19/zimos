@@ -46,7 +46,9 @@ function serialize(row) {
 
 /** POST /exports/orders: the same options as GET /orders/export, built in the background. */
 async function startOrdersExport(workspaceId, userId, body, req) {
-  const { columns, rowPer, lang, format, ...filters } = body;
+  const { lang, format, ...rest } = body;
+  // A preset (accepted orders) fixes the columns and adds its filter, stored with the rest.
+  const { preset, columns, rowPer, filters, fileName } = exportService.applyPreset(rest);
   const stamp = new Date().toISOString().slice(0, 10);
   const row = await db.sequelize.transaction(async (transaction) => {
     const created = await db.ExportFile.create(
@@ -56,8 +58,8 @@ async function startOrdersExport(workspaceId, userId, body, req) {
         kind: 'orders',
         format,
         // Decided by who asks: the file is built later, without their session (SPEC §3.4 #8).
-        params: { filters, columns: columns || null, rowPer, lang, maskPhones: !(req && req.tenant && req.tenant.hasPermission('customers.reveal_sensitive')) },
-        fileName: `orders-${stamp}.${format}`,
+        params: { filters, columns: columns || null, rowPer, lang, maskPhones: !(req && req.tenant && req.tenant.hasPermission('customers.reveal_sensitive')), ...(preset ? { preset } : {}) },
+        fileName: `${fileName}-${stamp}.${format}`,
       },
       { transaction }
     );
@@ -69,7 +71,7 @@ async function startOrdersExport(workspaceId, userId, body, req) {
     actorUserId: userId,
     action: 'order.export',
     entityType: 'Order',
-    metadata: { filters, rowPer, format, columns: columns || 'default', background: true, exportId: row.id },
+    metadata: { filters, rowPer, format, columns: columns || 'default', background: true, exportId: row.id, ...(preset ? { preset } : {}) },
     req,
   });
   return serialize(row);

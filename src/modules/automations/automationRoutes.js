@@ -113,8 +113,13 @@ const list = asyncHandler(async (req, res) => {
   res.json({ rules: rules.map((r) => view(r, stats[r.id])), triggers: TRIGGERS, tokens: TOKENS, stepTypes: STEP_TYPES });
 });
 
+// WEBHOOKS_REQUIRE_API_ACCESS: a rule's first webhook step needs api_access, as a new endpoint does.
+const { assertNewWebhookStep } = require('../webhooks/webhookPlanGate');
+
 const create = asyncHandler(async (req, res) => {
-  const rule = await db.AutomationRule.create({ ...req.body, workspaceId: req.tenant.workspaceId });
+  await assertNewWebhookStep(req, [], req.body.actions);
+  // Whoever saves the steps decides whether its webhook steps send customers in full (automationSteps.js).
+  const rule = await db.AutomationRule.create({ ...req.body, workspaceId: req.tenant.workspaceId, configuredByUserId: req.user.id });
   await recordAudit({ workspaceId: req.tenant.workspaceId, actorUserId: req.user.id, action: 'automation.create', entityType: 'AutomationRule', entityId: rule.id, after: view(rule), req });
   res.status(201).json({ rule: view(rule) });
 });
@@ -123,7 +128,8 @@ const update = asyncHandler(async (req, res) => {
   const rule = await db.AutomationRule.findOne({ where: { id: req.params.ruleId, workspaceId: req.tenant.workspaceId } });
   if (!rule) throw new NotFoundError('AutomationRule');
   const before = view(rule);
-  await rule.update(req.body);
+  if (req.body.actions !== undefined) await assertNewWebhookStep(req, rule.actions, req.body.actions);
+  await rule.update({ ...req.body, ...(req.body.actions !== undefined ? { configuredByUserId: req.user.id } : {}) });
   await recordAudit({ workspaceId: req.tenant.workspaceId, actorUserId: req.user.id, action: 'automation.update', entityType: 'AutomationRule', entityId: rule.id, before, after: view(rule), req });
   res.json({ rule: view(rule) });
 });
@@ -183,6 +189,7 @@ const enableTemplate = asyncHandler(async (req, res) => {
     actions: made.steps,
     isActive: true,
     templateKey: template.key,
+    configuredByUserId: req.user.id,
   });
   await recordAudit({ workspaceId, actorUserId: req.user.id, action: 'automation.create', entityType: 'AutomationRule', entityId: rule.id, after: view(rule), metadata: { templateKey: template.key }, req });
   return res.status(201).json({ rule: view(rule), created: true });

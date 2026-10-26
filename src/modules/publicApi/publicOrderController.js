@@ -1,7 +1,10 @@
 'use strict';
 
+const crypto = require('crypto');
 const asyncHandler = require('express-async-handler');
 const service = require('./publicOrderService');
+const feed = require('./acceptedOrdersFeed');
+const pos = require('./posStatus');
 const { forViewer } = require('../../core/utils/phoneMask');
 
 const wid = (req) => req.tenant.workspaceId;
@@ -69,4 +72,31 @@ const codCollected = asyncHandler(async (req, res) =>
   res.json({ order: await service.markCodCollected(wid(req), req.params.orderId, req) })
 );
 
-module.exports = { listAliases, me, list, get, getByNumber, listShipments, confirmation, cancel, createShipment, updateShipment, codCollected };
+// PUBLIC_API_ACK_ENABLED (acceptedOrdersFeed.js, posStatus.js). The feed masks
+// phones as the orders list does — a convenience, not a boundary: the same
+// key reads one order (GET /orders/:id) with the full number, and names,
+// emails and addresses are never masked. What a key may read is decided by
+// its scopes and its creator's role.
+// An ETag of what the till would take (the orders, their versions, the
+// cursor): a till that sends it back as If-None-Match while nothing changed
+// gets 304 and no body. A locked order (orders/orderLock) is left out of the
+// feed until it opens (acceptedOrdersFeed.js), so one that opens — even with
+// nothing written, the store renewed — joins the answer and changes the ETag;
+// so does a key whose phones stop or start being masked (its creator's role
+// changed). `since` moves with the clock and is left out of it.
+const accepted = asyncHandler(async (req, res) => {
+  const body = forViewer(req, await feed.listUnacked(wid(req), req.apiKey, req.query));
+  const reveals = require('../webhooks/customerData').viewerReveals(req);
+  const version = JSON.stringify([body.orders.map((o) => [o.id, o.updatedAt, o.pos ? o.pos.updatedAt : null, o.contactLocked === true]), body.nextCursor, reveals]);
+  res.set('ETag', `W/"${crypto.createHash('sha256').update(version).digest('base64url').slice(0, 27)}"`);
+  res.set('Cache-Control', 'no-cache');
+  res.json(body);
+});
+
+const ack = asyncHandler(async (req, res) => res.json(await feed.acknowledge(wid(req), req.apiKey, req.body.orderIds)));
+
+const ackOne = asyncHandler(async (req, res) => res.json({ ack: await feed.acknowledgeOne(wid(req), req.apiKey, req.params.orderId) }));
+
+const posStatus = asyncHandler(async (req, res) => res.json({ pos: await pos.setStatus(wid(req), req.params.orderId, req.body, req) }));
+
+module.exports = { listAliases, me, list, get, getByNumber, listShipments, confirmation, cancel, createShipment, updateShipment, codCollected, accepted, ack, ackOne, posStatus };

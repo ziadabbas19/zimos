@@ -18,9 +18,13 @@ const EVENT_NAMES = Object.keys(EVENT_TYPES);
 const WILDCARD = '*';
 const TEST_EVENT = 'webhook.test';
 
+// Sent only to endpoints that name them: an endpoint on '*' before they existed
+// would otherwise start receiving a second event for the same order change.
+const EXPLICIT_ONLY = new Set(['order.accepted']);
+
 function subscribes(endpoint, eventType) {
   const events = endpoint.events || [];
-  return events.includes(WILDCARD) || events.includes(eventType);
+  return events.includes(eventType) || (events.includes(WILDCARD) && !EXPLICIT_ONLY.has(eventType));
 }
 
-module.exports = { EVENT_TYPES, EVENT_NAMES, WILDCARD, TEST_EVENT, subscribes };
+module.exports = { EVENT_TYPES, EVENT_NAMES, WILDCARD, TEST_EVENT, EXPLICIT_ONLY, subscribes };

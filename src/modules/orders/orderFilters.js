@@ -59,6 +59,9 @@ function applyOrderFilters(conditions, bind, query = {}) {
     );
     bind.filterProductId = productId;
   }
+  // Accepted orders only (orderAccepted.js): the accepted-orders export. Set
+  // by the server for that export, never read from a request (no schema has it).
+  if (query.accepted === true) conditions.push(require('./orderAccepted').ACCEPTED_SQL);
 }
 
 /**

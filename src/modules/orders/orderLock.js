@@ -278,8 +278,31 @@ function maskCustomer(customer) {
  * hidden, and `contactLocked: true` with the reason ('subscription' or
  * 'balance') for the dashboard. Everything else is kept as it was.
  */
+/**
+ * The customer's answers on the order's lines (a product's custom fields:
+ * text they typed, a photo they uploaded): the text hidden, the photo's
+ * upload and its signed link dropped. The field's label and type stay.
+ */
+function maskCustomizations(entries) {
+  if (!Array.isArray(entries)) return entries;
+  return entries.map((entry) => {
+    if (!entry || typeof entry !== 'object') return entry;
+    const out = { ...entry, value: masked(entry.value) };
+    if ('uploadId' in out) out.uploadId = null;
+    if ('url' in out) Object.assign(out, { url: null, urlExpiresAt: null });
+    return out;
+  });
+}
+
 function maskOrder(order, ctx) {
   const out = { ...order };
+  if (Array.isArray(out.items)) {
+    out.items = out.items.map((item) => {
+      if (!item || !item.customizations) return item;
+      const plain = typeof item.toJSON === 'function' ? item.toJSON() : item;
+      return { ...plain, customizations: maskCustomizations(plain.customizations) };
+    });
+  }
   if ('contactSnapshot' in out) out.contactSnapshot = maskContact(out.contactSnapshot);
   if ('shippingAddressSnapshot' in out) out.shippingAddressSnapshot = maskAddress(out.shippingAddressSnapshot);
   if ('notes' in out) out.notes = masked(out.notes);
@@ -494,6 +517,7 @@ module.exports = {
   presentCustomers,
   maskObject,
   maskOrder,
+  maskCustomizations,
   maskContact,
   maskAddress,
   maskCustomer,

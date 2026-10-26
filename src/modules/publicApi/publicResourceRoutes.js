@@ -29,7 +29,8 @@ const analyticsController = require('../analytics/analyticsController');
 const analyticsSchemas = require('../analytics/analyticsValidation');
 const inventoryService = require('../inventory/inventoryService');
 const { recordAudit } = require('../audit/auditService');
-const { serializeOrder, serializeShipment } = require('./publicOrderSerializer');
+const { serializeShipment } = require('./publicOrderSerializer');
+const publicOrderService = require('./publicOrderService');
 const orderService = require('../orders/orderService');
 
 /**
@@ -73,7 +74,7 @@ router.post(
   idempotent('order.create')(
     asyncHandler(async (req, res) => {
       const { order } = await orderService.createOrder(req.tenant.workspaceId, req.body, req);
-      res.status(201).json({ order: serializeOrder(await orderService.getOrder(req.tenant.workspaceId, order.id)) });
+      res.status(201).json({ order: await publicOrderService.getOrder(req.tenant.workspaceId, order.id) });
     })
   )
 );
@@ -88,7 +89,7 @@ router.patch(
     // eslint-disable-next-line global-require
     const stageChange = require('../orders/orderStageChange');
     await stageChange.changeStage(req.tenant.workspaceId, req.params.orderId, req.body, req);
-    res.json({ order: serializeOrder(await orderService.getOrder(req.tenant.workspaceId, req.params.orderId)) });
+    res.json({ order: await publicOrderService.getOrder(req.tenant.workspaceId, req.params.orderId) });
   })
 );
 
@@ -320,7 +321,8 @@ const hookScope = requireScope('webhooks:write');
 router.get('/webhooks/events', hookScope, ws, validate(webhookSchemas.list), hooks, webhookController.events);
 router.get('/webhooks', hookScope, ws, validate(webhookSchemas.list), hooks, webhookController.list);
 // The signing secret is in this answer and never shown again.
-router.post('/webhooks', hookScope, ws, validate(webhookSchemas.create), hooks, webhookController.create);
+// WEBHOOKS_REQUIRE_API_ACCESS: as in the dashboard, a new endpoint needs api_access.
+router.post('/webhooks', hookScope, ws, validate(webhookSchemas.create), hooks, require('../webhooks/webhookPlanGate').newEndpointGate, webhookController.create);
 router.patch('/webhooks/:endpointId', hookScope, ws, validate(webhookSchemas.update), hooks, webhookController.update);
 router.delete('/webhooks/:endpointId', hookScope, ws, validate(webhookSchemas.byId), hooks, webhookController.remove);
 

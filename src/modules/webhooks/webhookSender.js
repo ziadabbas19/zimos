@@ -2,7 +2,7 @@
 
 const http = require('http');
 const https = require('https');
-const { guardedLookup } = require('./webhookUrlGuard');
+const { guardedLookup, literalAddressError } = require('./webhookUrlGuard');
 
 /**
  * One POST to a merchant's webhook URL. Resolves — never rejects — with
@@ -33,6 +33,13 @@ function send({ url, body, headers, timeoutMs }) {
       target = new URL(url);
     } catch (err) {
       finish({ status: null, error: 'Invalid URL' });
+      return;
+    }
+
+    // An address written as an IP is never looked up: checked here, before any socket.
+    const refused = literalAddressError(target.hostname);
+    if (refused) {
+      finish({ status: null, error: refused.message });
       return;
     }
 

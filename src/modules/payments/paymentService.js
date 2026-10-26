@@ -82,7 +82,8 @@ async function initializePayment(workspaceId, orderId, req) {
  * twice. Anything else (initialized / failed / refunded) is refused outright.
  */
 async function capturePayment(workspaceId, paymentId, req) {
-  return db.sequelize.transaction(async (transaction) => {
+  let completed = null;
+  const captured = await db.sequelize.transaction(async (transaction) => {
     const payment = await db.Payment.findOne({ where: { id: paymentId, workspaceId }, transaction, lock: transaction.LOCK.UPDATE });
     if (!payment) throw new NotFoundError('Payment');
 
@@ -115,8 +116,26 @@ async function capturePayment(workspaceId, paymentId, req) {
     await order.update({ amountPaid: newAmountPaid }, { transaction });
     await setFinancialState(workspaceId, order.id, financialState, req, transaction);
 
+    // Money taken on an order that is not a sale yet (placed to be paid
+    // online, captured here instead) makes it one now, as a gateway payment
+    // landing does (onlinePaymentService): invoice, discount, the customer's
+    // count and completed_at together (orderCompletion.js), at most once. A
+    // COD order is a sale from the start; a cancelled one stays as it is.
+    if (applied > 0 && !order.completedAt && !order.cancelledAt) {
+      const context = order.completionContext || {};
+      await require('../orders/orderCompletion').completeOrderInTransaction(order, { discount: context.discount || null, lateRedemption: true }, transaction);
+      completed = { order, context };
+    }
+
     return payment;
   });
+  if (completed) {
+    await require('../orders/orderCompletion').afterOrderCompleted(workspaceId, completed.order, {
+      cartId: completed.context.cartId || null,
+      checkoutSessionId: completed.context.checkoutSessionId || null,
+    });
+  }
+  return captured;
 }
 
 // A payment that money was actually taken on, and that can still give some back.

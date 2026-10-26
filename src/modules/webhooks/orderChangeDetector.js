@@ -5,9 +5,11 @@ const { QueryTypes } = require('sequelize');
 const db = require('../../db/models');
 const { STAGE_SQL, ORDERS_WITH_STAGE_FROM } = require('../orders/orderStage');
 const orderService = require('../orders/orderService');
-const { serializeOrder } = require('../publicApi/publicOrderSerializer');
+const { serializeOrders } = require('../publicApi/publicOrderOptions');
 const { subscribes } = require('./webhookEvents');
 const orderLock = require('../orders/orderLock');
+const { capPayload } = require('./webhookPayloadCap');
+const customerData = require('./customerData');
 
 /**
  * Turns order changes into webhook deliveries — without any order writer
@@ -58,7 +60,8 @@ const orderLock = require('../orders/orderLock');
  * order.created, as if it had just been placed; sent before → one
  * order.status_changed when its state moved meanwhile, nothing when it did
  * not. order.created's event id is per order, so it is never queued twice for
- * an endpoint.
+ * an endpoint. An order accepted while it was locked (paid online, its fee
+ * due) gets its order.accepted then too, once (webhookFanout.acceptedOnOpen).
  */
 
 const CURSOR_NAME = 'orders';
@@ -267,12 +270,19 @@ async function processPage(candidates, now, transaction) {
     const row = rows.find((r) => r.id === orderId);
     const order = await orderService.getOrder(row.workspace_id, orderId);
     if (!order.contactLocked) {
-      orders.set(orderId, serializeOrder(order));
+      const [serialized] = await serializeOrders(row.workspace_id, [order]);
+      orders.set(orderId, serialized);
       continue;
     }
     holds.push({ orderId, workspaceId: row.workspace_id, heldAt: now, checkedAt: now });
     const at = newSnapshots.findIndex((s) => s.orderId === orderId);
     if (at >= 0) newSnapshots.splice(at, 1);
+  }
+
+  // Customers in full only for an endpoint whose configurer may see them (customerData.js).
+  const reveals = new Map();
+  for (const [workspaceId, list] of endpointsByWorkspace) {
+    for (const [id, reveal] of await customerData.revealsByEndpoint(workspaceId, list)) reveals.set(id, reveal);
   }
 
   const deliveries = pending.filter(({ row }) => orders.has(row.id)).map(({ endpoint, type, row, previous, current, signature }) => {
@@ -288,7 +298,7 @@ async function processPage(candidates, now, transaction) {
       endpointId: endpoint.id,
       eventId,
       eventType: type,
-      payload: { id: eventId, type, createdAt: now.toISOString(), workspaceId: row.workspace_id, data },
+      payload: capPayload(customerData.forEndpoint({ id: eventId, type, createdAt: now.toISOString(), workspaceId: row.workspace_id, data }, reveals.get(endpoint.id))),
       status: 'pending',
       attemptCount: 0,
       nextAttemptAt: now,
@@ -323,6 +333,14 @@ const RECHECK_MS = 15 * 1000;
  * none: one indexed read.
  */
 async function releaseHeld({ now = new Date(), limit = BATCH_SIZE } = {}) {
+  const { opened, ...result } = await releaseInTransaction({ now, limit });
+  // Accepted while locked: their order.accepted was not sent then. It goes
+  // now, once the holds are gone for good (webhookFanout.acceptedOnOpen).
+  if (opened.length > 0) result.events += await require('./webhookFanout').acceptedOnOpen(opened);
+  return result;
+}
+
+async function releaseInTransaction({ now, limit }) {
   return db.sequelize.transaction(async (transaction) => {
     const holds = await db.sequelize.query(
       `SELECT order_id FROM webhook_order_holds
@@ -332,7 +350,7 @@ async function releaseHeld({ now = new Date(), limit = BATCH_SIZE } = {}) {
         FOR UPDATE SKIP LOCKED`,
       { replacements: { cutoff: new Date(now.getTime() - RECHECK_MS), limit }, type: QueryTypes.SELECT, transaction }
     );
-    if (holds.length === 0) return { released: 0, stillHeld: 0, events: 0 };
+    if (holds.length === 0) return { released: 0, stillHeld: 0, events: 0, opened: [] };
     const ids = holds.map((h) => h.order_id);
     const locked = await lockedNow(ids, transaction);
     const open = ids.filter((id) => !locked.has(id));
@@ -348,7 +366,7 @@ async function releaseHeld({ now = new Date(), limit = BATCH_SIZE } = {}) {
       );
       events = page.events;
     }
-    return { released: open.length, stillHeld: still.length, events };
+    return { released: open.length, stillHeld: still.length, events, opened: open };
   });
 }
 
