@@ -163,6 +163,30 @@ function oneOf(name, values, fallback) {
   return value;
 }
 
+// SMS_ALLOWED_COUNTRIES as calling codes: each entry a calling code ("20",
+// "+966") or the ISO code of a country the platform sells in ("EG", "SA" —
+// core/utils/storeCountry). An ISO code with no calling code there refuses to
+// start, naming it, so a typo cannot quietly drop a country. Unset or blank is
+// an empty list (no restriction). Under NODE_ENV=test it is always empty.
+function smsAllowedCallingCodes() {
+  const raw = process.env.SMS_ALLOWED_COUNTRIES;
+  if (process.env.NODE_ENV === 'test' || isBlank(raw)) return [];
+  const { CALLING_CODES } = require('../core/utils/storeCountry');
+  const codes = raw
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .map((entry) => {
+      if (/^\+?\d{1,4}$/.test(entry)) return entry.replace(/^\+/, '');
+      const code = CALLING_CODES[entry.toUpperCase()];
+      if (!/^[A-Za-z]{2}$/.test(entry) || !code) {
+        throw new Error(`SMS_ALLOWED_COUNTRIES: "${entry}" is neither a calling code nor one of ${Object.keys(CALLING_CODES).join(', ')}`);
+      }
+      return code;
+    });
+  return [...new Set(codes)];
+}
+
 const env = {
   nodeEnv: process.env.NODE_ENV || 'development',
   isProduction: process.env.NODE_ENV === 'production',
@@ -333,6 +357,18 @@ const env = {
   // is taken as before. Under NODE_ENV=test it starts off; a test sets it.
   funnelCheckout: {
     guard: process.env.NODE_ENV !== 'test' && process.env.FUNNEL_CHECKOUT_GUARD === 'true',
+  },
+
+  // Every SMS the platform pays for goes through notifications/notify.sms:
+  // checkout codes, phone verification, sign-up and sign-in codes, shopper
+  // sign-in, automations' SMS step, stock alerts.
+  //  - SMS_ALLOWED_COUNTRIES: the countries an SMS may go to (calling codes
+  //    or ISO codes, smsAllowedCallingCodes above). An SMS to any other
+  //    number is not sent and is logged as failed. Unset or empty: any
+  //    number, as before.
+  // Under NODE_ENV=test it is off; a test sets it on this object.
+  sms: {
+    allowedCallingCodes: smsAllowedCallingCodes(),
   },
 
   // Checkout codes (risk/checkoutOtp) one client may have sent, whatever the
