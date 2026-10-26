@@ -399,6 +399,16 @@ const env = {
     deliveryGuard: process.env.NODE_ENV !== 'test' && process.env.CHECKOUT_OTP_DELIVERY_GUARD_ENABLED === 'true',
   },
 
+  // IPV6_PREFIX_RULES_ENABLED=true: the store's IP checks compare IPv6
+  // addresses by their /64 (fraud/ipPrefix.js) — the IP blocklist (orders,
+  // codes, visits), min_minutes_between_cod_orders_per_ip and the risk
+  // score's ip_burst. IPv4 is compared whole either way. Off unless exactly
+  // "true": whole addresses, as before. Under NODE_ENV=test it starts off;
+  // a test sets it here.
+  ipRules: {
+    ipv6Prefix: process.env.NODE_ENV !== 'test' && process.env.IPV6_PREFIX_RULES_ENABLED === 'true',
+  },
+
   // VISITOR_GATE_ENABLED=true: a store's visitor blocks act (risk/visitorGate,
   // core/middleware/publicWorkspace). A visitor whose IP is a blocked entry of
   // scope `visit` (the merchant's own, or one "Block and cancel" added), or

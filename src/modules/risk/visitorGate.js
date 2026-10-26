@@ -2,10 +2,12 @@
 
 const crypto = require('crypto');
 const net = require('net');
+const { Op } = require('sequelize');
 const db = require('../../db/models');
 const { AppError } = require('../../core/errors/AppError');
 const ipIntel = require('./ipIntel');
 const { clientIp: clientIpOf } = require('../../core/middleware/clientIp');
+const { ipv6Prefix, inPrefix } = require('../fraud/ipPrefix');
 
 /**
  * Who is on the other end of a public store request, and whether the store
@@ -74,6 +76,15 @@ async function isBlocked(workspace, ip) {
       attributes: ['id'],
     })
   );
+  // The same IPv6 /64 as a blocked address (IPV6_PREFIX_RULES_ENABLED, fraud/ipPrefix).
+  const prefix = blocked ? null : ipv6Prefix(ip);
+  if (prefix) {
+    const entries = await db.BlockedEntry.findAll({
+      where: { workspaceId: workspace.id, scope: 'visit', type: 'ip', value: { [Op.like]: '%:%' } },
+      attributes: ['value'],
+    });
+    blocked = entries.some((entry) => inPrefix(prefix, entry.value));
+  }
   if (!blocked) {
     const countries = blockedCountries(workspace);
     if (countries.length > 0) {

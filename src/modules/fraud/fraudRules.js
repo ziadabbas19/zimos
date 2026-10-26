@@ -4,6 +4,7 @@ const { QueryTypes } = require('sequelize');
 const db = require('../../db/models');
 const { AppError } = require('../../core/errors/AppError');
 const { normalizePhone } = require('../../core/utils/phone');
+const { ipv6Prefix, inPrefix } = require('./ipPrefix');
 
 /**
  * Merchant-configured fraud rules for storefront orders.
@@ -269,24 +270,29 @@ async function ordersInLastDay(workspaceId, customerId, transaction) {
   return row.count;
 }
 
-/** A live COD order from this IP inside the window (orders_ws_ip_created_idx). */
+/**
+ * A live COD order from this IP inside the window (orders_ws_ip_created_idx).
+ * An IPv6 address counts its whole /64 with IPV6_PREFIX_RULES_ENABLED (./ipPrefix).
+ */
 async function hasRecentCodOrderFromIp(workspaceId, ip, minutes, transaction) {
+  const prefix = ipv6Prefix(ip);
+  const since = new Date(Date.now() - minutes * 60 * 1000).toISOString();
   const rows = await db.sequelize.query(
-    `SELECT 1
+    `SELECT ${prefix ? 'DISTINCT o.ip_address' : '1'}
        FROM orders o
       WHERE o.workspace_id = $workspaceId
-        AND o.ip_address = $ip
+        AND ${prefix ? "o.ip_address LIKE '%:%'" : 'o.ip_address = $ip'}
         AND o.payment_method = 'cod'
         AND ${NOT_CANCELLED_SQL}
         AND o.created_at >= $since::timestamptz
-      LIMIT 1`,
+      ${prefix ? '' : 'LIMIT 1'}`,
     {
-      bind: { workspaceId, ip, since: new Date(Date.now() - minutes * 60 * 1000).toISOString() },
+      bind: prefix ? { workspaceId, since } : { workspaceId, ip, since },
       type: QueryTypes.SELECT,
       transaction,
     }
   );
-  return rows.length > 0;
+  return prefix ? rows.some((row) => inPrefix(prefix, row.ip_address)) : rows.length > 0;
 }
 
 /** The largest number of units of one product in the order. */
