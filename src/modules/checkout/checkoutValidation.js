@@ -6,6 +6,11 @@ const { customizationsInputSchema } = require('../catalog/customFields');
 const { formFieldsBodySchema } = require('./checkoutForm');
 const { optionsInputSchema } = require('../catalog/menuOptions');
 
+// Units of one line a shopper may order at once: no store sells more in one
+// checkout, and one order asking for a product's whole stock holds it until
+// the merchant cancels (as the shipping quote and the coupon preview cap it).
+const MAX_LINE_QUANTITY = 1000;
+
 const contact = Joi.object({
   fullName: Joi.string().max(200).required(),
   phone: Joi.string().max(32).required(),
@@ -28,6 +33,7 @@ const uuid = Joi.string().uuid();
 const workspaceIdParam = workspaceRef().required();
 
 module.exports = {
+  MAX_LINE_QUANTITY,
   checkout: {
     params: Joi.object({ workspaceId: workspaceIdParam }),
     body: Joi.object({
@@ -77,7 +83,7 @@ module.exports = {
       item: Joi.object({
         variantId: uuid.required(),
         offerId: uuid.optional(),
-        quantity: Joi.number().integer().min(1).default(1),
+        quantity: Joi.number().integer().min(1).max(MAX_LINE_QUANTITY).default(1),
         // Answers to the product's custom fields (see cartValidation.addItem).
         customizations: customizationsInputSchema.optional(),
         // Menu options picked (catalog/menuOptions.js); priced by the server only.
@@ -90,7 +96,7 @@ module.exports = {
           Joi.object({
             variantId: uuid.required(),
             offerId: uuid.optional(),
-            quantity: Joi.number().integer().min(1).default(1),
+            quantity: Joi.number().integer().min(1).max(MAX_LINE_QUANTITY).default(1),
             customizations: customizationsInputSchema.optional(),
             options: optionsInputSchema.optional(),
           })

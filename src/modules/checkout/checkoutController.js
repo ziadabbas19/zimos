@@ -7,6 +7,7 @@ const orderService = require('../orders/orderService');
 const { afterOrderCompleted } = require('../orders/orderCompletion');
 const { AppError, ValidationError } = require('../../core/errors/AppError');
 const { assertRequiredCheckoutFields } = require('./checkoutSettings');
+const { MAX_LINE_QUANTITY } = require('./checkoutValidation');
 const { saveCheckoutAnswers } = require('./checkoutForm');
 const methodsService = require('../payments/paymentMethodsService');
 const { readVisitorId } = require('../customerUploads/customerUploadService');
@@ -110,6 +111,13 @@ const checkout = asyncHandler(async (req, res) => {
     });
     if (!cart) throw new AppError('CART_NOT_FOUND', 'No active cart found for this token', 404);
     ({ items } = await cartService.toOrderItems(workspaceId, cart.id));
+    // Adding the same product again adds to its line, so a cart line can grow past what one add allows.
+    if (items.some((line) => Number(line.quantity) > MAX_LINE_QUANTITY)) {
+      throw new ValidationError(
+        [{ field: 'items.quantity', message: `At most ${MAX_LINE_QUANTITY} of one item per order` }],
+        `At most ${MAX_LINE_QUANTITY} of one item per order`
+      );
+    }
   } else if (item) {
     items = [item, ...(extraItems || [])].map((line) => ({
       variantId: line.variantId,
