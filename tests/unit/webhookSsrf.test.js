@@ -65,6 +65,10 @@ describe('isPrivateAddress spells IPv6 every way', () => {
     ['64:ff9b:1::a', true],
     ['2001:0:4136:e378::1', true],
     ['fe80::1%eth0', true],
+    // IPv4-translated (SIIT): judged as the IPv4 address it carries.
+    ['::ffff:0:127.0.0.1', true],
+    ['::ffff:0:a00:1', true],
+    ['::ffff:0:808:808', false],
     ['::ffff:808:808', false],
     ['2606:4700:4700::1111', false],
   ])('%s → %s', (address, expected) => {

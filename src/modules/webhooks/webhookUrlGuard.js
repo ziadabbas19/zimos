@@ -106,6 +106,10 @@ function isPrivateAddress(address) {
       if (g[5] === 0xffff) return blocked.check(`${g[6] >> 8}.${g[6] & 255}.${g[7] >> 8}.${g[7] & 255}`, 'ipv4');
       if (g[5] === 0) return true;
     }
+    // IPv4-translated (SIIT, ::ffff:0:a.b.c.d): that IPv4 address decides too.
+    if (g.slice(0, 4).every((n) => n === 0) && g[4] === 0xffff && g[5] === 0) {
+      return blocked.check(`${g[6] >> 8}.${g[6] & 255}.${g[7] >> 8}.${g[7] & 255}`, 'ipv4');
+    }
     return blocked.check(ip.split('%')[0], 'ipv6');
   }
   // Not an IP at all: nothing to connect to.
