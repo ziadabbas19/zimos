@@ -82,10 +82,12 @@ const codCollected = asyncHandler(async (req, res) =>
 // while nothing changed gets 304 and no body. A locked order (orders/orderLock)
 // comes with its customer's details hidden and `contactLocked: true`, as in
 // GET /orders; one that opens without being written (the store renewed) gets
-// a new ETag. `since` moves with the clock and is left out of it.
+// a new ETag, and so does a key whose phones stop or start being masked
+// (its creator's role changed). `since` moves with the clock and is left out of it.
 const accepted = asyncHandler(async (req, res) => {
   const body = forViewer(req, await feed.listUnacked(wid(req), req.apiKey, req.query));
-  const version = JSON.stringify([body.orders.map((o) => [o.id, o.updatedAt, o.pos ? o.pos.updatedAt : null, o.contactLocked === true]), body.nextCursor]);
+  const reveals = require('../webhooks/customerData').viewerReveals(req);
+  const version = JSON.stringify([body.orders.map((o) => [o.id, o.updatedAt, o.pos ? o.pos.updatedAt : null, o.contactLocked === true]), body.nextCursor, reveals]);
   res.set('ETag', `W/"${crypto.createHash('sha256').update(version).digest('base64url').slice(0, 27)}"`);
   res.set('Cache-Control', 'no-cache');
   res.json(body);
