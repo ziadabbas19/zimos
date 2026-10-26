@@ -55,7 +55,11 @@ const ruleBody = {
     governorates: Joi.array().items(Joi.string().trim().max(100)).max(40),
     source: Joi.string().valid('store', 'funnel').allow(null),
     funnelIds: Joi.array().items(uuid).max(50),
-    riskLevel: Joi.array().items(Joi.string().valid('low', 'medium', 'high')).max(3),
+    // The levels orders are stored with (risk/riskService). "medium", the name the dashboard sent
+    // before, is saved as "moderate", the level it always meant.
+    riskLevel: Joi.array()
+      .items(Joi.string().valid('low', 'moderate', 'high', 'medium').custom((level) => (level === 'medium' ? 'moderate' : level)))
+      .max(3),
     isFirstOrder: Joi.boolean().allow(null),
     tags: Joi.array().items(Joi.string().trim().max(40)).max(20),
     // Only contacts in this segment / never contacts in that one (segmentCondition.js).

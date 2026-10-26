@@ -211,7 +211,8 @@ async function conditionsFail(conditions, subject) {
   const funnelIds = asList(c.funnelIds);
   if (funnelIds.length && !funnelIds.includes(order.funnelId)) return 'order is not from one of the chosen funnels';
 
-  const riskLevels = asList(c.riskLevel);
+  // A rule saved with "medium" (the dashboard's old name) means "moderate", the level orders carry.
+  const riskLevels = asList(c.riskLevel).map((level) => (level === 'medium' ? 'moderate' : level));
   if (riskLevels.length && !riskLevels.includes(order.riskLevel || 'low')) return `risk level is ${order.riskLevel || 'low'}`;
 
   const tags = asList(c.tags).map((t) => String(t).toLowerCase());
