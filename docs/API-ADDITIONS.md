@@ -150,6 +150,20 @@ line (422 `VALIDATION_ERROR`), and an automation's `conditions.riskLevel`
 takes `moderate` (`medium` is saved as `moderate`; a rule saved with it
 matches moderate orders).
 
+### Loyalty points — `/loyalty` (STORE_FEATURES `loyalty`)
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/loyalty` | adds `planLocked` (switching on would be refused) and `frozen` / `frozenReason` (`plan` \| `subscription` \| null) |
+| PUT | `/loyalty` | takes `maxRedeemPointsPerOrder` (1–10,000,000 or null = no cap but the percent). With `LOYALTY_REQUIRE_PLAN_FEATURE` and `PLAN_FEATURE_ENFORCEMENT` on, `enabled: true` needs the plan's `loyalty` (403 `PLAN_FEATURE_REQUIRED`); saving it off passes on any plan |
+| GET | `/loyalty/customers/:customerId`, `/store/:ws/account/loyalty` | add `frozen`; a frozen balance has `expiresAt: null`, and the shopper's `program` is null |
+| GET | `/store/:ws/loyalty` | `program` adds `maxRedeemPointsPerOrder`; null while frozen |
+| POST | `/store/:ws/checkout` | `loyaltyPoints` may also be refused 422 `LOYALTY_FROZEN`, and with `LOYALTY_GUARD_ENABLED` 422 `LOYALTY_UNAVAILABLE` (a blocked customer) or `LOYALTY_DEVICE_LIMIT` (the device spent another account's points in the last 24 hours), each on field `loyaltyPoints` |
+
+Frozen (`loyalty/loyaltyAccess.js`): kept and shown, never earned, spent or
+expired; inactivity restarts from the last frozen day
+(`settings.loyalty.frozenSeenAt`, written by the daily job). An order locked
+when delivered (`ORDERS_LOCK_ENABLED`) earns nothing.
+
 ## Changes to existing files
 
 Kept as small as possible — nothing was restyled or refactored.
