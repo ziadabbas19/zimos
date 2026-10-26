@@ -30,6 +30,8 @@ const view = (row) => (row ? { status: row.status, reference: row.reference || n
 async function setStatus(workspaceId, orderId, { status, reference }, req) {
   const acceptance = await acceptanceOf(workspaceId, orderId);
   if (!acceptance) throw new NotFoundError('Order');
+  // Not while the order is locked (orders/orderLock): 402 ORDER_LOCKED until it opens.
+  await require('../orders/orderLock').assertUnlocked(workspaceId, orderId);
   if (!acceptance.accepted) {
     throw new AppError('ORDER_NOT_ACCEPTED', 'Only an accepted order (confirmed, or paid online) has a kitchen status', 409);
   }

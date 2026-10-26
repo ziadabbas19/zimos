@@ -77,13 +77,13 @@ const codCollected = asyncHandler(async (req, res) =>
 // key reads one order (GET /orders/:id) with the full number, and names,
 // emails and addresses are never masked. What a key may read is decided by
 // its scopes and its creator's role.
-// An ETag of what the till would take (the orders, their versions, whether
-// each is locked, the cursor): a till that sends it back as If-None-Match
-// while nothing changed gets 304 and no body. A locked order (orders/orderLock)
-// comes with its customer's details hidden and `contactLocked: true`, as in
-// GET /orders; one that opens without being written (the store renewed) gets
-// a new ETag, and so does a key whose phones stop or start being masked
-// (its creator's role changed). `since` moves with the clock and is left out of it.
+// An ETag of what the till would take (the orders, their versions, the
+// cursor): a till that sends it back as If-None-Match while nothing changed
+// gets 304 and no body. A locked order (orders/orderLock) is left out of the
+// feed until it opens (acceptedOrdersFeed.js), so one that opens — even with
+// nothing written, the store renewed — joins the answer and changes the ETag;
+// so does a key whose phones stop or start being masked (its creator's role
+// changed). `since` moves with the clock and is left out of it.
 const accepted = asyncHandler(async (req, res) => {
   const body = forViewer(req, await feed.listUnacked(wid(req), req.apiKey, req.query));
   const reveals = require('../webhooks/customerData').viewerReveals(req);

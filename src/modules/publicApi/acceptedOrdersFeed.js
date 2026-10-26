@@ -6,6 +6,7 @@ const { AppError, NotFoundError, ValidationError } = require('../../core/errors/
 const orderService = require('../orders/orderService');
 const { ACCEPTED_SQL, ACCEPTED_AT_SQL, VIA_SQL } = require('../orders/orderAccepted');
 const { serializeOrders } = require('./publicOrderOptions');
+const orderLock = require('../orders/orderLock');
 
 /**
  * The accepted orders an API key has not acknowledged yet (PUBLIC_API_ACK_ENABLED):
@@ -79,6 +80,11 @@ function windowStart(apiKey, since, now) {
 async function listUnacked(workspaceId, apiKey, { since, limit = 50, cursor } = {}, { now = new Date() } = {}) {
   const from = windowStart(apiKey, since, now);
   const after = cursor ? decodeCursor(cursor) : null;
+  // A locked order (orders/orderLock: paid online, its fee due) is left out
+  // until it opens: no receipt and no kitchen status for it meanwhile, so the
+  // till would only be shown it again and again. It comes in full when it
+  // opens. TRUE while nothing is locked.
+  const visible = orderLock.visibleSql(await orderLock.contextFor(workspaceId), 'o');
   const rows = await db.sequelize.query(
     `SELECT o.id, ${ACCEPTED_AT_SQL} AS accepted_at, (${ACCEPTED_AT_SQL})::text AS accepted_at_key, ${VIA_SQL} AS via
        FROM orders o
@@ -91,6 +97,7 @@ async function listUnacked(workspaceId, apiKey, { since, limit = 50, cursor } = 
         AND o.archived_at IS NULL
         AND ${ACCEPTED_SQL}
         AND ${ACCEPTED_AT_SQL} >= :from
+        AND ${visible}
         AND NOT EXISTS (SELECT 1 FROM api_key_order_acks k WHERE k.api_key_id = :apiKeyId AND k.order_id = o.id)
         ${after ? `AND (${ACCEPTED_AT_SQL}, o.id) > (CAST(:afterAt AS timestamptz), CAST(:afterId AS uuid))` : ''}
       ORDER BY 2, o.id
@@ -115,8 +122,10 @@ async function listUnacked(workspaceId, apiKey, { since, limit = 50, cursor } = 
  */
 async function acknowledge(workspaceId, apiKey, orderIds) {
   const ids = [...new Set(orderIds)];
-  const own = await db.Order.findAll({ where: { id: ids, workspaceId }, attributes: ['id'] });
-  const known = new Set(own.map((o) => o.id));
+  const own = await db.Order.findAll({ where: { id: ids, workspaceId }, attributes: orderLock.ORDER_ATTRIBUTES });
+  // A locked order takes no receipt until it opens (orders/orderLock): listed back under `locked`.
+  const locked = await orderLock.lockedIds(await orderLock.contextFor(workspaceId), own);
+  const known = new Set(own.map((o) => o.id).filter((id) => !locked.has(id)));
   if (known.size > 0) {
     await db.ApiKeyOrderAck.bulkCreate(
       [...known].map((orderId) => ({ apiKeyId: apiKey.id, orderId })),
@@ -126,12 +135,14 @@ async function acknowledge(workspaceId, apiKey, orderIds) {
   const rows = known.size ? await db.ApiKeyOrderAck.findAll({ where: { apiKeyId: apiKey.id, orderId: [...known] } }) : [];
   return {
     acked: rows.map((r) => ({ orderId: r.orderId, ackedAt: r.ackedAt })),
-    unknown: ids.filter((id) => !known.has(id)),
+    unknown: ids.filter((id) => !known.has(id) && !locked.has(id)),
+    ...(locked.size ? { locked: ids.filter((id) => locked.has(id)) } : {}),
   };
 }
 
-/** One order: 404 when it is not this store's. */
+/** One order: 404 when it is not this store's, 402 ORDER_LOCKED while it is locked. */
 async function acknowledgeOne(workspaceId, apiKey, orderId) {
+  await orderLock.assertUnlocked(workspaceId, orderId);
   const result = await acknowledge(workspaceId, apiKey, [orderId]);
   if (result.acked.length === 0) throw new NotFoundError('Order');
   return result.acked[0];

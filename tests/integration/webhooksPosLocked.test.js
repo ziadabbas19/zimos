@@ -3,9 +3,9 @@
 // Locked orders (ORDERS_LOCK_ENABLED, orders/orderLock) and what this branch
 // adds around orders: the accepted-orders feed and its receipts, the kitchen
 // status, order.accepted, and stored webhook deliveries.
-//   feed       a locked order comes with its customer's details hidden and
-//              contactLocked, as in GET /orders; a store that renews gets a
-//              new ETag; receipts and the kitchen status carry no customer
+//   feed       a locked order is left out until it opens, its receipt and
+//              kitchen status refused (402); once it opens it comes whole and
+//              the ETag changes; the accepted export lists it hidden
 //   webhooks   order.accepted is not sent while the order is locked, and goes
 //              once when it opens; a stored delivery about an order locked
 //              since is not sent (retry, Redeliver, Resend) and shows hidden
@@ -82,7 +82,7 @@ const expectNoCustomer = (value) => {
 };
 
 describe('the accepted-orders feed and a locked order', () => {
-  it('lists it hidden with contactLocked, its receipt and kitchen status carry no customer, and a renewal changes the ETag', async () => {
+  it('leaves it out, refuses its receipt and kitchen status while it is locked, and gives it whole once it opens', async () => {
     const store = await h.monthlyStore({ lapsed: true });
     const till = await mint(store, ['orders:read', 'orders:pos_status']);
     const order = await paidByCard(store);
@@ -91,26 +91,29 @@ describe('the accepted-orders feed and a locked order', () => {
     const feed = (headers = {}) => request(app).get('/api/v1/public/orders/accepted').set(till).set(headers);
     const locked = await feed();
     expect(locked.status).toBe(200);
-    const listed = locked.body.orders.find((o) => o.id === order.id);
-    expect(listed).toMatchObject({ contactLocked: true, acceptedVia: 'payment' });
-    expect(listed.contact.fullName).toBe('••••');
-    expect(listed.items).toHaveLength(1);
+    expect(locked.body.orders.find((o) => o.id === order.id)).toBeUndefined();
     expectNoCustomer(locked.body);
 
-    // Nothing changed: 304. Renewed — no order written — the same order opens, and the ETag moves.
+    // While locked: no receipt and no kitchen status for it; a batch receipt names it under `locked`.
+    const one = await request(app).post(`/api/v1/public/orders/${order.id}/ack`).set(till);
+    expect([one.status, one.body.error.code]).toEqual([402, 'ORDER_LOCKED']);
+    const status = await request(app).put(`/api/v1/public/orders/${order.id}/pos-status`).set(till).send({ status: 'preparing' });
+    expect([status.status, status.body.error.code]).toEqual([402, 'ORDER_LOCKED']);
+    const many = await request(app).post('/api/v1/public/orders/ack').set(till).send({ orderIds: [order.id] });
+    expect(many.status).toBe(200);
+    expect(many.body).toMatchObject({ acked: [], unknown: [], locked: [order.id] });
+    expect(await db.ApiKeyOrderAck.count({ where: { orderId: order.id } })).toBe(0);
+    expect(await db.OrderPosStatus.count({ where: { orderId: order.id } })).toBe(0);
+
+    // Nothing changed: 304. Renewed — no order written — it opens, joins the feed whole, and the ETag moves.
     expect((await feed({ 'If-None-Match': locked.headers.etag })).status).toBe(304);
     await h.renew(store);
     const open = await feed({ 'If-None-Match': locked.headers.etag });
     expect(open.status).toBe(200);
     const opened = open.body.orders.find((o) => o.id === order.id);
+    expect(opened).toMatchObject({ acceptedVia: 'payment', contact: { fullName: h.CONTACT.fullName } });
     expect(opened.contactLocked).toBeUndefined();
-    expect(opened.contact.fullName).toBe(h.CONTACT.fullName);
-
-    // Lapsed again: the receipt and the kitchen status work on a locked order and answer no customer detail.
-    await h.lapse(store);
-    const status = await request(app).put(`/api/v1/public/orders/${order.id}/pos-status`).set(till).send({ status: 'preparing' });
-    expect(status.status).toBe(200);
-    expectNoCustomer(status.body);
+    expect((await request(app).put(`/api/v1/public/orders/${order.id}/pos-status`).set(till).send({ status: 'preparing' })).status).toBe(200);
     const ack = await request(app).post(`/api/v1/public/orders/${order.id}/ack`).set(till);
     expect(ack.status).toBe(200);
     expect(Object.keys(ack.body.ack).sort()).toEqual(['ackedAt', 'orderId']);
