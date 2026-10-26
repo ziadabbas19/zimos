@@ -751,6 +751,31 @@ const env = {
     controlConnection: process.env.NODE_ENV !== 'test' && process.env.QUEUE_CONTROL_CONNECTION === 'true',
   },
 
+  // Live updates to the dashboard and the console over Socket.IO
+  // (modules/realtime). Off unless exactly "true": no socket server is
+  // attached, the outbox has no realtime consumer and no event is recorded for
+  // it — today's behaviour exactly. On: websocket only (no long polling, which
+  // would need sticky sessions), the session checked at the handshake, rooms
+  // from the account's memberships and console permissions, messages carrying
+  // ids only. Under NODE_ENV=test it starts off; a test flips it on this object.
+  //   maxConnectionsPerUser  open sockets and handshakes in progress one account
+  //                          may hold on one server. It does not size the
+  //                          database's share: whatever it is, at most 3
+  //                          handshakes of a process ask the database at once
+  //                          (realtimeServer.js HANDSHAKE_CONCURRENCY, a few of
+  //                          DB_POOL_MAX's connections), and an account begins
+  //                          at most 20 handshakes a minute on a server.
+  //   handshakesPerMinute    connection attempts one IP may make a minute, counted
+  //                          in each API process's memory: with N processes an IP
+  //                          gets N times this. A limit against one noisy client,
+  //                          not a defence against many addresses (an IPv6 block
+  //                          holds countless): Cloudflare in front is that.
+  realtime: {
+    enabled: process.env.NODE_ENV !== 'test' && process.env.REALTIME_ENABLED === 'true',
+    maxConnectionsPerUser: positiveInt('REALTIME_MAX_CONNECTIONS_PER_USER', 10),
+    handshakesPerMinute: positiveInt('REALTIME_HANDSHAKES_PER_MINUTE', 60),
+  },
+
   // ALLOW_DEMO_SEED_IN_PRODUCTION=true lets the demo seeder run under
   // NODE_ENV=production. Off (the default) it refuses there: it creates an
   // owner account with a public password, and its `down` empties whole tables.
@@ -843,6 +868,15 @@ const env = {
     // console's detailed Site visits endpoints answer. Off: today's behaviour
     // exactly, and those endpoints answer 404. Starts off under NODE_ENV=test.
     detailsEnabled: process.env.NODE_ENV !== 'test' && process.env.SITE_TRAFFIC_DETAILS_ENABLED === 'true',
+    // SITE_LIVE_ENABLED (exactly "true"): the console's Live view of zimos.co
+    // answers (GET /admin/site-traffic/live, siteAnalytics/siteTrafficLive.js),
+    // and each visit also keeps its operating system's family (site_visits.os,
+    // migration 709). Off: that endpoint answers 404 and the beacon stores what
+    // it did before this switch existed. Apart from SITE_TRAFFIC_DETAILS_ENABLED:
+    // without that one, Live shows what every visit keeps (country, source and
+    // UTM, device, page) and no governorate, browser or link kind. Starts off
+    // under NODE_ENV=test; a test flips it on this object.
+    liveEnabled: process.env.NODE_ENV !== 'test' && process.env.SITE_LIVE_ENABLED === 'true',
   },
 
   // The storefront events guard (analytics/traffic). Off unless exactly
@@ -881,6 +915,13 @@ const env = {
   // ever, as before. The web analytics screens read raw events: with this set,
   // their periods reach this far back only.
   analyticsRawRetentionDays: limitOrOff('ANALYTICS_RAW_RETENTION_DAYS'),
+
+  // zimos.co visits (site_visits) older than this many days are deleted every
+  // six hours (siteAnalytics/siteVisitsRetention.js). 0 or unset keeps them for
+  // ever, as before. The console's Site traffic pages read these rows, so with
+  // this set they reach this far back only. Not ANALYTICS_RAW_RETENTION_DAYS:
+  // that one is the stores', and changing it must not change this.
+  siteVisitsRetentionDays: limitOrOff('SITE_VISITS_RETENTION_DAYS'),
 
   // Merchant custom domains (modules/domains). Off unless exactly "true": every
   // dashboard route under /workspaces/:id/domains answers 404 like an unknown

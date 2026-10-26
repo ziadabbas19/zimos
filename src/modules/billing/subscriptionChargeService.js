@@ -12,6 +12,7 @@ const specialTerms = require('./specialTermsService');
 const manualPricing = require('./manualPricing');
 const planSwitches = require('./planSwitchSettlement');
 const switchRules = require('./planSwitchRules');
+const realtimeEvents = require('../realtime/realtimeEvents');
 
 /**
  * Subscription charges: one billing_invoices row per charge, the first and
@@ -432,6 +433,13 @@ async function settlePaid(
     `billing invoice ${invoice.id} paid (${invoice.amountPaid} of ${invoice.amount} ${invoice.currency} due)` +
       (payable.codeLapsed ? ', referral code no longer active: no discount, no commission' : '') +
       (commission ? `, commission row ${commission.id}` : '')
+  );
+  // A live update to the console, with REALTIME_ENABLED only (realtime/realtimeEvents).
+  await realtimeEvents.record(
+    transaction,
+    'subscription.paid',
+    { workspaceId: invoice.workspaceId, billingInvoiceId: invoice.id },
+    { aggregateType: 'billing_invoice', aggregateId: invoice.id }
   );
   return { commission, codeLapsed: payable.codeLapsed };
 }

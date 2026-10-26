@@ -13,6 +13,7 @@ const env = require('./config/env');
 const db = require('./db/models');
 const logger = require('./core/utils/logger');
 const workerRuntime = require('./core/workerRuntime');
+const realtime = require('./modules/realtime');
 
 async function main() {
   try {
@@ -30,6 +31,8 @@ async function main() {
     logger.info(`Received ${signal}, stopping the worker`);
     setTimeout(() => process.exit(1), 15000).unref();
     await workerRuntime.stop();
+    // The pool the live updates publish through (REALTIME_ENABLED), if it was opened.
+    await realtime.release();
     await db.sequelize.close();
     process.exit(0);
   };

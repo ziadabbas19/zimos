@@ -128,6 +128,7 @@ const TABLES = {
   shopper_login_codes: wipe(STORE),
   site_visits: wipe('anonymous marketing-site visits from before launch, some linked to accounts that go'),
   size_charts: wipe(STORE),
+  socket_io_attachments: wipe("the live updates' buffer for oversized messages (migration 708); the socket adapter empties it every 30 seconds anyway"),
   spec_keys: wipe(STORE),
   stock_alerts: wipe(STORE),
   store_credit_transactions: wipe(STORE),

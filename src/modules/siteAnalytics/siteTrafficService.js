@@ -58,16 +58,23 @@ function referrerHost(referrer) {
 
 const orNull = (v) => (v === undefined || v === '' ? null : v);
 
+// With SITE_LIVE_ENABLED, a visit also keeps its operating system's family
+// (site_visits.os, for the console's Live view). Off, the column is left out of
+// the INSERT altogether: the same statement as before the switch existed.
+const osColumn = () => (env.siteAnalytics.liveEnabled ? { column: ', os', value: ', :os' } : { column: '', value: '' });
+const osOf = (req) => getClientInfo({ userAgent: req.get('user-agent') }).os || null;
+
 async function recordEvent(body, req) {
   if (env.siteAnalytics.detailsEnabled) return recordDetailedEvent(body, req);
   const country = getLocation((name) => req.get(name), env.analytics.geoHeaders).country;
+  const os = osColumn();
   await db.sequelize.query(
     `INSERT INTO site_visits
        (visitor_hash, session_id, path, locale, referrer_host, utm_source, utm_medium, utm_campaign,
-        device_class, country, event, seconds_on_page)
+        device_class, country, event, seconds_on_page${os.column})
      VALUES
        (:visitorHash, :sessionId, :path, :locale, :referrerHost, :utmSource, :utmMedium, :utmCampaign,
-        :deviceClass, :country, :event, :seconds)`,
+        :deviceClass, :country, :event, :seconds${os.value})`,
     {
       replacements: {
         visitorHash: visitorHash(body.visitorId),
@@ -82,6 +89,7 @@ async function recordEvent(body, req) {
         country: country || null,
         event: body.event,
         seconds: body.event === 'ping' ? PING_SECONDS : 0,
+        ...(os.column ? { os: osOf(req) } : {}),
       },
       type: QueryTypes.INSERT,
     }
@@ -89,10 +97,11 @@ async function recordEvent(body, req) {
 }
 
 /**
- * The same row with SITE_TRAFFIC_DETAILS_ENABLED: also the browser, the
- * governorate (Cloudflare's region header through ANALYTICS_GEO_HEADERS and the
- * store traffic mapping; null without it, nothing guessed) and, for a
- * cta_click, which dashboard link it was.
+ * The same row with SITE_TRAFFIC_DETAILS_ENABLED: also the browser's family,
+ * the governorate (Cloudflare's region header through ANALYTICS_GEO_HEADERS and
+ * the store traffic mapping; null without it, nothing guessed) and, for a
+ * cta_click, which dashboard link it was. The operating system as above, with
+ * SITE_LIVE_ENABLED only.
  */
 async function recordDetailedEvent(body, req) {
   const client = getClientInfo({
@@ -100,13 +109,14 @@ async function recordDetailedEvent(body, req) {
     getHeader: (name) => req.get(name),
     trustedGeo: env.analytics.geoHeaders,
   });
+  const os = osColumn();
   await db.sequelize.query(
     `INSERT INTO site_visits
        (visitor_hash, session_id, path, locale, referrer_host, utm_source, utm_medium, utm_campaign,
-        device_class, country, event, seconds_on_page, browser, governorate, cta_kind)
+        device_class, country, event, seconds_on_page, browser, governorate, cta_kind${os.column})
      VALUES
        (:visitorHash, :sessionId, :path, :locale, :referrerHost, :utmSource, :utmMedium, :utmCampaign,
-        :deviceClass, :country, :event, :seconds, :browser, :governorate, :ctaKind)`,
+        :deviceClass, :country, :event, :seconds, :browser, :governorate, :ctaKind${os.value})`,
     {
       replacements: {
         visitorHash: visitorHash(body.visitorId),
@@ -124,6 +134,7 @@ async function recordDetailedEvent(body, req) {
         browser: client.browser || null,
         governorate: governorateFromRegion(client.country, client.region),
         ctaKind: body.event === 'cta_click' ? body.cta || null : null,
+        ...(os.column ? { os: client.os || null } : {}),
       },
       type: QueryTypes.INSERT,
     }

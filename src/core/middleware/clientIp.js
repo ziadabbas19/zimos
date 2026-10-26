@@ -116,4 +116,19 @@ function clientIp(req) {
   return Object.prototype.hasOwnProperty.call(req, 'clientIp') ? req.clientIp : req.ip;
 }
 
-module.exports = { resolveClientIp, clientIp, resolve, CF_CONNECTING_IP };
+/**
+ * The client IP of a request Express never handled: the HTTP upgrade a
+ * websocket opens with (modules/realtime), which goes to the socket server
+ * and not through the middleware above. Worked out the same way: Express's
+ * own reading of X-Forwarded-For under `app`'s `trust proxy`, then `resolve`.
+ */
+function clientIpOfUpgrade(raw, app) {
+  const view = Object.create(app.request, {
+    headers: { value: raw.headers },
+    socket: { value: raw.socket },
+    connection: { value: raw.socket },
+  });
+  return resolve(view).ip;
+}
+
+module.exports = { resolveClientIp, clientIp, clientIpOfUpgrade, resolve, CF_CONNECTING_IP };

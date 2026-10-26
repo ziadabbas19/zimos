@@ -12,6 +12,7 @@ const { releaseDraftsWhenOff } = require('./modules/billing/goLiveService');
 const { startUploadSweep } = require('./modules/customerUploads/customerUploadService');
 const webhookWorker = require('./modules/webhooks/webhookWorker');
 const workerRuntime = require('./core/workerRuntime');
+const realtime = require('./modules/realtime');
 
 async function start() {
   try {
@@ -64,6 +65,9 @@ async function start() {
     logger.info(`Zimos backend listening on port ${env.port}`, { env: env.nodeEnv });
   });
 
+  // Live updates over Socket.IO on this same server: only with REALTIME_ENABLED=true.
+  realtime.attach(server, app);
+
   // Outbound webhooks: find order changes and send them, every few seconds
   // Only with WEBHOOKS_IN_PROCESS=true; otherwise scripts/dispatch-webhooks.js does it.
   if (env.webhooks.inProcess) webhookWorker.start();
@@ -77,8 +81,12 @@ async function start() {
   const shutdown = (signal) => {
     logger.info(`Received ${signal}, shutting down gracefully`);
     webhookWorker.stop();
+    // Open sockets first: the server does not close while they are open.
+    void realtime.stop();
     server.close(async () => {
       await workerRuntime.stop();
+      // The live updates' database pool, once the worker no longer publishes through it.
+      await realtime.release();
       await db.sequelize.close();
       process.exit(0);
     });
