@@ -399,6 +399,18 @@ const env = {
     deliveryGuard: process.env.NODE_ENV !== 'test' && process.env.CHECKOUT_OTP_DELIVERY_GUARD_ENABLED === 'true',
   },
 
+  // VISITOR_GATE_ENABLED=true: a store's visitor blocks act (risk/visitorGate,
+  // core/middleware/publicWorkspace). A visitor whose IP is a blocked entry of
+  // scope `visit` (the merchant's own, or one "Block and cancel" added), or
+  // whose country is in fraud_rules.blocked_countries (only once an IP
+  // lookup is connected, IP_INTEL_PROVIDER), gets 423 STORE_UNAVAILABLE on
+  // every public store route, as a closed store does. Off unless exactly
+  // "true": the blocks are kept but nothing is refused, as before. Under
+  // NODE_ENV=test it starts off; a test sets it here.
+  visitorGate: {
+    enabled: process.env.NODE_ENV !== 'test' && process.env.VISITOR_GATE_ENABLED === 'true',
+  },
+
   // Phone-verification codes (POST /auth/verify-phone/request) one client
   // (an IPv6 /56) may have sent in 24 hours, whatever the accounts asking,
   // counted in otp_codes.request_ip. Past it the request answers 429

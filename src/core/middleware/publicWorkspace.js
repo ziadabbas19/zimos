@@ -2,6 +2,7 @@
 
 const asyncHandler = require('express-async-handler');
 const db = require('../../db/models');
+const env = require('../../config/env');
 const { AppError, NotFoundError } = require('../errors/AppError');
 const { isUuid, normalizeSlug } = require('../utils/workspaceSlug');
 const { accessFor, closesStorefront } = require('../../modules/workspaces/workspaceAccessService');
@@ -58,6 +59,11 @@ const resolvePublicWorkspace = asyncHandler(async (req, res, next) => {
       },
     });
   }
+
+  // A visitor the store has blocked (their IP with scope `visit`, or their
+  // country) sees the same "unavailable" answer — modules/risk/visitorGate.
+  // Only with VISITOR_GATE_ENABLED: off, those blocks are kept but not acted on, as before.
+  if (env.visitorGate.enabled) await require('../../modules/risk/visitorGate').refuseBlockedVisitor(req, workspace);
 
   req.publicWorkspace = workspace;
   req.tenant = { workspaceId: workspace.id, hasPermission: () => false };
