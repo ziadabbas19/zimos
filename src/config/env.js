@@ -509,6 +509,23 @@ const env = {
     requirePlanFeature: process.env.NODE_ENV !== 'test' && process.env.WHATSAPP_REQUIRE_PLAN_FEATURE === 'true',
   },
 
+  // Loyalty points (modules/loyalty, loyalty/loyaltyAccess.js). Each off
+  // unless exactly "true"; off, the programme works as before. Under
+  // NODE_ENV=test they start off; a test sets them.
+  //   requirePlanFeature  LOYALTY_REQUIRE_PLAN_FEATURE  with
+  //     PLAN_FEATURE_ENFORCEMENT on too: switching the programme on needs the
+  //     plan's `loyalty` (403 PLAN_FEATURE_REQUIRED), and a store without it
+  //     keeps its customers' points frozen (kept and shown; never earned,
+  //     spent or expired).
+  //   guard  LOYALTY_GUARD_ENABLED  points frozen while the subscription is
+  //     restricted (unpaid past its grace day); a blocked customer neither
+  //     earns nor spends; points can't be spent on a device that spent
+  //     another customer's points in the last 24 hours.
+  loyalty: {
+    requirePlanFeature: process.env.NODE_ENV !== 'test' && process.env.LOYALTY_REQUIRE_PLAN_FEATURE === 'true',
+    guard: process.env.NODE_ENV !== 'test' && process.env.LOYALTY_GUARD_ENABLED === 'true',
+  },
+
   // Account settings (auth/accountService). Changing the phone number by an
   // SMS code is off unless exactly "true": off, a request is answered the
   // same way and nothing is sent or changed.

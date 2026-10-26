@@ -5,12 +5,14 @@ const db = require('../../db/models');
 const logger = require('../../core/utils/logger');
 const { AppError, NotFoundError, ValidationError } = require('../../core/errors/AppError');
 const { storeFeatureOn } = require('../../core/middleware/storeFeatures');
+const access = require('./loyaltyAccess');
 
 /*
  * Loyalty points. settings.loyalty =
  *   { enabled, earnPointsPerUnit,   points per 1 unit of the store currency spent (e.g. 1 point per EGP 1)
  *     pointValue,                   what 1 point is worth, in minor units (e.g. 10 = EGP 0.10)
  *     minRedeemPoints, maxRedeemPercent (1–100 of the order total),
+ *     maxRedeemPointsPerOrder,      the most points one order takes (null = no cap but the percent)
  *     expiryDays }                  a balance expires after that many days with no earn or spend (null = never)
  * The merchant sets every amount; nothing is assumed in code.
  *
@@ -24,6 +26,11 @@ const { storeFeatureOn } = require('../../core/middleware/storeFeatures');
  * - Only orders in the store's own currency earn or spend points.
  * - Off (STORE_FEATURES without loyalty): nothing is earned, spent or
  *   expired; points already spent still come back on a refund or a cancel.
+ * - Frozen (loyaltyAccess.js: the plan lacks `loyalty`, or the subscription
+ *   stopped, each behind its own switch): the same, but the balances still
+ *   show, to the merchant and to the shopper.
+ * - An order locked when it is delivered (orders/orderLock.js,
+ *   ORDERS_LOCK_ENABLED) earns nothing.
  */
 
 function settingsOf(workspace) {
@@ -36,6 +43,7 @@ function settingsOf(workspace) {
     pointValue: value || null,
     minRedeemPoints: Number.isInteger(s.minRedeemPoints) ? s.minRedeemPoints : 1,
     maxRedeemPercent: Number.isInteger(s.maxRedeemPercent) ? s.maxRedeemPercent : 100,
+    maxRedeemPointsPerOrder: Number.isInteger(s.maxRedeemPointsPerOrder) && s.maxRedeemPointsPerOrder > 0 ? s.maxRedeemPointsPerOrder : null,
     expiryDays: Number.isInteger(s.expiryDays) ? s.expiryDays : null,
   };
 }
@@ -63,11 +71,14 @@ async function earnForOrder(event) {
   if (!workspaceId || !p.orderId) return null;
   const workspace = await workspaceOf(workspaceId);
   const s = settingsOf(workspace);
-  if (!s.enabled) return null;
+  if (!s.enabled || (await access.frozenReason(workspaceId))) return null;
   await db.sequelize.transaction(async (transaction) => {
     const order = await db.Order.findOne({ where: { id: p.orderId, workspaceId }, transaction, lock: transaction.LOCK.UPDATE });
     if (!order || !order.customerId || order.isTest || order.cancelledAt || order.currency !== workspace.defaultCurrency) return;
     if (await db.LoyaltyTransaction.count({ where: { orderId: order.id, kind: 'earn' }, transaction })) return;
+    // A locked order (the store's subscription lapsed) earns nothing; false without a query while ORDERS_LOCK_ENABLED is off.
+    if (await require('../orders/orderLock').isOrderLocked(workspaceId, order.id, { transaction })) return;
+    if (access.guardOn() && access.customerBlocked(await db.Customer.findByPk(order.customerId, { attributes: ['id', 'isBlacklisted'], transaction }))) return;
     const paidByPoints = Number(await db.Payment.sum('amount', { where: { orderId: order.id, providerCode: 'loyalty', status: ['captured', 'partially_refunded'] }, transaction })) || 0;
     const base = Number(order.totalAmount) - Number(order.shippingAmount) - Number(order.amountRefunded) - paidByPoints;
     // A VIP tier may multiply the points (vipTiers/).
@@ -88,20 +99,32 @@ async function reverseEarned(orderId, transaction, note) {
 
 // ---------------------------------------------------------------- spend --
 
-/** Checkout, before the order: the signed-in shopper can use `points`. Returns the customer. */
-async function assertCanSpend(workspace, shopper, points) {
+const refusePoints = (code, message) => new AppError(code, message, 422, [{ field: 'loyaltyPoints', message }]);
+
+/**
+ * Checkout, before the order: the signed-in shopper can use `points`.
+ * `deviceId` is the checkout's (risk/botProtection), for the guard. Returns the customer.
+ */
+async function assertCanSpend(workspace, shopper, points, { deviceId = null } = {}) {
   const s = settingsOf(workspace);
-  if (!s.enabled) throw new AppError('LOYALTY_OFF', 'This store has no loyalty points', 422, [{ field: 'loyaltyPoints', message: 'This store has no loyalty points' }]);
+  if (!s.enabled) throw refusePoints('LOYALTY_OFF', 'This store has no loyalty points');
   if (!shopper) throw new AppError('SHOPPER_NOT_SIGNED_IN', 'Sign in to use your points', 401, [{ field: 'loyaltyPoints', message: 'Sign in to use your points' }]);
-  if (points < s.minRedeemPoints) throw new AppError('LOYALTY_TOO_FEW', `Use at least ${s.minRedeemPoints} points`, 422, [{ field: 'loyaltyPoints', message: `Use at least ${s.minRedeemPoints} points` }]);
-  if (points > Number(shopper.loyaltyPoints)) throw new AppError('LOYALTY_NOT_ENOUGH', `You have ${shopper.loyaltyPoints} points`, 422, [{ field: 'loyaltyPoints', message: `You have ${shopper.loyaltyPoints} points` }]);
+  // Frozen: the balance shows, but nothing is spent until the store has the programme back.
+  if (await access.frozenReason(workspace.id)) throw refusePoints('LOYALTY_FROZEN', 'Points cannot be used in this store right now');
+  if (points < s.minRedeemPoints) throw refusePoints('LOYALTY_TOO_FEW', `Use at least ${s.minRedeemPoints} points`);
+  if (points > Number(shopper.loyaltyPoints)) throw refusePoints('LOYALTY_NOT_ENOUGH', `You have ${shopper.loyaltyPoints} points`);
+  // The guard (LOYALTY_GUARD_ENABLED). The same words for a blocked customer as for anything else unusable.
+  if (access.customerBlocked(shopper)) throw refusePoints('LOYALTY_UNAVAILABLE', 'Points cannot be used on this order');
+  if (await access.deviceSpentForOther(workspace.id, shopper.id, deviceId)) {
+    throw refusePoints('LOYALTY_DEVICE_LIMIT', `Points from another account were used on this device in the last ${access.DEVICE_WINDOW_HOURS} hours`);
+  }
   return shopper;
 }
 
 /** How many of `points` an order can take, and their worth: { points, amount }. */
 function planFor(s, order, points, due) {
   const cap = Math.min(Math.floor((Number(order.totalAmount) * s.maxRedeemPercent) / 100), Math.max(0, due));
-  const usable = Math.min(points, Math.floor(cap / s.pointValue));
+  const usable = Math.min(points, Math.floor(cap / s.pointValue), s.maxRedeemPointsPerOrder || Infinity);
   return { points: usable, amount: usable * s.pointValue };
 }
 
@@ -113,6 +136,8 @@ async function spendOnOrder(order, customerId, points, { req = null } = {}) {
       const workspace = await workspaceOf(locked.workspaceId, transaction);
       const s = settingsOf(workspace);
       if (!s.enabled || locked.currency !== workspace.defaultCurrency) return { applied: false, reason: 'unusable' };
+      // Frozen since the checkout's own check (a plan change in between): the order stands, unpaid by points.
+      if (await access.frozenReason(locked.workspaceId, { transaction })) return { applied: false, reason: 'frozen' };
       const due = Number(locked.totalAmount) - Number(locked.amountPaid);
       const customer = await db.Customer.findByPk(customerId, { transaction, lock: transaction.LOCK.UPDATE });
       const plan = planFor(s, locked, Math.min(points, Number(customer.loyaltyPoints)), due);
@@ -203,14 +228,45 @@ async function onOrderReturned(event) {
   return null;
 }
 
-/** Daily: balances with no earn or spend for `expiryDays` expire. */
+/*
+ * A frozen store's balances never expire. The daily job marks every frozen
+ * store that has an expiry (settings.loyalty.frozenSeenAt, written alone
+ * with jsonb_set so a settings save is never overwritten), and a balance's
+ * inactivity counts from that mark too: a marked store's rows drop out of
+ * the job, and once it has the programme back its customers get a whole
+ * `expiryDays` from the last frozen day. Only the job writes the mark (the
+ * settings route takes no such field).
+ */
+const lastActiveSql = (c, w) =>
+  `GREATEST(COALESCE(${c}.loyalty_activity_at, ${c}.created_at), COALESCE((${w}.settings->'loyalty'->>'frozenSeenAt')::timestamptz, '-infinity'::timestamptz))`;
+
+function lastActive(workspace, customer) {
+  const seen = workspace.settings && workspace.settings.loyalty && workspace.settings.loyalty.frozenSeenAt;
+  const activity = new Date(customer.loyaltyActivityAt || customer.createdAt).getTime();
+  const mark = seen ? new Date(seen).getTime() : NaN;
+  return Number.isFinite(mark) ? Math.max(activity, mark) : activity;
+}
+
+/** Daily: balances with no earn or spend for `expiryDays` expire; a frozen store's never do. */
 async function expireInactive() {
   if (!storeFeatureOn('loyalty')) return;
+  // Only while one of loyaltyAccess's switches is on can a store be frozen: then each store with an expiry is asked once.
+  if (access.planGateOn() || access.guardOn()) {
+    const stores = await db.sequelize.query(`SELECT id FROM workspaces WHERE settings->'loyalty'->>'expiryDays' IS NOT NULL`, { type: db.Sequelize.QueryTypes.SELECT });
+    for (const { id } of stores) {
+      if (!(await access.frozenReason(id))) continue;
+      await db.sequelize.query(
+        `UPDATE workspaces SET settings = jsonb_set(settings, '{loyalty,frozenSeenAt}', to_jsonb(NOW()), true)
+          WHERE id = :id AND jsonb_typeof(settings->'loyalty') = 'object'`,
+        { replacements: { id } }
+      );
+    }
+  }
   const rows = await db.sequelize.query(
     `SELECT c.id, c.workspace_id AS "workspaceId", (w.settings->'loyalty'->>'expiryDays')::int AS days
        FROM customers c JOIN workspaces w ON w.id = c.workspace_id
       WHERE c.loyalty_points > 0 AND w.settings->'loyalty'->>'expiryDays' IS NOT NULL
-        AND COALESCE(c.loyalty_activity_at, c.created_at) < NOW() - ((w.settings->'loyalty'->>'expiryDays')::int * INTERVAL '1 day')
+        AND ${lastActiveSql('c', 'w')} < NOW() - ((w.settings->'loyalty'->>'expiryDays')::int * INTERVAL '1 day')
       LIMIT 5000`,
     { type: db.Sequelize.QueryTypes.SELECT }
   );
@@ -226,15 +282,18 @@ async function expireInactive() {
 
 const txView = (t) => ({ id: t.id, kind: t.kind, points: t.points, balanceAfter: t.balanceAfter, amount: t.amount === null ? null : String(t.amount), currency: t.currency, orderId: t.orderId, note: t.note, createdAt: t.createdAt });
 
+/** A customer's balance and history; `frozen` (loyaltyAccess) while it can't be earned or spent, and then it doesn't expire either. */
 async function accountOf(workspace, customer, limit = 50) {
   const s = settingsOf(workspace);
+  const frozen = Boolean(await access.frozenReason(workspace.id));
   const history = await db.LoyaltyTransaction.findAll({ where: { customerId: customer.id, }, order: [['createdAt', 'DESC']], limit });
-  const expiresAt = s.expiryDays && customer.loyaltyPoints > 0 ? new Date(new Date(customer.loyaltyActivityAt || customer.createdAt).getTime() + s.expiryDays * 864e5) : null;
+  const expiresAt = s.expiryDays && customer.loyaltyPoints > 0 && !frozen ? new Date(lastActive(workspace, customer) + s.expiryDays * 864e5) : null;
   return {
     balance: customer.loyaltyPoints,
     worth: s.pointValue ? String(customer.loyaltyPoints * s.pointValue) : null,
     currency: workspace.defaultCurrency,
     expiresAt,
+    frozen,
     history: history.map(txView),
   };
 }

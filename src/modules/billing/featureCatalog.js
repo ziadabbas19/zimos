@@ -50,6 +50,12 @@ const FEATURE_CATALOG = Object.freeze(
     { key: 'remove_branding', available: true, label: { en: 'Remove platform branding', ar: 'إزالة شعار المنصة' } },
     // A ticket the store opens starts at high priority (support/supportService).
     { key: 'priority_support', available: true, label: { en: 'Priority support', ar: 'دعم ذو أولوية' } },
+    // Loyalty points (modules/loyalty, STORE_FEATURES loyalty). With
+    // LOYALTY_REQUIRE_PLAN_FEATURE, switching the programme on needs it, and
+    // a store without it keeps its customers' points frozen: shown, never
+    // earned, spent or expired until it has the feature again
+    // (loyalty/loyaltyAccess.js).
+    { key: 'loyalty', available: true, label: { en: 'Loyalty points', ar: 'نقاط الولاء' } },
   ].map((f) => Object.freeze({ ...f, type: 'boolean', label: Object.freeze(f.label) }))
 );
 
