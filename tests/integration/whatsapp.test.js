@@ -55,9 +55,28 @@ function signed(workspaceId, payload) {
   return request(app).post(`/api/v1/webhooks/whatsapp/${workspaceId}`).set('Content-Type', 'application/json').set('X-Hub-Signature-256', `sha256=${sig}`).send(raw);
 }
 
-const inbound = (from, id, text) => ({
-  entry: [{ changes: [{ value: { contacts: [{ wa_id: from, profile: { name: 'Mona' } }], messages: [{ from, id, timestamp: String(Math.floor(Date.now() / 1000)), type: 'text', text: { body: text } }] } }] }],
+// Meta names the receiving number in every messages change (value.metadata).
+const metadata = (phoneNumberId = PHONE_ID) => ({ display_phone_number: '201000001111', phone_number_id: phoneNumberId });
+
+const inbound = (from, id, text, phoneNumberId = PHONE_ID) => ({
+  entry: [
+    {
+      changes: [
+        {
+          field: 'messages',
+          value: {
+            messaging_product: 'whatsapp',
+            metadata: metadata(phoneNumberId),
+            contacts: [{ wa_id: from, profile: { name: 'Mona' } }],
+            messages: [{ from, id, timestamp: String(Math.floor(Date.now() / 1000)), type: 'text', text: { body: text } }],
+          },
+        },
+      ],
+    },
+  ],
 });
+
+const statuses = (list, phoneNumberId = PHONE_ID) => ({ entry: [{ changes: [{ field: 'messages', value: { metadata: metadata(phoneNumberId), statuses: list } }] }] });
 
 describe('WhatsApp integration', () => {
   it('rejects a token the Graph API refuses', async () => {
@@ -65,7 +84,7 @@ describe('WhatsApp integration', () => {
     const res = await request(app)
       .put(`/api/v1/workspaces/${workspace.id}/whatsapp/integration`)
       .set(bearer(auth.accessToken))
-      .send({ phoneNumberId: PHONE_ID, accessToken: 'EAAG-wrong-token-000000000000' });
+      .send({ phoneNumberId: PHONE_ID, accessToken: 'EAAG-wrong-token-000000000000', appSecret: APP_SECRET });
     expect(res.status).toBe(422);
     expect(res.body.error.code).toBe('WHATSAPP_AUTH_FAILED');
   });
@@ -115,7 +134,7 @@ describe('WhatsApp integration', () => {
     expect(reply.status).toBe(201);
     expect(sent[0]).toMatchObject({ to: '201055551234', type: 'text', text: { body: 'أهلًا يا منى' } });
 
-    await signed(workspace.id, { entry: [{ changes: [{ value: { statuses: [{ id: 'wamid.1', status: 'read' }] } }] }] });
+    await signed(workspace.id, statuses([{ id: 'wamid.1', status: 'read' }]));
 
     const messages = await request(app).get(`/api/v1/workspaces/${workspace.id}/whatsapp/conversations/${conversationId}/messages`).set(bearer(auth.accessToken));
     expect(messages.body.messages.map((m) => [m.direction, m.status])).toEqual([
@@ -134,5 +153,128 @@ describe('WhatsApp integration', () => {
       .send({ to: '01099990000', template: { name: 'order_confirmation', language: 'ar', params: ['منى', '1024'] } });
     expect(res.status).toBe(201);
     expect(sent[0]).toMatchObject({ type: 'template', template: { name: 'order_confirmation', language: { code: 'ar' } } });
+  });
+});
+
+// S1: one Meta app can hold several numbers, and Meta sends all of them to the
+// same callback URL. A store keeps only what reaches the number it connected.
+describe('WhatsApp webhook: only the connected number counts', () => {
+  it("ignores another number's messages: 200 for Meta, nothing in the inbox", async () => {
+    const { auth, workspace } = await connected();
+    const res = await signed(workspace.id, inbound('201055551234', 'wamid.other1', 'رسالة لمتجر تاني', '9988776655'));
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ received: true, messages: 0, ignored: 1 });
+    expect(await db.WhatsappMessage.count({ where: { workspaceId: workspace.id } })).toBe(0);
+    expect(await db.WhatsappConversation.count({ where: { workspaceId: workspace.id } })).toBe(0);
+
+    const list = await request(app).get(`/api/v1/workspaces/${workspace.id}/whatsapp/conversations`).set(bearer(auth.accessToken));
+    expect(list.body.conversations).toEqual([]);
+  });
+
+  it('ignores a messages change that names no number', async () => {
+    const { workspace } = await connected();
+    const payload = inbound('201055551234', 'wamid.nometa', 'hi');
+    delete payload.entry[0].changes[0].value.metadata;
+    const res = await signed(workspace.id, payload);
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ messages: 0, ignored: 1 });
+    expect(await db.WhatsappMessage.count({ where: { workspaceId: workspace.id } })).toBe(0);
+  });
+
+  it("keeps the store's own messages when the same delivery also carries another number's", async () => {
+    const { workspace } = await connected();
+    const mine = inbound('201055551234', 'wamid.mine', 'ليّا');
+    const theirs = inbound('201055559999', 'wamid.theirs', 'مش ليّا', '9988776655');
+    const res = await signed(workspace.id, { entry: [...mine.entry, ...theirs.entry] });
+    expect(res.body).toMatchObject({ messages: 1, ignored: 1 });
+    const rows = await db.WhatsappMessage.findAll({ where: { workspaceId: workspace.id }, attributes: ['waMessageId'] });
+    expect(rows.map((r) => r.waMessageId)).toEqual(['wamid.mine']);
+  });
+
+  it("does not move a message's status from another number's status update", async () => {
+    const { auth, workspace } = await connected();
+    await signed(workspace.id, inbound('201055551234', 'wamid.in.st', 'hi'));
+    await request(app).post(`/api/v1/workspaces/${workspace.id}/whatsapp/messages`).set(bearer(auth.accessToken)).send({ to: '01055551234', text: 'أهلًا' }).expect(201);
+
+    const other = await signed(workspace.id, statuses([{ id: 'wamid.1', status: 'read' }], '9988776655'));
+    expect(other.body).toMatchObject({ statuses: 0, ignored: 1 });
+    const out = await db.WhatsappMessage.findOne({ where: { workspaceId: workspace.id, waMessageId: 'wamid.1' } });
+    expect(out.status).toBe('sent');
+
+    await signed(workspace.id, statuses([{ id: 'wamid.1', status: 'delivered' }]));
+    await out.reload();
+    expect(out.status).toBe('delivered');
+  });
+});
+
+// S6: without the App Secret every webhook would be refused, so a connection always has one.
+// S7: the secrets are sealed before the token is sent to Meta.
+describe('WhatsApp connect: the App Secret and the order of the steps', () => {
+  const put = (ctx, body) => request(app).put(`/api/v1/workspaces/${ctx.workspace.id}/whatsapp/integration`).set(bearer(ctx.auth.accessToken)).send(body);
+
+  it('refuses a first connection without the App Secret, before asking Meta', async () => {
+    const ctx = await setupWorkspaceWithProduct();
+    for (const appSecret of [undefined, '', null]) {
+      const res = await put(ctx, { phoneNumberId: PHONE_ID, accessToken: TOKEN, ...(appSecret === undefined ? {} : { appSecret }) });
+      expect(res.status).toBe(422);
+      expect(res.body.error.code).toBe('WHATSAPP_APP_SECRET_REQUIRED');
+    }
+    expect(global.fetch).not.toHaveBeenCalled();
+    expect(await db.WorkspaceIntegration.count({ where: { workspaceId: ctx.workspace.id } })).toBe(0);
+  });
+
+  it('keeps the saved App Secret when a reconnect leaves it empty', async () => {
+    const ctx = await connected();
+    const res = await put(ctx, { phoneNumberId: PHONE_ID, accessToken: TOKEN });
+    expect(res.status).toBe(200);
+    expect(res.body.integration.appSecretSet).toBe(true);
+    // Still signed with the first one.
+    const hook = await signed(ctx.workspace.id, inbound('201055551234', 'wamid.keep', 'hi'));
+    expect(hook.status).toBe(200);
+  });
+
+  it('asks a connection saved without one (before this rule) for it on its next save', async () => {
+    const ctx = await setupWorkspaceWithProduct();
+    const secretBox = require('../../src/core/utils/secretBox');
+    await db.WorkspaceIntegration.create({
+      workspaceId: ctx.workspace.id,
+      provider: 'whatsapp_cloud',
+      status: 'connected',
+      config: { phoneNumberId: PHONE_ID, verifyToken: 'legacy-verify-token' },
+      secretsSealed: secretBox.seal(JSON.stringify({ accessToken: TOKEN, appSecret: null })),
+    });
+    const refused = await put(ctx, { phoneNumberId: PHONE_ID, accessToken: TOKEN });
+    expect(refused.status).toBe(422);
+    expect(refused.body.error.code).toBe('WHATSAPP_APP_SECRET_REQUIRED');
+    const saved = await put(ctx, { phoneNumberId: PHONE_ID, accessToken: TOKEN, appSecret: APP_SECRET });
+    expect(saved.status).toBe(200);
+    expect(saved.body.integration).toMatchObject({ appSecretSet: true, webhook: { verifyToken: 'legacy-verify-token' } });
+  });
+
+  it('sends nothing to Meta when the secrets cannot be sealed (INTEGRATIONS_ENCRYPTION_KEY missing)', async () => {
+    const ctx = await setupWorkspaceWithProduct();
+    const key = process.env.INTEGRATIONS_ENCRYPTION_KEY;
+    delete process.env.INTEGRATIONS_ENCRYPTION_KEY;
+    try {
+      const res = await put(ctx, { phoneNumberId: PHONE_ID, accessToken: TOKEN, appSecret: APP_SECRET });
+      expect(res.status).toBe(500);
+    } finally {
+      process.env.INTEGRATIONS_ENCRYPTION_KEY = key;
+    }
+    expect(global.fetch).not.toHaveBeenCalled();
+    expect(await db.WorkspaceIntegration.count({ where: { workspaceId: ctx.workspace.id } })).toBe(0);
+  });
+});
+
+// S10: the verify token is compared in constant time; a near miss is refused like any other.
+describe('WhatsApp webhook verification', () => {
+  it('refuses a token that differs only in its last character, or that is longer', async () => {
+    const { integration, workspace } = await connected();
+    const token = integration.webhook.verifyToken;
+    const near = `${token.slice(0, -1)}${token.endsWith('0') ? '1' : '0'}`;
+    for (const given of [near, `${token}x`, '']) {
+      const res = await request(app).get(`/api/v1/webhooks/whatsapp/${workspace.id}`).query({ 'hub.mode': 'subscribe', 'hub.verify_token': given, 'hub.challenge': '7' });
+      expect(res.status).toBe(403);
+    }
   });
 });

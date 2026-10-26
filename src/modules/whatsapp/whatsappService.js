@@ -1,11 +1,12 @@
 'use strict';
 
 const crypto = require('crypto');
-const { Op } = require('sequelize');
+const { Op, UniqueConstraintError } = require('sequelize');
 const db = require('../../db/models');
 const inboxEvents = require('./inboxEvents');
 const { AppError, NotFoundError } = require('../../core/errors/AppError');
 const { normalizePhone } = require('../../core/utils/phone');
+const logger = require('../../core/utils/logger');
 const secretBox = require('../../core/utils/secretBox');
 const { recordAudit } = require('../audit/auditService');
 const cloud = require('./whatsappCloud');
@@ -45,9 +46,18 @@ function integrationView(integration, apiBase) {
 }
 
 async function connect(workspaceId, { phoneNumberId, accessToken, businessAccountId, appSecret }, req) {
-  const details = await cloud.verifyPhoneNumber(phoneNumberId, accessToken);
   const existing = await getIntegration(workspaceId);
+  // Everything that can fail on our side fails before the token goes to Meta: the
+  // stored secrets are opened and the new ones sealed first (INTEGRATIONS_ENCRYPTION_KEY).
   const previous = existing ? secretsOf(existing) : {};
+  // The App Secret signs every webhook; without it each one is refused (401), so no
+  // reply or confirmation tap would ever arrive. A reconnect may keep the saved one.
+  const secret = appSecret || previous.appSecret || null;
+  if (!secret) {
+    throw new AppError('WHATSAPP_APP_SECRET_REQUIRED', "The App Secret is required: without it Meta's messages can't be checked and none of them can be received", 422);
+  }
+  const secretsSealed = secretBox.seal(JSON.stringify({ accessToken, appSecret: secret }));
+  const details = await cloud.verifyPhoneNumber(phoneNumberId, accessToken);
   const config = {
     phoneNumberId,
     businessAccountId: businessAccountId || null,
@@ -55,7 +65,6 @@ async function connect(workspaceId, { phoneNumberId, accessToken, businessAccoun
     verifiedName: details.verifiedName,
     verifyToken: (existing && existing.config && existing.config.verifyToken) || crypto.randomBytes(18).toString('hex'),
   };
-  const secretsSealed = secretBox.seal(JSON.stringify({ accessToken, appSecret: appSecret || previous.appSecret || null }));
   const fields = { workspaceId, provider: PROVIDER, status: 'connected', config, secretsSealed, lastVerifiedAt: new Date(), lastError: null };
   const integration = existing ? await existing.update(fields) : await db.WorkspaceIntegration.create(fields);
   await recordAudit({ workspaceId, actorUserId: req.user.id, action: 'integration.whatsapp.connect', entityType: 'WorkspaceIntegration', entityId: integration.id, after: { phoneNumberId, displayPhoneNumber: details.displayPhoneNumber }, req });
@@ -198,9 +207,13 @@ async function setConversationStatus(workspaceId, conversationId, status) {
 // Webhook (Meta → us)
 // ---------------------------------------------------------------------------
 
+// Compared as digests, so the time taken says nothing about how much of the token matched.
+const sha256 = (value) => crypto.createHash('sha256').update(String(value)).digest();
+const sameToken = (given, expected) => Boolean(given && expected) && crypto.timingSafeEqual(sha256(given), sha256(expected));
+
 async function verifyWebhookSubscription(workspaceId, { mode, token, challenge }) {
   const integration = await getIntegration(workspaceId);
-  if (!integration || mode !== 'subscribe' || !token || token !== (integration.config || {}).verifyToken) return null;
+  if (!integration || mode !== 'subscribe' || typeof token !== 'string' || !sameToken(token, (integration.config || {}).verifyToken)) return null;
   return challenge;
 }
 
@@ -220,13 +233,27 @@ async function verifyWebhookSignature(workspaceId, rawBody, header) {
 const STATUS_RANK = { sent: 1, delivered: 2, read: 3, failed: 4 };
 
 async function handleWebhook(workspaceId, payload) {
-  const result = { messages: 0, statuses: 0 };
+  const result = { messages: 0, statuses: 0, ignored: 0 };
+  const integration = await getIntegration(workspaceId);
+  const ownNumber = integration && integration.config ? String(integration.config.phoneNumberId || '') : '';
   for (const entry of (payload && payload.entry) || []) {
     for (const change of entry.changes || []) {
       const value = change.value || {};
       // A template approved, rejected or paused in Meta (whatsappTemplates.js).
       if (change.field === 'message_template_status_update') {
         await require('./whatsappTemplates').onStatusUpdate(workspaceId, value);
+        continue;
+      }
+      // Meta sends every number of an app to the same callback URL: messages and statuses
+      // count here only for the number this store connected. Another number's (a second
+      // store on the same app) are logged and dropped, and Meta still gets its 200.
+      const phoneNumberId = value.metadata && value.metadata.phone_number_id ? String(value.metadata.phone_number_id) : '';
+      if (!ownNumber || phoneNumberId !== ownNumber) {
+        const count = (value.messages || []).length + (value.statuses || []).length;
+        if (count > 0) {
+          logger.warn(`[whatsapp.webhook] ${workspaceId}: ignored ${count} message(s)/status(es) for phone number id "${phoneNumberId || 'none'}", not the store's connected number`);
+        }
+        result.ignored += count;
         continue;
       }
       const names = Object.fromEntries((value.contacts || []).map((c) => [c.wa_id, c.profile && c.profile.name]));
@@ -238,7 +265,14 @@ async function handleWebhook(workspaceId, payload) {
         const conversation = await upsertConversation(workspaceId, phoneNormalized, { customerName: names[msg.from] });
         const body = msg.type === 'text' ? msg.text && msg.text.body : msg.type === 'button' ? msg.button && msg.button.text : msg.type === 'interactive' ? JSON.stringify(msg.interactive) : `[${msg.type}]`;
         const at = msg.timestamp ? new Date(Number(msg.timestamp) * 1000) : new Date();
-        const inbound = await db.WhatsappMessage.create({ workspaceId, conversationId: conversation.id, direction: 'in', waMessageId: msg.id || null, type: ['text', 'button', 'interactive'].includes(msg.type) ? 'text' : msg.type || 'other', body, status: 'received' });
+        let inbound;
+        try {
+          inbound = await db.WhatsappMessage.create({ workspaceId, conversationId: conversation.id, direction: 'in', waMessageId: msg.id || null, type: ['text', 'button', 'interactive'].includes(msg.type) ? 'text' : msg.type || 'other', body, status: 'received' });
+        } catch (err) {
+          // The same message delivered twice at the same moment: the other delivery has it (migration 720).
+          if (err instanceof UniqueConstraintError) continue;
+          throw err;
+        }
         await conversation.update({
           lastMessageAt: at,
           lastInboundAt: at,
@@ -251,7 +285,7 @@ async function handleWebhook(workspaceId, payload) {
         // STOP withdraws marketing consent (optOut.js).
         await require('./optOut').handleInbound(workspaceId, msg, phoneNormalized);
         // A typed message gets the customer service bot's answer when AI is on and the store has the bot on (bot/botService.js).
-        if (msg.type === 'text') await require('./bot/botService').enqueue(workspaceId, conversation.id, inbound.id);
+        if (msg.type === 'text') await require('./bot/botService').enqueue(workspaceId, conversation.id, inbound.id, msg.id || null);
         inboxEvents.publish(workspaceId, { conversationId: conversation.id, reason: 'message_in' });
         result.messages += 1;
       }

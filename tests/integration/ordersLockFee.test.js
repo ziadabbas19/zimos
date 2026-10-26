@@ -167,10 +167,13 @@ describe('every path that confirms takes the same fee', () => {
     const store = await h.payPerOrderStore({ balance: 0 });
     const order = await h.placed(store);
     const conversation = await db.WhatsappConversation.create({ workspaceId: store.wid, phoneNormalized: '201000007777' });
+    // The confirmation message: only an answer to it counts (quickReplyConfirmation.js).
     await db.WhatsappMessage.create({
       workspaceId: store.wid,
       conversationId: conversation.id,
       direction: 'out',
+      type: 'template',
+      templateName: 'order_confirmation',
       status: 'sent',
       orderId: order.id,
       waMessageId: `wamid.${crypto.randomUUID()}`,

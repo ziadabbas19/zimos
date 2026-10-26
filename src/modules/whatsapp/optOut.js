@@ -28,7 +28,8 @@ async function handleInbound(workspaceId, msg, phoneNormalized) {
   try {
     const text = msg.type === 'text' && msg.text ? msg.text.body : msg.type === 'button' && msg.button ? msg.button.text : null;
     if (!text || !STOP_WORDS.has(normalise(text))) return { optOut: false };
-    // "إلغاء" on an order message cancels that order (quickReplyConfirmation.js); it is not an opt-out.
+    // A reply quoting an order message is never an opt-out; "إلغاء" on the confirmation message
+    // cancels that order (quickReplyConfirmation.js).
     const quotesOrder = msg.context && msg.context.id ? await db.WhatsappMessage.count({ where: { workspaceId, waMessageId: msg.context.id, orderId: { [Op.ne]: null } } }) : 0;
     if (quotesOrder) return { optOut: false };
 

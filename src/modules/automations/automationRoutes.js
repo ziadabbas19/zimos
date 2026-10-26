@@ -15,6 +15,7 @@ const { recordAudit } = require('../audit/auditService');
 const { TRIGGERS, TOKENS } = require('./automationEngine');
 const { STEP_TYPES, WAIT_UNITS } = require('./automationSteps');
 const templates = require('./automationTemplates');
+const whatsappPlanGate = require('../whatsapp/whatsappPlanGate');
 
 const uuid = Joi.string().uuid();
 const ws = { workspaceId: uuid.required() };
@@ -155,7 +156,15 @@ const runs = asyncHandler(async (req, res) => {
 const listTemplates = asyncHandler(async (req, res) => {
   const rules = await db.AutomationRule.findAll({ where: { workspaceId: req.tenant.workspaceId, templateKey: { [Op.ne]: null } }, attributes: ['id', 'templateKey'] });
   const enabled = new Map(rules.map((r) => [r.templateKey, r.id]));
-  res.json({ templates: templates.TEMPLATES.map((t) => ({ ...templates.publicView(t), ruleId: enabled.get(t.key) || null })) });
+  // planLocked: switching it on would be refused for the plan (whatsapp/whatsappPlanGate.js); a rule the store has stays unlocked.
+  const confirmationLocked = await whatsappPlanGate.lockedForPlan(req.tenant.workspaceId);
+  res.json({
+    templates: templates.TEMPLATES.map((t) => ({
+      ...templates.publicView(t),
+      ruleId: enabled.get(t.key) || null,
+      planLocked: confirmationLocked && t.key === whatsappPlanGate.CONFIRMATION_TEMPLATE_KEY && !enabled.has(t.key),
+    })),
+  });
 });
 
 /** One click: the template becomes a rule of this store (a second click returns the same rule). */
@@ -191,6 +200,8 @@ router.post(
       // A template that offers a coupon (acceptsCoupon): the code its last message gives.
       couponCode: Joi.string().trim().max(100).allow(null, '').optional(),
     }).default({}) }),
+  // WHATSAPP_REQUIRE_PLAN_FEATURE: a new WhatsApp confirmation rule needs whatsapp_confirmation (whatsapp/whatsappPlanGate.js).
+  whatsappPlanGate.confirmationTemplateGate,
   enableTemplate
 );
 router.get(

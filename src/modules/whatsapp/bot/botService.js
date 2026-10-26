@@ -91,13 +91,17 @@ const aiService = () => require('../../ai/aiService'); // eslint-disable-line gl
 const repliesThisMonth = (workspaceId) =>
   db.WhatsappMessage.count({ where: { workspaceId, sentByBot: true, status: { [Op.ne]: 'failed' }, createdAt: { [Op.gte]: monthStart() } } });
 
-/** Queued by whatsappService.handleWebhook for every message a customer sends. Never throws. */
-async function enqueue(workspaceId, conversationId, messageId) {
+/**
+ * Queued by whatsappService.handleWebhook for every message a customer sends. Never throws.
+ * One job per Meta message id (waMessageId), so a message Meta delivers twice is answered once.
+ */
+async function enqueue(workspaceId, conversationId, messageId, waMessageId = null) {
   try {
     if (!aiEnabled()) return false;
     const workspace = await db.Workspace.findByPk(workspaceId, { attributes: ['id', 'settings'] });
     if (!workspace || !settingsOf(workspace).enabled) return false;
-    await queue.add('ai', JOB, { conversationId, messageId }, { workspaceId, dedupeKey: `wabot:${messageId}` });
+    const dedupeKey = waMessageId ? `wabot:${workspaceId}:${waMessageId}` : `wabot:${messageId}`;
+    await queue.add('ai', JOB, { conversationId, messageId }, { workspaceId, dedupeKey });
     return true;
   } catch (err) {
     logger.error(`[${JOB}] could not queue a reply for ${workspaceId}: ${err.message}`);
