@@ -399,6 +399,17 @@ const env = {
     deliveryGuard: process.env.NODE_ENV !== 'test' && process.env.CHECKOUT_OTP_DELIVERY_GUARD_ENABLED === 'true',
   },
 
+  // COD_SWITCH_RECHECK_ENABLED=true: a shopper switching an online order to
+  // cash on delivery (payments/onlinePaymentService.switchToCod) meets each
+  // fired rule's own action — block and to_lost refuse, require_otp asks for
+  // a code — and the store's "codes for COD orders" setting, as the order
+  // would have at checkout as a COD order. Off unless exactly "true": only
+  // the store-wide "block" refuses, and no code is asked, as before. Under
+  // NODE_ENV=test it starts off; a test sets it here.
+  codSwitch: {
+    recheck: process.env.NODE_ENV !== 'test' && process.env.COD_SWITCH_RECHECK_ENABLED === 'true',
+  },
+
   // IPV6_PREFIX_RULES_ENABLED=true: the store's IP checks compare IPv6
   // addresses by their /64 (fraud/ipPrefix.js) — the IP blocklist (orders,
   // codes, visits), min_minutes_between_cod_orders_per_ip and the risk
