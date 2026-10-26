@@ -127,6 +127,29 @@ would run as a formula are neutralised. Each export is written to the audit log.
 | GET | `/audit-logs` | `?action&entityType&limit&before`, each entry with its actor |
 | GET | `/invoices` | `?status&limit&before` |
 
+### Fraud protection — `/fraud` (fraud-hardening)
+
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/fraud/capabilities` | any team member. `{ botProtection: { platformDefault }, ipIntel: { provider }, captcha: { provider }, visitorGate: { enabled }, networkDeliveryRate: { available }, checkoutOtp: { guard, whatsapp, sms } }`: which rules can act on this platform right now (`fraud/capabilities.js`) |
+
+Behaviour behind flags, each off by default (off = as before):
+
+| Flag | What changes |
+|---|---|
+| `CHECKOUT_OTP_DELIVERY_GUARD_ENABLED` | `PATCH /workspaces/:id` switching phone codes on, moving them to another channel, or adding a rule whose action is `require_otp` answers 422 `OTP_CHANNEL_UNAVAILABLE` (details `[{ field, message, channel }]`) while that channel cannot deliver. At checkout and at the switch to COD, a code that reached no channel lets the order through with the risk flag and reason `otp_unavailable`; no lost order is filed and the store gets an `integration.failed` notification once a day |
+| `COD_SWITCH_RECHECK_ENABLED` | `POST /store/:ws/orders/:id/payment/switch-to-cod` meets each fired rule's own action (`block`, `to_lost` refuse) and asks for a code (428 `OTP_REQUIRED`) when a fired rule's action is `require_otp` or the store sends codes for COD orders (`cod_only`); the code comes back in the same switch as `{ otpCode }` (422 `INVALID_CODE` / `EXPIRED`, 429 `TOO_MANY_ATTEMPTS`) |
+| `VISITOR_GATE_ENABLED` | every public store route answers 423 `STORE_UNAVAILABLE` to an IP blocked with scope `visit`, and to a blocked country once an IP lookup answers |
+| `IPV6_PREFIX_RULES_ENABLED` | the IP blocklist (orders, codes, visits), `min_minutes_between_cod_orders_per_ip` and the risk score's `ip_burst` compare an IPv6 address by its /64 |
+| `SMS_ALLOWED_COUNTRIES` | an SMS to a number outside the list is not sent (logged failed); `POST /auth/verify-phone/request` answers 422 `SMS_COUNTRY_NOT_ALLOWED` before making a code |
+| `SMS_PLATFORM_DAILY_CAP`, `SMS_STORE_DAILY_CAP` | past a cap an SMS is not sent (logged failed) and the console gets an `sms_cap` notification once a day per scope (migration 723, `sms_daily_usage`) |
+| `VERIFY_PHONE_PER_IP_PER_DAY` | `POST /auth/verify-phone/request` answers 429 `OTP_RATE_LIMITED` past that many codes from one client in 24 hours |
+
+Without a flag: the checkout and the cart refuse more than 1000 units of one
+line (422 `VALIDATION_ERROR`), and an automation's `conditions.riskLevel`
+takes `moderate` (`medium` is saved as `moderate`; a rule saved with it
+matches moderate orders).
+
 ## Changes to existing files
 
 Kept as small as possible — nothing was restyled or refactored.
@@ -158,6 +181,15 @@ confirmation call log and per-agent stats were removed with the call centre.
 INTEGRATIONS_ENCRYPTION_KEY=   # encrypts stored WhatsApp and server-pixel credentials; required in production
 PUBLIC_API_URL=                # used to build the WhatsApp webhook URL shown in settings
 META_GRAPH_API_VERSION=        # optional, defaults to v21.0
+# fraud-hardening, all off unless set (see .env.example)
+CHECKOUT_OTP_DELIVERY_GUARD_ENABLED=
+COD_SWITCH_RECHECK_ENABLED=
+VISITOR_GATE_ENABLED=
+IPV6_PREFIX_RULES_ENABLED=
+SMS_ALLOWED_COUNTRIES=
+SMS_PLATFORM_DAILY_CAP=
+SMS_STORE_DAILY_CAP=
+VERIFY_PHONE_PER_IP_PER_DAY=
 ```
 
 Without these keys the features report themselves as not connected. Nothing is
