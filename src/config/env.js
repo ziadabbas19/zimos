@@ -384,9 +384,19 @@ const env = {
   // answer 429 OTP_RATE_LIMITED and nothing is sent. 0 or unset is off (no
   // per-client budget, as before): shoppers behind one carrier-grade NAT
   // share an address, so pick a value with the traffic in mind.
+  //
+  // CHECKOUT_OTP_DELIVERY_GUARD_ENABLED=true (risk/checkoutOtp): a store may
+  // switch phone codes on (or ask for one in a rule) only while a channel can
+  // deliver them — WhatsApp through the platform number, or SMS that is not
+  // the console in production — else 422 OTP_CHANNEL_UNAVAILABLE; and a code
+  // that reached the phone on no channel lets the order through, marked
+  // otp_unavailable, with an alert to the store, instead of stopping the
+  // checkout. Off unless exactly "true": as before. Under NODE_ENV=test it
+  // starts off; a test sets it here.
   checkoutOtp: {
     ipPerMinute: limitOrOff('CHECKOUT_OTP_IP_PER_MINUTE'),
     ipPerHour: limitOrOff('CHECKOUT_OTP_IP_PER_HOUR'),
+    deliveryGuard: process.env.NODE_ENV !== 'test' && process.env.CHECKOUT_OTP_DELIVERY_GUARD_ENABLED === 'true',
   },
 
   // Phone-verification codes (POST /auth/verify-phone/request) one client

@@ -264,11 +264,8 @@ async function recordRefusal(workspaceId, refusal, req) {
  * or staff, COD or online, checkout or funnel upsell — whatever the store's
  * own settings say.
  */
-async function createOrder(
-  workspaceId,
-  payload,
-  req,
-  {
+async function createOrder(workspaceId, payload, req, options = {}) {
+  const {
     transaction: outerTransaction,
     skipFraudRules = false,
     awaitingPayment = null,
@@ -280,8 +277,7 @@ async function createOrder(
     // { method, tokenHash }: a storefront order paid with one of the store's
     // manual methods (manualPayments) — unpaid, confirmed only once approved.
     manualPayment = null,
-  } = {}
-) {
+  } = options;
   const { items, contact, paymentMethod, discountCode, funnelId, websiteId, notes } = payload;
   // Store pickup (shipping/storePickup.js): no address and no shipping fee, whatever was sent.
   const pickup = payload.deliveryMethod === storePickup.METHOD;
@@ -396,6 +392,12 @@ async function createOrder(
       for (const flag of ruleFlags) if (!riskFlags.includes(flag)) riskFlags.push(flag);
       // A rule (or the store's "verify risky orders") wants the phone verified first — risk/checkoutOtp.
       if (checkoutOtp.needsOtp(req, { requireOtp, riskLevel: risk.level, flags: ruleFlags })) throw new checkoutOtp.NeedsOtp();
+      // The store asked for a code that reached the phone on no channel (CHECKOUT_OTP_DELIVERY_GUARD):
+      // placed unverified, marked for the merchant; a reason with no points, so the level stays as scored.
+      if (req.otpUnavailable) {
+        if (!riskFlags.includes(checkoutOtp.UNAVAILABLE_FLAG)) riskFlags.push(checkoutOtp.UNAVAILABLE_FLAG);
+        if (!risk.reasons.includes(checkoutOtp.UNAVAILABLE_FLAG)) risk.reasons.push(checkoutOtp.UNAVAILABLE_FLAG);
+      }
     }
 
     // Price every line and consume/reserve inventory for it. Consuming
@@ -709,7 +711,13 @@ async function createOrder(
   } catch (err) {
     if (err instanceof fraudRules.OrderRejectedError) await recordRefusal(workspaceId, err.refusal, req);
     // Nothing was saved; the shopper is sent a code and asked for it.
-    if (err instanceof checkoutOtp.NeedsOtp) throw await checkoutOtp.challengeError(workspaceId, contact.phone, { req });
+    if (err instanceof checkoutOtp.NeedsOtp) {
+      const challenge = await checkoutOtp.challengeError(workspaceId, contact.phone, { req });
+      if (challenge) throw challenge;
+      // CHECKOUT_OTP_DELIVERY_GUARD: the code reached no channel. Placed again once, without asking (needsOtp).
+      req.otpUnavailable = true;
+      return createOrder(workspaceId, payload, req, options);
+    }
     throw err;
   }
 }
