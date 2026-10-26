@@ -5,9 +5,10 @@ const m715 = require('../../src/db/migrations/715-option-choice-external-code');
 const m716 = require('../../src/db/migrations/716-create-api-key-order-acks');
 const m717 = require('../../src/db/migrations/717-create-order-pos-statuses');
 const m719 = require('../../src/db/migrations/719-webhook-configurer-and-feed-index');
+const m722 = require('../../src/db/migrations/722-automation-rule-configurer');
 const { withLockTimeout } = require('../../src/db/lockTimeout');
 
-// Migrations 714-719 read without a database: what each runs, in which
+// Migrations 714-719 and 722 read without a database: what each runs, in which
 // transaction and under which lock_timeout, that a second run adds nothing,
 // that no statement alters `orders`, and that undoing 714 never drops a
 // secret kept only sealed.
@@ -186,6 +187,26 @@ describe('migration 719 (webhook configurer, feed index)', () => {
     await m719.down(r.queryInterface);
     expect(r.sql()).toContain('DROP INDEX CONCURRENTLY IF EXISTS orders_workspace_updated_at_idx;');
     expect(r.sql()).toContain('REMOVE webhook_endpoints.configured_by_user_id');
+    expect(underLockTimeout(r.statements)).toBe(true);
+  });
+});
+
+describe('migration 722 (automation configurer)', () => {
+  it('adds the column once under a lock_timeout, backfills only nulls from the activity log; down drops it once', async () => {
+    const r = recorder();
+    await m722.up(r.queryInterface, Sequelize);
+    await m722.up(r.queryInterface, Sequelize);
+    const sql = r.sql();
+    expect(sql.filter((s) => s === 'ADD automation_rules.configured_by_user_id')).toHaveLength(1);
+    const backfill = sql.find((s) => s.startsWith('UPDATE automation_rules'));
+    expect(backfill).toContain('WHERE r.configured_by_user_id IS NULL');
+    expect(backfill).toContain("entity_type = 'AutomationRule'");
+    expect(backfill).toContain("(before_state->'actions') IS DISTINCT FROM (after_state->'actions')");
+    expect(sql.some((s) => /^ALTER TABLE automation_rules\b/.test(s))).toBe(false);
+
+    await m722.down(r.queryInterface);
+    await m722.down(r.queryInterface);
+    expect(r.sql().filter((s) => s === 'REMOVE automation_rules.configured_by_user_id')).toHaveLength(1);
     expect(underLockTimeout(r.statements)).toBe(true);
   });
 });

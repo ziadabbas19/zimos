@@ -384,8 +384,11 @@ endpoint is masked — its address set by someone without the permission — a
 retry, Redeliver or Resend of an older delivery goes out masked too, and the
 log keeps what was sent. An address set through an API key counts only when
 the key itself has `customers:read`; through a key without it the endpoint is
-sent customers masked. The delivery log follows the same rule for whoever
-opens it, and resending past orders needs that permission.
+sent customers masked. An automation's webhook step follows the same rule
+with the teammate who last saved the automation's steps: masked, it sends the
+customer's name as initials and no tracking or recovery link. The delivery
+log follows the same rule for whoever opens it, and resending past orders
+needs that permission.
 
 **Large events.** A body larger than 256 KB is sent with ids only and
 `"truncated": true` — `data.order` becomes `{ "id", "orderNumber" }`; read the

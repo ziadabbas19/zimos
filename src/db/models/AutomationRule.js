@@ -17,6 +17,9 @@ module.exports = (sequelize, DataTypes) => {
       isActive: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: true, field: 'is_active' },
       // The ready-made template this rule was created from, if any (automationTemplates.js).
       templateKey: { type: DataTypes.STRING(60), allowNull: true, field: 'template_key' },
+      // Who last saved its steps: whose role decides whether its webhook steps
+      // send customers in full (migration 722, automationSteps.js).
+      configuredByUserId: { type: DataTypes.UUID, allowNull: true, field: 'configured_by_user_id' },
     },
     { tableName: 'automation_rules', indexes: [{ fields: ['workspace_id', 'trigger'] }] }
   );

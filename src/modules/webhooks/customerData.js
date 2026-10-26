@@ -89,6 +89,7 @@ const roleReveals = (role) => {
 /**
  * endpointId → whether its deliveries may carry customers in full, for
  * endpoints of one store (see the rule above). One query for all of them.
+ * Automation rules carry configuredByUserId too and are asked the same way.
  */
 async function revealsByEndpoint(workspaceId, endpoints) {
   const userIds = [...new Set(endpoints.map((e) => e.configuredByUserId).filter(Boolean))];
@@ -106,6 +107,21 @@ async function revealsByEndpoint(workspaceId, endpoints) {
   return new Map(endpoints.map((e) => [e.id, Boolean(e.configuredByUserId) && allowed.has(e.configuredByUserId)]));
 }
 
+/**
+ * An automation's message variables (automations/automationContext.js) as a
+ * webhook step sends them when its rule's configurer may not see customers
+ * in full: the name masked, and the tracking and recovery links — which open
+ * pages naming the customer — left empty. The order's number, total, city
+ * and products stay.
+ */
+function maskAutomationVars(vars) {
+  if (!vars || typeof vars !== 'object') return vars;
+  const out = { ...vars };
+  if (typeof out.customer_name === 'string' && out.customer_name) out.customer_name = maskName(out.customer_name);
+  for (const key of ['order_link', 'recovery_link']) if (key in out) out[key] = '';
+  return out;
+}
+
 /** The payload an endpoint is sent: as it is, or masked. */
 const forEndpoint = (payload, reveals) => (reveals ? payload : maskCustomerData(payload));
 
@@ -120,4 +136,4 @@ const viewerReveals = (req) => Boolean(req && req.tenant && req.tenant.hasPermis
  */
 const configurerFor = (req) => (req.apiKey && !viewerReveals(req) ? null : req.user.id);
 
-module.exports = { maskCustomerData, revealsByEndpoint, forEndpoint, viewerReveals, configurerFor };
+module.exports = { maskCustomerData, maskAutomationVars, revealsByEndpoint, forEndpoint, viewerReveals, configurerFor };
