@@ -848,6 +848,9 @@ const env = {
     // `truncated: true` (webhooks/webhookPayloadCap.js). Unset (or not a
     // number): 262144 = 256 KB, on by default by decision. 0 turns it off.
     maxPayloadBytes: /^\d+$/.test((process.env.WEBHOOKS_MAX_PAYLOAD_BYTES || '').trim()) ? parseInt(process.env.WEBHOOKS_MAX_PAYLOAD_BYTES, 10) : 262144,
+    // Days the delivery log keeps (webhooks/deliveryRetention.js): older ones
+    // that are done are deleted once a day. Unset or 0: nothing is deleted.
+    deliveryRetentionDays: /^\d+$/.test((process.env.WEBHOOK_DELIVERY_RETENTION_DAYS || '').trim()) ? parseInt(process.env.WEBHOOK_DELIVERY_RETENTION_DAYS, 10) : 0,
   },
 
   // The order as integrations see it (public API, webhooks) and the pull
