@@ -366,9 +366,16 @@ const env = {
   //    or ISO codes, smsAllowedCallingCodes above). An SMS to any other
   //    number is not sent and is logged as failed. Unset or empty: any
   //    number, as before.
-  // Under NODE_ENV=test it is off; a test sets it on this object.
+  //  - SMS_PLATFORM_DAILY_CAP: SMS the platform sends in one UTC day, all
+  //    stores and its own codes together; SMS_STORE_DAILY_CAP: SMS sent for
+  //    one store in one UTC day (notifications/smsBudget.js, counted in
+  //    sms_daily_usage). Past one, the SMS is not sent and is logged as
+  //    failed, and the console is told once a day. 0 or unset is off.
+  // Under NODE_ENV=test all three are off; a test sets them on this object.
   sms: {
     allowedCallingCodes: smsAllowedCallingCodes(),
+    platformDailyCap: limitOrOff('SMS_PLATFORM_DAILY_CAP'),
+    storeDailyCap: limitOrOff('SMS_STORE_DAILY_CAP'),
   },
 
   // Checkout codes (risk/checkoutOtp) one client may have sent, whatever the

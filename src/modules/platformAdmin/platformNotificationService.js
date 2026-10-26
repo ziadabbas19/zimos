@@ -44,6 +44,8 @@ const TYPES = [
   'wallet_fallback',
   // A store went over its daily analytics limit (migration 704, analytics/traffic/trafficCounters.js).
   'traffic_cap',
+  // The platform or one store reached its daily SMS cap (migration 723, notifications/smsBudget.js).
+  'sms_cap',
 ];
 
 // The console permission of the page each type points at.
@@ -63,6 +65,8 @@ const TYPE_PERMISSION = Object.freeze({
   wallet_fallback: P.SUBSCRIPTIONS_VIEW,
   // The console's store traffic page (analytics/traffic) is read with workspaces.view.
   traffic_cap: P.WORKSPACES_VIEW,
+  // SMS spent past a cap is an abuse signal, read with the risk pages' permission.
+  sms_cap: P.RISK_VIEW,
 });
 
 /** The types this console account may be told about. */

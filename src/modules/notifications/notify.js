@@ -201,6 +201,9 @@ async function refuseSms({ recipient, template, workspaceId = null, orderId = nu
 async function sendSms(opts) {
   const refusal = smsCountryRefusal(opts.recipient);
   if (refusal) return refuseSms(opts, refusal);
+  // The daily caps (SMS_PLATFORM_DAILY_CAP, SMS_STORE_DAILY_CAP), counted for every send attempted.
+  const budget = await require('./smsBudget').reserve({ workspaceId: opts.workspaceId || null });
+  if (!budget.ok) return refuseSms(opts, budget.error);
   return sendChannel('sms', env.notifications.smsProvider, opts);
 }
 
