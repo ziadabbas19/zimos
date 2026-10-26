@@ -35,5 +35,6 @@ const blockAndCancel = asyncHandler(async (req, res) =>
   res.json(await protectionActions.blockAndCancel(req.tenant.workspaceId, req.params.orderId, req.body || {}, req))
 );
 const stats = asyncHandler(async (req, res) => res.json(await protectionActions.stats(req.tenant.workspaceId, req.query)));
+const capabilities = (req, res) => res.json(require('./capabilities').protectionCapabilities());
 
-module.exports = { listFlagged, approve, listBlocklist, block, unblock, importBlocklist, blockAndCancel, stats };
+module.exports = { listFlagged, approve, listBlocklist, block, unblock, importBlocklist, blockAndCancel, stats, capabilities };

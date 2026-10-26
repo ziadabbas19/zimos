@@ -62,12 +62,13 @@ function tokenAge(token, workspaceId, now = Date.now()) {
   return now - Number(issuedAt);
 }
 
+/** What an unset bot_protection means. Off unless BOT_PROTECTION_DEFAULT=on: a storefront that does not send the guard yet must keep taking orders. */
+const platformDefaultOn = () => process.env.BOT_PROTECTION_DEFAULT === 'on';
+
 function settingsOf(workspace) {
   const rules = (workspace && workspace.settings && workspace.settings.fraud_rules) || {};
-  // Off unless BOT_PROTECTION_DEFAULT=on: a storefront that does not send the guard yet must keep taking orders.
-  const defaultOn = process.env.BOT_PROTECTION_DEFAULT === 'on';
   return {
-    enabled: typeof rules.bot_protection === 'boolean' ? rules.bot_protection : defaultOn,
+    enabled: typeof rules.bot_protection === 'boolean' ? rules.bot_protection : platformDefaultOn(),
     captcha: rules.bot_captcha === true,
   };
 }
@@ -137,4 +138,4 @@ const guardCheckout = asyncHandler(async (req, res, next) => {
   next();
 });
 
-module.exports = { MIN_SECONDS, MAX_AGE_MS, HONEYPOT_FIELD, issueToken, tokenAge, settingsOf, assertHuman, guardConfig, guardCheckout };
+module.exports = { MIN_SECONDS, MAX_AGE_MS, HONEYPOT_FIELD, issueToken, tokenAge, platformDefaultOn, settingsOf, assertHuman, guardConfig, guardCheckout };

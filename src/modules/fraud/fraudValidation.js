@@ -54,6 +54,7 @@ module.exports = {
     params: Joi.object({ workspaceId: uuid.required() }),
     query: Joi.object({ from: Joi.date().iso().optional(), to: Joi.date().iso().optional() }),
   },
+  capabilities: { params: Joi.object({ workspaceId: uuid.required() }) },
   networkScores: {
     params: Joi.object({ workspaceId: uuid.required() }),
     body: Joi.object({ customerIds: Joi.array().items(uuid).min(1).max(200).unique().required() }),
