@@ -76,10 +76,11 @@ number are kept; another number's (a second store on the same Meta app) are
 logged, counted as `ignored` and answered 200. A message is stored once per
 Meta id (unique index, migration 720).
 
-A customer's "Confirm order" tap confirms the order; "Cancel" cancels it only
-when it answers the `order_confirmation` message about a cash-on-delivery order
-still waiting for its confirmation. A cancel on an order past that point
-changes nothing and notifies the team (`whatsapp/quickReplyConfirmation.js`).
+A customer's "Confirm order" or "Cancel" counts only as an answer to the
+`order_confirmation` message; a "yes" or "no" to any other message about the
+order changes nothing. "Cancel" cancels only a cash-on-delivery order still
+waiting for its confirmation; a cancel on an order past that point changes
+nothing and notifies the team (`whatsapp/quickReplyConfirmation.js`).
 
 ### Server-side ad pixels — `/server-pixels`
 | Method | Path | Notes |

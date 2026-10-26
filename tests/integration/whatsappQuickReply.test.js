@@ -1,11 +1,11 @@
 'use strict';
 
 // A customer's answer to the order confirmation message on WhatsApp
-// (whatsapp/quickReplyConfirmation.js): "Confirm order" confirms the order;
-// "Cancel" cancels it only when it answers the confirmation message about a
-// cash-on-delivery order still waiting for its confirmation. A cancel the order
-// is past is passed to the team instead. The Graph API is mocked with
-// global.fetch; under the suite a queued job runs at once (core/queue).
+// (whatsapp/quickReplyConfirmation.js): only an answer to that message counts.
+// "Confirm order" confirms the order; "Cancel" cancels a cash-on-delivery order
+// still waiting for its confirmation, and a cancel the order is past is passed
+// to the team instead. The Graph API is mocked with global.fetch; under the
+// suite a queued job runs at once (core/queue).
 
 const crypto = require('crypto');
 const { app, request, setupWorkspaceWithProduct, confirmCodOrder } = require('../helpers/factories');
@@ -133,6 +133,31 @@ describe('WhatsApp quick reply: Confirm order', () => {
     expect((await orderOf(ctx)).confirmationState).toBe('pending');
 
     await signed(ctx.workspace.id, typed('موافق', wamid));
+    expect((await orderOf(ctx)).confirmationState).toBe('confirmed');
+  });
+
+  it('ignores a "yes" to any other message about the order: nothing confirmed, no one told', async () => {
+    const ctx = await storeWithOrder();
+    await sendConfirmation(ctx);
+    const review = await sendOther(ctx, 'review_request');
+
+    await signed(ctx.workspace.id, typed('نعم', review));
+    await signed(ctx.workspace.id, tap('تأكيد الطلب', review));
+
+    expect((await orderOf(ctx)).confirmationState).toBe('pending');
+    expect(await confirmedAttempts(ctx)).toHaveLength(0);
+    expect(await teamNotes(ctx)).toHaveLength(0);
+  });
+
+  it('a tap that names no message we know confirms only through a confirmation message', async () => {
+    const ctx = await storeWithOrder();
+    await sendOther(ctx, 'order_shipped');
+
+    await signed(ctx.workspace.id, tap('تأكيد الطلب', 'wamid.unknown.c1'));
+    expect((await orderOf(ctx)).confirmationState).toBe('pending');
+
+    await sendConfirmation(ctx);
+    await signed(ctx.workspace.id, tap('تأكيد الطلب', 'wamid.unknown.c2'));
     expect((await orderOf(ctx)).confirmationState).toBe('confirmed');
   });
 

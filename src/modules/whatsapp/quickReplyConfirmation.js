@@ -14,20 +14,20 @@ const logger = require('../../core/utils/logger');
  * tap into the same outcome an agent would record: the order is confirmed (or
  * cancelled) and its confirmation task is closed — no phone call needed.
  *
- * Which order: the outbound message being answered (whatsapp_messages.order_id,
- * set when an automation sends about an order). If the reply names no message
- * we know, the customer's single open cash-on-delivery order that we messaged
- * about in the last three days — never a guess between two.
+ * Which order: the confirmation message being answered (the `order_confirmation`
+ * template, whatsapp_messages.order_id). If the reply names no message we know,
+ * the customer's single open cash-on-delivery order that we sent the
+ * confirmation message about in the last three days — never a guess between two.
  *
  * What counts as a reply: a button tap always; typed text only when it is
- * exactly one of the words below *and* it quotes one of our order messages.
- * Anything else stays an ordinary inbox message for a person to read.
+ * exactly one of the words below *and* it quotes the confirmation message.
+ * A "yes" or "no" to any other message (shipping, delivery, a review request)
+ * changes nothing, and anything else stays an ordinary inbox message for a
+ * person to read.
  *
- * "Cancel" cancels only when it answers the confirmation message itself
- * (the `order_confirmation` template) about a cash-on-delivery order still
- * waiting for its confirmation. A "no" to any other message changes nothing;
- * a cancel the order is past (confirmed already, postponed, paid online…) is
- * passed to the team instead of cancelling.
+ * "Cancel" cancels only a cash-on-delivery order still waiting for its
+ * confirmation; a cancel the order is past (confirmed already, postponed,
+ * paid online…) is passed to the team instead of cancelling.
  */
 
 const JOB = 'whatsapp.quick_reply';
@@ -89,19 +89,19 @@ async function enqueue(workspaceId, msg, phoneNormalized) {
 }
 
 /** { order } for the reply, or { order: null, reason } when it answers nothing it may act on. */
-async function findOrder(workspaceId, { phoneNormalized, repliedToWaMessageId, isButton, intent }) {
+async function findOrder(workspaceId, { phoneNormalized, repliedToWaMessageId, isButton }) {
   if (repliedToWaMessageId) {
     const sent = await db.WhatsappMessage.findOne({
       where: { workspaceId, waMessageId: repliedToWaMessageId, direction: 'out', orderId: { [Op.ne]: null } },
       attributes: ['orderId', 'templateName'],
     });
     if (sent) {
-      // A "no" to a shipping, delivery or review message is not a cancellation.
-      if (intent === 'cancel' && sent.templateName !== CONFIRMATION_TEMPLATE) return { order: null, reason: 'not an answer to the confirmation message' };
+      // A "yes" or "no" to a shipping, delivery or review message neither confirms nor cancels.
+      if (sent.templateName !== CONFIRMATION_TEMPLATE) return { order: null, reason: 'not an answer to the confirmation message' };
       return { order: await db.Order.findOne({ where: { id: sent.orderId, workspaceId } }) };
     }
   }
-  // Typed text must quote one of our order messages; only a button tap may fall back.
+  // Typed text must quote the confirmation message; only a button tap may fall back.
   if (!isButton) return { order: null };
   const conversation = await db.WhatsappConversation.findOne({ where: { workspaceId, phoneNormalized }, attributes: ['id'] });
   if (!conversation) return { order: null };
@@ -112,7 +112,7 @@ async function findOrder(workspaceId, { phoneNormalized, repliedToWaMessageId, i
       direction: 'out',
       orderId: { [Op.ne]: null },
       createdAt: { [Op.gt]: new Date(Date.now() - WINDOW_MS) },
-      ...(intent === 'cancel' ? { templateName: CONFIRMATION_TEMPLATE } : {}),
+      templateName: CONFIRMATION_TEMPLATE,
     },
     attributes: ['orderId'],
   });
