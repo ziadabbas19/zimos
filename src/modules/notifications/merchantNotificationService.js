@@ -7,6 +7,7 @@ const { NotFoundError } = require('../../core/errors/AppError');
 const { PERMISSIONS } = require('../../core/security/permissions');
 const { recordAudit } = require('../audit/auditService');
 const notify = require('./notify');
+const pushConfig = require('./push/pushConfig');
 
 /**
  * Merchant notifications (SPEC §14.6): what the bell in the dashboard shows.
@@ -17,16 +18,18 @@ const notify = require('./notify');
  * Each teammate gets their own row, so "read" is theirs alone.
  *
  * Channels: `inApp` (the bell), `email` (the existing email provider),
- * `push` (nothing sends it yet: see OFFERED_CHANNELS) and `whatsapp` — from the platform's own
+ * `push` (device notifications, notifications/push: see offeredChannels) and `whatsapp` — from the platform's own
  * number to the teammate's verified phone (platformWhatsapp.js, its alert
  * template). WhatsApp is off for every type until the teammate turns it on.
  * A new channel is one more key in CHANNELS and one more branch in create().
  */
 
 const CHANNELS = ['inApp', 'email', 'push', 'whatsapp'];
-// The columns the settings screen shows. `push` is left out until something sends it;
-// a choice saved for it before is kept, read and still saved, for when it is.
-const OFFERED_CHANNELS = CHANNELS.filter((channel) => channel !== 'push');
+// The columns the settings screen shows. `push` only while device notifications
+// are on (PUSH_ENABLED and a usable VAPID pair, push/pushConfig.js); off, a choice
+// saved for it is kept, read and still saved, for when they are.
+const WITHOUT_PUSH = CHANNELS.filter((channel) => channel !== 'push');
+const offeredChannels = () => (pushConfig.isOn() ? CHANNELS : WITHOUT_PUSH);
 // Push (notifications/push) is on by default for what needs a quick look; off for the rest.
 const PUSH_ON = new Set(['order.new', 'order.suspicious', 'integration.failed', 'export.ready', 'shipping.batch_done', 'automation', 'plan.limit_reached']);
 
@@ -269,7 +272,7 @@ async function getPreferences(workspaceId, userId, role) {
   const channels = resolveChannels(prefs && prefs.channels);
   return {
     soundEnabled: prefs ? prefs.soundEnabled : true,
-    channels: OFFERED_CHANNELS,
+    channels: offeredChannels(),
     types: TYPE_NAMES.filter((type) => roleAllows(role, TYPES[type].permission)).map((type) => ({ type, ...channels[type] })),
   };
 }
