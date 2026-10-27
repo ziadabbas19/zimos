@@ -5,6 +5,7 @@ const db = require('../../db/models');
 const { NotFoundError } = require('../../core/errors/AppError');
 const access = require('../workspaces/workspaceAccessService');
 const siteTraffic = require('../siteAnalytics/siteTrafficService');
+const primaryHost = require('../domains/primaryHost');
 
 /**
  * The platform console's user search (GET /admin/users?q=). One box finds an
@@ -116,7 +117,11 @@ function subscriptionSummary(subscription, now) {
   };
 }
 
-/** Each user's stores: owned ones, then the ones they are a member of. */
+/**
+ * Each user's stores: owned ones, then the ones they are a member of, each
+ * with the link that opens it (domains/primaryHost: the primary domain when it
+ * can be served, else the platform subdomain), all in one more query.
+ */
 async function storesFor(userIds, matchedWorkspaces) {
   if (userIds.length === 0) return new Map();
   const include = [{ model: db.Subscription, as: 'subscription', include: [{ model: db.Plan, as: 'plan', attributes: ['id', 'name'] }] }];
@@ -133,6 +138,7 @@ async function storesFor(userIds, matchedWorkspaces) {
       { model: db.Workspace, as: 'workspace', attributes: ['id', 'name', 'slug', 'status', 'ownerUserId', 'createdAt'], include },
     ],
   });
+  const origins = await primaryHost.storeOriginsOf([...owned, ...memberships.map((m) => m.workspace)]);
   const now = new Date();
   const byUser = new Map(userIds.map((id) => [id, []]));
   const row = (w, role) => ({
@@ -141,6 +147,8 @@ async function storesFor(userIds, matchedWorkspaces) {
     slug: w.slug,
     status: w.status,
     role,
+    createdAt: w.createdAt,
+    storeUrl: origins.get(w.id) || null,
     matched: matchedWorkspaces.has(w.id),
     subscription: subscriptionSummary(w.subscription, now),
   });
@@ -194,17 +202,22 @@ async function searchUsers({ q = '', page = 1, limit = 25, includeDeleted = fals
 
 /** GET /admin/users/:userId */
 async function getUser(userId) {
-  const user = await db.User.findByPk(userId, { attributes: [...USER_ATTRIBUTES, 'phone', 'usernameChangedAt', 'suspendedAt', 'suspendedReason'] });
+  const user = await db.User.findByPk(userId, {
+    attributes: [...USER_ATTRIBUTES, 'phone', 'phoneVerifiedAt', 'usernameChangedAt', 'suspendedAt', 'suspendedReason'],
+  });
   if (!user) throw new NotFoundError('User');
   const stores = await storesFor([user.id], new Set());
   return {
     ...toRow(user, stores.get(user.id)),
     phone: user.phone,
+    phoneVerified: Boolean(user.phoneVerifiedAt),
     usernameChangedAt: user.usernameChangedAt,
     suspendedAt: user.suspendedAt,
     suspendedReason: user.suspendedReason,
     deletedAt: user.deletedAt,
     acquisition: await siteTraffic.acquisitionFor(user.id),
+    // Approximate, from the marketing-site visits they signed up from; null when none carries one.
+    location: await siteTraffic.locationFor(user.id),
   };
 }
 

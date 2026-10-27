@@ -48,6 +48,24 @@ async function storeOriginOf(workspace) {
   return primary ? `https://${primary}` : platformOrigin(workspace);
 }
 
+/**
+ * storeOriginOf for many stores at once (the console's lists): one query for
+ * all their primary domains, the same rule, no cache. A Map of workspace id
+ * to origin; '' for a store without a slug.
+ */
+async function storeOriginsOf(workspaces) {
+  const list = (workspaces || []).filter(Boolean);
+  const ids = [...new Set(list.map((w) => w.id))];
+  const domains = ids.length
+    ? await db.Domain.findAll({
+        where: { workspaceId: ids, isPrimary: true, status: USABLE, sslStatus: 'issued', suspendedAt: null },
+        attributes: ['workspaceId', 'hostname'],
+      })
+    : [];
+  const primary = new Map(domains.map((d) => [d.workspaceId, d.hostname]));
+  return new Map(list.map((w) => [w.id, primary.has(w.id) ? `https://${primary.get(w.id)}` : platformOrigin(w)]));
+}
+
 /** `<slug>` when `host` is a store's platform subdomain (`<slug>.<platform domain>`), else null. */
 function platformSlugOf(host) {
   const root = String(env.platformRootDomain || '').toLowerCase();
@@ -57,4 +75,4 @@ function platformSlugOf(host) {
   return slug && !slug.includes('.') ? slug : null;
 }
 
-module.exports = { primaryHostOf, storeOriginOf, platformOrigin, platformSlugOf, forget };
+module.exports = { primaryHostOf, storeOriginOf, storeOriginsOf, platformOrigin, platformSlugOf, forget };

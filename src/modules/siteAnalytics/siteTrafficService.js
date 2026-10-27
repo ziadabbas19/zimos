@@ -291,6 +291,35 @@ async function acquisitionFor(userId) {
   };
 }
 
+/**
+ * Where an account was when it signed up, as far as the marketing site knows:
+ * the country and governorate on the visits of the session it signed up from
+ * (linkSession gives them its user id). Both come from Cloudflare's headers
+ * (ANALYTICS_GEO_HEADERS), so they are the IP's region, approximate; the
+ * governorate only on visits recorded with SITE_TRAFFIC_DETAILS_ENABLED. No
+ * city is kept anywhere. Null when no visit of theirs carries either, or once
+ * SITE_VISITS_RETENTION_DAYS has removed them. Uses site_visits_user_id_idx.
+ */
+async function locationFor(userId) {
+  const [row] = await db.sequelize.query(
+    `SELECT
+       (SELECT country FROM site_visits WHERE user_id = :userId AND country IS NOT NULL
+         ORDER BY created_at DESC LIMIT 1) AS country,
+       (SELECT governorate FROM site_visits WHERE user_id = :userId AND governorate IS NOT NULL
+         ORDER BY created_at DESC LIMIT 1) AS governorate,
+       (SELECT MAX(created_at) FROM site_visits WHERE user_id = :userId
+         AND (country IS NOT NULL OR governorate IS NOT NULL)) AS seen_at`,
+    { replacements: { userId }, type: QueryTypes.SELECT }
+  );
+  if (!row || (!row.country && !row.governorate)) return null;
+  return {
+    country: row.country,
+    governorate: row.governorate,
+    source: 'signup_visit',
+    seenAt: new Date(row.seen_at).toISOString(),
+  };
+}
+
 const service = {
   PING_SECONDS,
   RANGES,
@@ -302,6 +331,7 @@ const service = {
   linkSignup,
   summary,
   acquisitionFor,
+  locationFor,
 };
 
 module.exports = service;
