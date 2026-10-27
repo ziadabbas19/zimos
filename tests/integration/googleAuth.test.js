@@ -362,3 +362,45 @@ describe('Google sign-in and two-step sign-in', () => {
     expect(u.searchParams.get('accessToken')).toBeNull();
   });
 });
+
+describe('Google sign-up and the console\'s "New sign-up"', () => {
+  const { QueryTypes } = require('sequelize');
+  const signups = (userId) =>
+    db.sequelize.query("SELECT * FROM platform_notifications WHERE type = 'user_signup' AND subject_user_id = :userId", {
+      replacements: { userId },
+      type: QueryTypes.SELECT,
+    });
+
+  it('a new account tells the console once, as a password sign-up does; signing in again does not', async () => {
+    googleClient.fetchProfile.mockResolvedValue({ googleId: 'g-console', email: 'console@example.com', emailVerified: true, fullName: 'Console Person' });
+    await callback('code=first');
+    const user = await db.User.findOne({ where: { googleId: 'g-console' } });
+
+    const [row, ...more] = await signups(user.id);
+    expect(more).toHaveLength(0);
+    expect(row).toMatchObject({ title: 'New sign-up', link: `/users/${user.id}` });
+    expect(row.data).toMatchObject({ action: 'user.register.google' });
+
+    await callback('code=second');
+    expect(await signups(user.id)).toHaveLength(1);
+  });
+
+  it('linking Google to an account that already exists is not a sign-up', async () => {
+    const user = await db.User.create({ email: 'linked@example.com', passwordHash: await hashPassword('Passw0rd!123'), fullName: 'L', status: 'active', emailVerifiedAt: new Date() });
+    googleClient.fetchProfile.mockResolvedValue({ googleId: 'g-linked', email: 'linked@example.com', emailVerified: true, fullName: 'L' });
+
+    await callback('code=link');
+    expect((await db.User.findByPk(user.id)).googleId).toBe('g-linked');
+    expect(await signups(user.id)).toHaveLength(0);
+  });
+
+  it('a Google sign-up audited before the change does not turn into one later', async () => {
+    // Only a new audit entry makes the row (platformNotificationService.onAudit);
+    // the console's one schedule reads subscriptions, not the audit log.
+    const user = await db.User.create({ email: 'earlier@example.com', googleId: 'g-earlier', fullName: 'E', status: 'active', emailVerifiedAt: new Date() });
+    await db.AuditLog.create({ actorUserId: user.id, action: 'user.register.google', entityType: 'User', entityId: user.id });
+
+    await require('../../src/modules/platformAdmin/platformNotificationService').sweepSubscriptions();
+    expect(await signups(user.id)).toHaveLength(0);
+  });
+});

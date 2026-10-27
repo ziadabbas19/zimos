@@ -107,6 +107,7 @@ const ws = (e) => e.workspaceId || (e.metadata && e.metadata.workspaceId) || nul
 // audit action → the notification it makes (null = none).
 const FROM_AUDIT = {
   'user.register': (e) => ({ type: 'user_signup', title: 'New sign-up', subjectUserId: e.entityId, link: `/users/${e.entityId}` }),
+  'user.register.google': (e) => ({ type: 'user_signup', title: 'New sign-up', subjectUserId: e.entityId, link: `/users/${e.entityId}` }),
   'workspace.create': (e) => ({ type: 'workspace_created', title: 'New store', workspaceId: e.entityId || e.workspaceId, link: `/workspaces/${e.entityId || e.workspaceId}`, data: { name: e.after && e.after.name } }),
   'subscription.manual_activate': (e) => ({
     type: 'subscription_activated',
