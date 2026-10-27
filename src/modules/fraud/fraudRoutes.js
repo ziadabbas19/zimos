@@ -28,6 +28,9 @@ router.post(
   controller.blockAndCancel
 );
 router.get('/stats', validate(schemas.stats), requirePermission(PERMISSIONS.ORDERS_VIEW), controller.stats);
+// Which protection rules the platform can act on (fraud/capabilities.js). Platform settings only, the
+// same for every store, read by anyone who sees the rules — any team member (GET /workspaces).
+router.get('/capabilities', validate(schemas.capabilities), controller.capabilities);
 router.get('/blocklist', validate(schemas.listBlocklist), requirePermission(PERMISSIONS.CUSTOMERS_VIEW), controller.listBlocklist);
 router.post('/blocklist', validate(schemas.block), requirePermission(PERMISSIONS.CUSTOMERS_MANAGE), controller.block);
 router.post(

@@ -163,6 +163,30 @@ function oneOf(name, values, fallback) {
   return value;
 }
 
+// SMS_ALLOWED_COUNTRIES as calling codes: each entry a calling code ("20",
+// "+966") or the ISO code of a country the platform sells in ("EG", "SA" —
+// core/utils/storeCountry). An ISO code with no calling code there refuses to
+// start, naming it, so a typo cannot quietly drop a country. Unset or blank is
+// an empty list (no restriction). Under NODE_ENV=test it is always empty.
+function smsAllowedCallingCodes() {
+  const raw = process.env.SMS_ALLOWED_COUNTRIES;
+  if (process.env.NODE_ENV === 'test' || isBlank(raw)) return [];
+  const { CALLING_CODES } = require('../core/utils/storeCountry');
+  const codes = raw
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .map((entry) => {
+      if (/^\+?\d{1,4}$/.test(entry)) return entry.replace(/^\+/, '');
+      const code = CALLING_CODES[entry.toUpperCase()];
+      if (!/^[A-Za-z]{2}$/.test(entry) || !code) {
+        throw new Error(`SMS_ALLOWED_COUNTRIES: "${entry}" is neither a calling code nor one of ${Object.keys(CALLING_CODES).join(', ')}`);
+      }
+      return code;
+    });
+  return [...new Set(codes)];
+}
+
 const env = {
   nodeEnv: process.env.NODE_ENV || 'development',
   isProduction: process.env.NODE_ENV === 'production',
@@ -335,15 +359,86 @@ const env = {
     guard: process.env.NODE_ENV !== 'test' && process.env.FUNNEL_CHECKOUT_GUARD === 'true',
   },
 
+  // Every SMS the platform pays for goes through notifications/notify.sms:
+  // checkout codes, phone verification, sign-up and sign-in codes, shopper
+  // sign-in, automations' SMS step, stock alerts.
+  //  - SMS_ALLOWED_COUNTRIES: the countries an SMS may go to (calling codes
+  //    or ISO codes, smsAllowedCallingCodes above). An SMS to any other
+  //    number is not sent and is logged as failed. Unset or empty: any
+  //    number, as before.
+  //  - SMS_PLATFORM_DAILY_CAP: SMS the platform sends in one UTC day, all
+  //    stores and its own codes together; SMS_STORE_DAILY_CAP: SMS sent for
+  //    one store in one UTC day (notifications/smsBudget.js, counted in
+  //    sms_daily_usage). Past one, the SMS is not sent and is logged as
+  //    failed, and the console is told once a day. 0 or unset is off.
+  // Under NODE_ENV=test all three are off; a test sets them on this object.
+  sms: {
+    allowedCallingCodes: smsAllowedCallingCodes(),
+    platformDailyCap: limitOrOff('SMS_PLATFORM_DAILY_CAP'),
+    storeDailyCap: limitOrOff('SMS_STORE_DAILY_CAP'),
+  },
+
   // Checkout codes (risk/checkoutOtp) one client may have sent, whatever the
   // phone or the store, counted in otp_codes.request_ip so the budget holds
   // across API instances. Past it the checkout, the COD switch and Resend
   // answer 429 OTP_RATE_LIMITED and nothing is sent. 0 or unset is off (no
   // per-client budget, as before): shoppers behind one carrier-grade NAT
   // share an address, so pick a value with the traffic in mind.
+  //
+  // CHECKOUT_OTP_DELIVERY_GUARD_ENABLED=true (risk/checkoutOtp): a store may
+  // switch phone codes on (or ask for one in a rule) only while a channel can
+  // deliver them — WhatsApp through the platform number, or SMS that is not
+  // the console in production — else 422 OTP_CHANNEL_UNAVAILABLE; and a code
+  // that reached the phone on no channel lets the order through, marked
+  // otp_unavailable, with an alert to the store, instead of stopping the
+  // checkout. Off unless exactly "true": as before. Under NODE_ENV=test it
+  // starts off; a test sets it here.
   checkoutOtp: {
     ipPerMinute: limitOrOff('CHECKOUT_OTP_IP_PER_MINUTE'),
     ipPerHour: limitOrOff('CHECKOUT_OTP_IP_PER_HOUR'),
+    deliveryGuard: process.env.NODE_ENV !== 'test' && process.env.CHECKOUT_OTP_DELIVERY_GUARD_ENABLED === 'true',
+  },
+
+  // COD_SWITCH_RECHECK_ENABLED=true: a shopper switching an online order to
+  // cash on delivery (payments/onlinePaymentService.switchToCod) meets each
+  // fired rule's own action — block and to_lost refuse, require_otp asks for
+  // a code — and the store's "codes for COD orders" setting, as the order
+  // would have at checkout as a COD order. Off unless exactly "true": only
+  // the store-wide "block" refuses, and no code is asked, as before. Under
+  // NODE_ENV=test it starts off; a test sets it here.
+  codSwitch: {
+    recheck: process.env.NODE_ENV !== 'test' && process.env.COD_SWITCH_RECHECK_ENABLED === 'true',
+  },
+
+  // IPV6_PREFIX_RULES_ENABLED=true: the store's IP checks compare IPv6
+  // addresses by their /64 (fraud/ipPrefix.js) — the IP blocklist (orders,
+  // codes, visits), min_minutes_between_cod_orders_per_ip and the risk
+  // score's ip_burst. IPv4 is compared whole either way. Off unless exactly
+  // "true": whole addresses, as before. Under NODE_ENV=test it starts off;
+  // a test sets it here.
+  ipRules: {
+    ipv6Prefix: process.env.NODE_ENV !== 'test' && process.env.IPV6_PREFIX_RULES_ENABLED === 'true',
+  },
+
+  // VISITOR_GATE_ENABLED=true: a store's visitor blocks act (risk/visitorGate,
+  // core/middleware/publicWorkspace). A visitor whose IP is a blocked entry of
+  // scope `visit` (the merchant's own, or one "Block and cancel" added), or
+  // whose country is in fraud_rules.blocked_countries (only once an IP
+  // lookup is connected, IP_INTEL_PROVIDER), gets 423 STORE_UNAVAILABLE on
+  // every public store route, as a closed store does. Off unless exactly
+  // "true": the blocks are kept but nothing is refused, as before. Under
+  // NODE_ENV=test it starts off; a test sets it here.
+  visitorGate: {
+    enabled: process.env.NODE_ENV !== 'test' && process.env.VISITOR_GATE_ENABLED === 'true',
+  },
+
+  // Phone-verification codes (POST /auth/verify-phone/request) one client
+  // (an IPv6 /56) may have sent in 24 hours, whatever the accounts asking,
+  // counted in otp_codes.request_ip. Past it the request answers 429
+  // OTP_RATE_LIMITED and nothing is sent. 0 or unset is off: each account
+  // keeps its own 5 a day, as before. Under NODE_ENV=test it is off.
+  verifyPhone: {
+    ipPerDay: limitOrOff('VERIFY_PHONE_PER_IP_PER_DAY'),
   },
 
   // Public endpoints that stay closed until their identity checks are

@@ -179,9 +179,38 @@ async function sendChannel(channel, provider, { recipient, template, data, works
   return { status, error, attempts };
 }
 
+/** Why an SMS to `recipient` may not be sent (SMS_ALLOWED_COUNTRIES), or null. Read as Twilio is given it. */
+function smsCountryRefusal(recipient) {
+  const codes = env.sms.allowedCallingCodes;
+  if (codes.length === 0) return null;
+  const digits = String(recipient || '').replace(/^\+/, '').replace(/\D/g, '');
+  return codes.some((code) => digits.startsWith(code)) ? null : "The number's country is not in SMS_ALLOWED_COUNTRIES";
+}
+
+/** Whether an SMS to this number may be sent at all (SMS_ALLOWED_COUNTRIES). */
+const smsCountryAllowed = (recipient) => smsCountryRefusal(recipient) === null;
+
+// An SMS that is not sent before it reaches a provider: logged as failed like any other, so the
+// callers that fall back or count failures see it (checkoutOtp, automations).
+async function refuseSms({ recipient, template, workspaceId = null, orderId = null }, error) {
+  logger.warn(`[notification:sms] ${template} not sent: ${error}`);
+  await persist({ workspaceId, channel: 'sms', provider: env.notifications.smsProvider, recipient, template, status: 'failed', error, attempts: 0, orderId });
+  return { status: 'failed', error, attempts: 0 };
+}
+
+async function sendSms(opts) {
+  const refusal = smsCountryRefusal(opts.recipient);
+  if (refusal) return refuseSms(opts, refusal);
+  // The daily caps (SMS_PLATFORM_DAILY_CAP, SMS_STORE_DAILY_CAP), counted for every send attempted.
+  const budget = await require('./smsBudget').reserve({ workspaceId: opts.workspaceId || null });
+  if (!budget.ok) return refuseSms(opts, budget.error);
+  return sendChannel('sms', env.notifications.smsProvider, opts);
+}
+
 const notify = {
   email: (opts) => sendEmail(opts),
-  sms: (opts) => sendChannel('sms', env.notifications.smsProvider, opts),
+  sms: (opts) => sendSms(opts),
+  smsCountryAllowed,
   whatsapp: (opts) => sendChannel('whatsapp', env.notifications.whatsappProvider, opts),
 };
 

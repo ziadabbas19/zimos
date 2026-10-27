@@ -90,6 +90,22 @@ function integrationFailed(workspaceId, { integration, message, link = '/setting
   });
 }
 
+/**
+ * A shopper's checkout code reached them on no channel, so their order went
+ * through unverified and marked (risk/checkoutOtp, CHECKOUT_OTP_DELIVERY_GUARD).
+ * Once a day, under the "a connected service stopped working" preference.
+ */
+function checkoutOtpUndelivered(workspaceId) {
+  return service.create(workspaceId, {
+    type: 'integration.failed',
+    title: 'تعذّر إرسال رمز التحقق إلى العملاء',
+    body: 'لم يصل رمز التحقق إلى عميل عبر واتساب ولا الرسائل النصية، فقُبل طلبه دون تحقق وعليه علامة «تعذّر إرسال رمز التحقق». راجع الطلبات المعلَّمة قبل تأكيدها.',
+    link: '/fraud',
+    data: { integration: 'checkout_otp' },
+    dedupeKey: `integration.failed:checkout_otp:${today()}`,
+  });
+}
+
 /** A file one teammate asked for is ready. */
 function exportReady(workspaceId, userId, { name, link }) {
   return service.create(workspaceId, {
@@ -183,4 +199,4 @@ function emit(workspaceId, event, entityId) {
   return env.isTest ? work : undefined;
 }
 
-module.exports = { emit, orderCreated, integrationFailed, exportReady, walletLow, walletLimitReached, walletRefund, walletCredit, walletFallback };
+module.exports = { emit, orderCreated, integrationFailed, checkoutOtpUndelivered, exportReady, walletLow, walletLimitReached, walletRefund, walletCredit, walletFallback };

@@ -817,7 +817,24 @@ async function confirmAccountCode(user, code, req) {
 // (accountLimiter.phoneVerificationLimiter); the row keeps the asking client.
 async function requestPhoneVerification(userId, phone, req) {
   const ip = req ? clientIp(req) : null;
-  await otpService.generateAndSendOtp(phone, 'phone_verification', { requestIp: ip ? ipKeyGenerator(ip) : null });
+  const requestIp = ip ? ipKeyGenerator(ip) : null;
+  // SMS_ALLOWED_COUNTRIES: a number the SMS may not go to is told so before a code is made.
+  const normalized = normalizePhone(phone);
+  if (normalized && !notify.smsCountryAllowed(normalized)) {
+    throw new AppError('SMS_COUNTRY_NOT_ALLOWED', 'Codes cannot be sent by SMS to numbers in this country', 422, [
+      { field: 'phone', message: 'Codes cannot be sent by SMS to numbers in this country' },
+    ]);
+  }
+  // VERIFY_PHONE_PER_IP_PER_DAY: every account asking from this client counts, so new free
+  // accounts no longer bring a new allowance each.
+  const perDay = env.verifyPhone.ipPerDay;
+  if (perDay && requestIp) {
+    const sent = await db.OtpCode.count({
+      where: { requestIp, purpose: 'phone_verification', createdAt: { [Op.gt]: new Date(Date.now() - 24 * 60 * 60 * 1000) } },
+    });
+    if (sent >= perDay) throw new AppError('OTP_RATE_LIMITED', 'Too many codes requested from this network today — try again tomorrow', 429);
+  }
+  await otpService.generateAndSendOtp(phone, 'phone_verification', { requestIp });
   return { sent: true };
 }
 

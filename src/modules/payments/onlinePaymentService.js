@@ -755,11 +755,44 @@ function assertAwaiting(order) {
 }
 
 /**
+ * Whether a switch to COD needs the phone verified (COD_SWITCH_RECHECK_ENABLED):
+ * a fired rule's own action is require_otp (an online order was never asked),
+ * or the store sends codes for every COD order (`cod_only`; `all` and
+ * `risky_only` already asked at checkout). The code comes back in the switch
+ * itself (`otpCode`), checked against the order's phone: the shopper paying
+ * here may not have the phone number at hand. Without it the code is sent
+ * and the switch answers 428 OTP_REQUIRED, as a checkout does. Returns true
+ * when the code reached no channel and the delivery guard lets the switch
+ * through (the order is then marked otp_unavailable).
+ */
+async function verifyPhoneForSwitch(workspace, order, rules, flagged, req) {
+  const checkoutOtp = require('../risk/checkoutOtp');
+  const otp = checkoutOtp.settingsOf(workspace);
+  const ruleAsks = flagged.some((flag) => {
+    const key = fraudRules.ruleOfFlag(flag);
+    return key && rules.actions[key] === 'require_otp';
+  });
+  if (!ruleAsks && !(otp.enabled && otp.applyTo === 'cod_only')) return false;
+  const phone = (order.contactSnapshot || {}).phone;
+  const code = req && req.body ? req.body.otpCode : null;
+  if (code) {
+    await require('../otp/otpService').verifyOtp(phone, checkoutOtp.PURPOSE, code);
+    return false;
+  }
+  const challenge = await checkoutOtp.challengeError(workspace, phone, { req });
+  if (challenge) throw challenge;
+  return true;
+}
+
+/**
  * The shopper gives up on paying online and pays on delivery instead. The
  * order becomes a COD order in every respect: a confirmation task, the
  * order-completed step, no expiry. Refused when the store's fraud rules would
  * have blocked it as a COD order in the first place (decision: for online
- * payments a rule's "block" only flags — paying cash is not online).
+ * payments a rule's "block" only flags — paying cash is not online). With
+ * COD_SWITCH_RECHECK_ENABLED that is each fired rule's own action (block or
+ * to_lost refuses), and a phone code first when a COD checkout would have
+ * asked for one (verifyPhoneForSwitch); off, the store-wide "block" only.
  *
  * Refused first, whatever the store's rules say, when the order's phone,
  * email or shipping address now matches an active platform blocklist entry:
@@ -789,7 +822,10 @@ async function switchToCod(workspaceId, orderId, token, req) {
   const rules = fraudRules.resolveFraudRules(workspace.settings);
   const ruleFlags = Object.values(fraudRules.FLAGS);
   const flagged = (order.riskFlags || []).filter((f) => ruleFlags.includes(f));
-  if (rules.action === 'block' && flagged.length > 0) {
+  // COD_SWITCH_RECHECK_ENABLED: each fired rule's own action, as at a COD checkout (block and to_lost
+  // refuse). Off: the store-wide "block" only, as before.
+  const refused = env.codSwitch.recheck ? fraudRules.refusesFlags(rules, flagged) : rules.action === 'block' && flagged.length > 0;
+  if (refused) {
     await recordAudit({
       workspaceId,
       action: 'order.blocked',
@@ -801,13 +837,26 @@ async function switchToCod(workspaceId, orderId, token, req) {
     throw new fraudRules.OrderRejectedError({ customerId: order.customerId, flags: flagged });
   }
 
+  // COD_SWITCH_RECHECK_ENABLED: the phone code a COD checkout would have asked for, before the switch.
+  const otpUnavailable = env.codSwitch.recheck ? await verifyPhoneForSwitch(workspace, order, rules, flagged, req) : false;
+
   const completed = await db.sequelize.transaction(async (transaction) => {
     const locked = await db.Order.findOne({ where: { id: order.id }, transaction, lock: transaction.LOCK.UPDATE });
     assertAwaiting(locked);
     const before = { paymentMethod: locked.paymentMethod };
 
     await db.Payment.update({ status: 'cancelled' }, { where: { orderId: locked.id, status: OPEN_ATTEMPT }, transaction });
-    await locked.update({ paymentMethod: 'cod', paymentExpiresAt: null }, { transaction });
+    const unavailableFlag = require('../risk/checkoutOtp').UNAVAILABLE_FLAG;
+    const riskFlags = locked.riskFlags || [];
+    await locked.update(
+      {
+        paymentMethod: 'cod',
+        paymentExpiresAt: null,
+        // The code reached no channel (CHECKOUT_OTP_DELIVERY_GUARD): switched unverified, marked.
+        ...(otpUnavailable && !riskFlags.includes(unavailableFlag) ? { riskFlags: [...riskFlags, unavailableFlag] } : {}),
+      },
+      { transaction }
+    );
     await db.ConfirmationTask.create({ workspaceId, orderId: locked.id, status: 'queued' }, { transaction });
 
     const context = locked.completionContext || {};

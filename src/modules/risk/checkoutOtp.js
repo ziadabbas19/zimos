@@ -9,7 +9,9 @@ const db = require('../../db/models');
 const env = require('../../config/env');
 const { AppError } = require('../../core/errors/AppError');
 const { normalizePhone } = require('../../core/utils/phone');
+const logger = require('../../core/utils/logger');
 const notify = require('../notifications/notify');
+const platformWhatsapp = require('../notifications/platformWhatsapp');
 const otpService = require('../otp/otpService');
 const blockedEntries = require('../fraud/blockedEntries');
 const { visitorIp } = require('./visitorGate');
@@ -44,9 +46,20 @@ const { visitorIp } = require('./visitorGate');
  * CHECKOUT_OTP_IP_PER_MINUTE / _PER_HOUR set (env.checkoutOtp), one client
  * (an IPv6 /56) may have that many codes sent across every store; past it the
  * checkout, the COD switch and Resend answer 429 OTP_RATE_LIMITED.
+ *
+ * CHECKOUT_OTP_DELIVERY_GUARD_ENABLED (env.checkoutOtp.deliveryGuard, off by
+ * default): a code is only asked for when it can arrive. Switching codes on,
+ * or a rule to ask for one, needs a channel that delivers (assertDeliverable,
+ * on save). A code that reached the phone on no channel (WhatsApp, then SMS)
+ * does not exist: its row is removed, the order goes through marked
+ * `otp_unavailable` instead of waiting for a code that will never come, and
+ * the store is told once a day. Off, a code is "sent" whatever the channel
+ * did, as before.
  */
 
 const PURPOSE = 'checkout';
+// The risk flag (and reason) of an order placed because its code reached no channel.
+const UNAVAILABLE_FLAG = 'otp_unavailable';
 const RESEND_AFTER_SECONDS = 60;
 const PROOF_TTL_MS = 30 * 60 * 1000;
 // Resend only reaches a phone this store challenged at checkout this recently.
@@ -95,6 +108,69 @@ function proofValid(token, workspaceId, phoneNormalized, now = Date.now()) {
 
 function maskPhone(phoneNormalized) {
   return phoneNormalized.length > 4 ? `${'•'.repeat(phoneNormalized.length - 4)}${phoneNormalized.slice(-4)}` : phoneNormalized;
+}
+
+/** SMS that leaves the server: Twilio with its credentials, or the console outside production. */
+const smsDelivers = () => require('../otp/verificationCodeService').smsReady();
+
+/** WhatsApp that leaves the server: the platform number, or the console outside production. */
+function whatsappDelivers() {
+  const provider = env.notifications.whatsappProvider;
+  if (provider === 'console') return !env.isProduction;
+  return provider === 'cloud' && platformWhatsapp.configured();
+}
+
+/** Whether a code sent on `channel` can reach a phone at all; WhatsApp falls back to SMS. */
+function channelDelivers(channel) {
+  return channel === 'sms' ? smsDelivers() : whatsappDelivers() || smsDelivers();
+}
+
+/** Which channels can deliver right now, and whether the guard is on (the dashboard's protection page). */
+function deliveryStatus() {
+  return { guard: env.checkoutOtp.deliveryGuard, whatsapp: whatsappDelivers(), sms: smsDelivers() };
+}
+
+/** Whether this send reached the phone: the provider took it, and SMS is not the production console (which sends nothing). */
+const reached = (channel, result) => Boolean(result && result.status === 'sent') && (channel === 'whatsapp' || smsDelivers());
+
+// What a store asks a code for: its own setting, and every rule switched on whose action is require_otp.
+const ruleOn = (value) => value === true || (typeof value === 'number' && value > 0);
+function rulesAskingForCode(settings) {
+  const fraudRules = require('../fraud/fraudRules');
+  const rules = fraudRules.resolveFraudRules(settings);
+  return fraudRules.RULE_KEYS.filter((key) => rules.actions[key] === 'require_otp' && ruleOn(rules[key]));
+}
+
+/**
+ * On saving the fraud rules (workspaceService.updateWorkspace), with the
+ * guard on: refuses 422 OTP_CHANNEL_UNAVAILABLE when the save switches codes
+ * on, moves them to another channel, or adds a rule that asks for one, while
+ * that channel cannot deliver. What was already on is not refused again.
+ */
+function assertDeliverable(beforeSettings, afterSettings) {
+  if (!env.checkoutOtp.deliveryGuard) return;
+  const before = settingsOf({ settings: beforeSettings });
+  const after = settingsOf({ settings: afterSettings });
+  const switchedOn = after.enabled && (!before.enabled || before.channel !== after.channel);
+  const asking = rulesAskingForCode(afterSettings);
+  const askedBefore = rulesAskingForCode(beforeSettings);
+  const newRule = asking.some((key) => !askedBefore.includes(key)) || (asking.length > 0 && before.channel !== after.channel);
+  if ((switchedOn || newRule) && !channelDelivers(after.channel)) {
+    const message =
+      after.channel === 'sms'
+        ? 'Phone codes cannot be sent by SMS right now: the platform has no SMS sender set up'
+        : 'Phone codes cannot be sent right now: the platform has no WhatsApp number or SMS sender set up';
+    throw new AppError('OTP_CHANNEL_UNAVAILABLE', message, 422, [
+      { field: switchedOn ? 'settings.fraud_rules.checkout_otp' : 'settings.fraud_rules', message, channel: after.channel },
+    ]);
+  }
+}
+
+/** Tells the store that a shopper's code reached them on no channel (once a day). Never throws. */
+function alertUndelivered(workspaceId) {
+  require('../notifications/merchantNotificationEvents')
+    .checkoutOtpUndelivered(workspaceId)
+    .catch((err) => logger.warn(`[checkout-otp] the store could not be told a code was not delivered: ${err.message}`));
 }
 
 /** The per-IP key a code is counted under: the address, or its /56 for IPv6. */
@@ -149,7 +225,7 @@ async function sendCode(workspace, rawPhone, { strict = false, req = null } = {}
     return { sent: false, phone };
   }
   const code = String(crypto.randomInt(0, 10 ** settings.codeLength)).padStart(settings.codeLength, '0');
-  await db.OtpCode.create({ ...row, codeHash: hashCode(code) });
+  const created = await db.OtpCode.create({ ...row, codeHash: hashCode(code) });
   // The SMS names the store, not the platform (notify.smsBody); a row loaded without the name reads it.
   const storeName =
     workspace.name !== undefined ? workspace.name : ((await db.Workspace.findByPk(workspace.id, { attributes: ['name'] })) || {}).name;
@@ -161,17 +237,29 @@ async function sendCode(workspace, rawPhone, { strict = false, req = null } = {}
   };
   // WhatsApp goes through the authentication template; SMS is the fallback when it cannot be sent.
   const result = settings.channel === 'whatsapp' ? await notify.whatsapp(message) : await notify.sms(message);
-  if (settings.channel === 'whatsapp' && result && result.status === 'failed') await notify.sms(message);
+  let delivered = reached(settings.channel, result);
+  if (settings.channel === 'whatsapp' && result && result.status === 'failed') delivered = reached('sms', await notify.sms(message));
+  if (!delivered && env.checkoutOtp.deliveryGuard) {
+    // A code no channel took does not exist: it holds no minute, no send limit and no Resend.
+    await created.destroy();
+    alertUndelivered(workspace.id);
+    return { sent: false, phone, undelivered: true };
+  }
   return { sent: true, phone };
 }
 
-/** The 428 the checkout answers while the phone is unverified. Sends the code first. */
+/**
+ * The 428 the checkout answers while the phone is unverified. Sends the code
+ * first. With the delivery guard on, null when the code reached the phone on
+ * no channel: the caller places the order without it (`req.otpUnavailable`).
+ */
 async function challengeError(workspaceOrId, rawPhone, { req = null } = {}) {
   const workspace =
     typeof workspaceOrId === 'string'
       ? await db.Workspace.findByPk(workspaceOrId, { attributes: ['id', 'settings', 'defaultLocale'] })
       : workspaceOrId;
-  const { phone } = await sendCode(workspace, rawPhone, { req });
+  const { phone, undelivered } = await sendCode(workspace, rawPhone, { req });
+  if (undelivered) return null;
   const settings = settingsOf(workspace);
   const err = new AppError('OTP_REQUIRED', 'Enter the code we sent to your phone to place the order', 428, {
     channel: settings.channel,
@@ -208,6 +296,11 @@ const guardCheckout = asyncHandler(async (req, res, next) => {
   const always = settings.enabled && (settings.applyTo === 'all' || (settings.applyTo === 'cod_only' && body.paymentMethod === 'cod'));
   if (always && !req.otpVerified && phone) {
     const err = await challengeError(workspace, body.contact.phone, { req });
+    if (!err) {
+      // The delivery guard: no channel reached the phone, so the order goes on, marked.
+      req.otpUnavailable = true;
+      return next();
+    }
     req.checkoutRefusal = err.refusal;
     throw err;
   }
@@ -216,7 +309,7 @@ const guardCheckout = asyncHandler(async (req, res, next) => {
 
 /** Whether createOrder must stop for a code: a rule asked, or the store verifies risky orders and this is one. */
 function needsOtp(req, { requireOtp, riskLevel, flags }) {
-  if (!req || req.user || req.otpVerified) return false;
+  if (!req || req.user || req.otpVerified || req.otpUnavailable) return false;
   if (requireOtp) return true;
   return Boolean(req.otpIfRisky && ((riskLevel && riskLevel !== 'low') || (flags && flags.length > 0)));
 }
@@ -263,6 +356,7 @@ const resend = asyncHandler(async (req, res) => {
 
 module.exports = {
   PURPOSE,
+  UNAVAILABLE_FLAG,
   CHANNELS,
   APPLY_TO,
   settingsSchema,
@@ -271,6 +365,9 @@ module.exports = {
   proofValid,
   sendCode,
   challengeError,
+  channelDelivers,
+  deliveryStatus,
+  assertDeliverable,
   NeedsOtp,
   guardCheckout,
   needsOtp,

@@ -3,6 +3,7 @@
 const { QueryTypes } = require('sequelize');
 const db = require('../../db/models');
 const { isValidMobile } = require('../fraud/fraudRules');
+const { ipv6Prefix, inPrefix } = require('../fraud/ipPrefix');
 
 /**
  * Risk scoring and data quality (SPEC §5.5).
@@ -86,8 +87,25 @@ function isDisposableEmail(email) {
   return Boolean(domain && DISPOSABLE_DOMAINS.has(domain));
 }
 
-/** Orders from this IP or this device in the last hour (orders_ws_ip_created_idx, orders_ws_device_created_idx). */
+/**
+ * Orders from this IP or this device in the last hour (orders_ws_ip_created_idx, orders_ws_device_created_idx).
+ * An IPv6 address counts its whole /64 with IPV6_PREFIX_RULES_ENABLED (fraud/ipPrefix).
+ */
 async function ordersFromIpLastHour(workspaceId, ip, transaction, deviceId = null) {
+  const prefix = ipv6Prefix(ip);
+  const since = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+  if (prefix) {
+    // Every order of the hour that shares the device or has an IPv6 address; the /64 is compared here.
+    const rows = await db.sequelize.query(
+      `SELECT o.ip_address, o.device_id
+         FROM orders o
+        WHERE o.workspace_id = $workspaceId
+          AND (o.ip_address LIKE '%:%' OR ($deviceId::varchar IS NOT NULL AND o.device_id = $deviceId))
+          AND o.created_at >= $since::timestamptz`,
+      { bind: { workspaceId, deviceId, since }, type: QueryTypes.SELECT, transaction }
+    );
+    return rows.filter((row) => (deviceId && row.device_id === deviceId) || inPrefix(prefix, row.ip_address)).length;
+  }
   const [row] = await db.sequelize.query(
     `SELECT COUNT(*)::int AS count
        FROM orders o
@@ -95,7 +113,7 @@ async function ordersFromIpLastHour(workspaceId, ip, transaction, deviceId = nul
         AND (o.ip_address = $ip OR ($deviceId::varchar IS NOT NULL AND o.device_id = $deviceId))
         AND o.created_at >= $since::timestamptz`,
     {
-      bind: { workspaceId, ip: ip || null, deviceId, since: new Date(Date.now() - 60 * 60 * 1000).toISOString() },
+      bind: { workspaceId, ip: ip || null, deviceId, since },
       type: QueryTypes.SELECT,
       transaction,
     }

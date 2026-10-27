@@ -29,6 +29,12 @@ function active() {
   return verifiers.get(wanted) || null;
 }
 
+/** The verifier answering right now, or null. For settings screens. */
+function providerName() {
+  const verifier = active();
+  return verifier ? verifier.name : null;
+}
+
 /** What the storefront needs to render the widget, or null when no challenge is active. */
 function publicConfig() {
   const verifier = active();
@@ -61,4 +67,4 @@ async function verify(token, ip) {
   }
 }
 
-module.exports = { registerVerifier, publicConfig, verify };
+module.exports = { registerVerifier, providerName, publicConfig, verify };

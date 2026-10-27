@@ -52,7 +52,12 @@ module.exports = {
       returnUrl: Joi.string().max(2000).optional(),
     }),
   },
-  shopperAction: { params: storeOrderParam },
+  // POST .../payment/switch-to-cod. `otpCode`: the code sent when the switch answered 428
+  // OTP_REQUIRED (COD_SWITCH_RECHECK_ENABLED, payments/onlinePaymentService.switchToCod).
+  shopperAction: {
+    params: storeOrderParam,
+    body: Joi.object({ otpCode: Joi.string().trim().pattern(/^\d{4,6}$/).optional() }).default({}),
+  },
   webhook: {
     params: Joi.object({
       code: Joi.string().max(50).required(),

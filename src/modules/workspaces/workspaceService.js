@@ -343,6 +343,9 @@ async function updateWorkspace({ workspaceId, patch }, req) {
       await assertBumpOfferUsable(workspaceId, bump.offer_id, 'settings.order_bump.offer_id');
     }
     next.settings = applyMerchantSettings(workspace.settings, patch.settings);
+    // Phone codes switched on (or a rule asking for one) need a channel that delivers them
+    // (CHECKOUT_OTP_DELIVERY_GUARD_ENABLED; off, nothing is checked).
+    if (touchesFraudRules) require('../risk/checkoutOtp').assertDeliverable(workspace.settings, next.settings);
     // Tier pricing weighs products without a weight at the default weight;
     // it can't be removed while tier pricing depends on it.
     const clearsDefaultWeight =

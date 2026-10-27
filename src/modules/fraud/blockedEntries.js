@@ -9,6 +9,7 @@ const { normalizePhone } = require('../../core/utils/phone');
 const { recordAudit } = require('../audit/auditService');
 const visitorGate = require('../risk/visitorGate');
 const orderLock = require('../orders/orderLock');
+const { ipv6Prefix, inPrefix } = require('./ipPrefix');
 
 /**
  * The store's blacklist (`blocked_entries`, migration 140).
@@ -535,7 +536,23 @@ async function findMatch(workspaceId, scope, { phoneNormalized, phone, email, ip
   if (nameAddress) pairs.push({ type: 'name_address', value: nameAddress });
   if (pairs.length === 0) return null;
 
-  return db.BlockedEntry.findOne({ where: { workspaceId, scope, [Op.or]: pairs }, transaction });
+  const exact = await db.BlockedEntry.findOne({ where: { workspaceId, scope, [Op.or]: pairs }, transaction });
+  if (exact) return exact;
+  return findIpv6PrefixMatch(workspaceId, scope, ipValue, transaction);
+}
+
+/**
+ * An IPv6 entry of the store in the same /64 as `ip` (IPV6_PREFIX_RULES_ENABLED,
+ * ./ipPrefix): the shopper's next address on the same line. Null for IPv4 or with the flag off.
+ */
+async function findIpv6PrefixMatch(workspaceId, scope, ip, transaction) {
+  const prefix = ipv6Prefix(ip);
+  if (!prefix) return null;
+  const entries = await db.BlockedEntry.findAll({
+    where: { workspaceId, scope, type: 'ip', value: { [Op.like]: '%:%' } },
+    transaction,
+  });
+  return entries.find((entry) => inPrefix(prefix, entry.value)) || null;
 }
 
 module.exports = {

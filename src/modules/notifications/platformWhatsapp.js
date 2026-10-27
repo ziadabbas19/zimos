@@ -64,4 +64,10 @@ async function send({ to, template, data = {} }) {
   throw new Error(`No WhatsApp message is set up for "${template}"`);
 }
 
-module.exports = { send, config };
+/** Whether the platform number has what a send needs (its id and token); says nothing about Meta's answer. */
+function configured() {
+  const { phoneNumberId, token } = config();
+  return Boolean(phoneNumberId && token);
+}
+
+module.exports = { send, config, configured };

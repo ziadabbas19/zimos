@@ -44,6 +44,12 @@ async function getCart(workspaceId, cartId) {
         ],
       },
     ],
+    // Lines in the order they were added. Without it Postgres may return a line
+    // it just updated (a merged add, a new quantity) after the others.
+    order: [
+      [{ model: db.CartItem, as: 'items' }, 'createdAt', 'ASC'],
+      [{ model: db.CartItem, as: 'items' }, 'id', 'ASC'],
+    ],
   });
   if (!cart) throw new NotFoundError('Cart');
   // A product A/B test prices plain lines for whoever filled the cart (catalog/productTests.js).
