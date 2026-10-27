@@ -12,6 +12,7 @@ const access = require('../workspaces/workspaceAccessService');
 const goLive = require('./goLiveService');
 const entitlements = require('./entitlementsService');
 const onlineBilling = require('./onlineBillingService');
+const primaryHost = require('../domains/primaryHost');
 
 const { availableFeatureKeys, isAvailableFeature } = require('./featureCatalog');
 
@@ -409,6 +410,8 @@ async function listWorkspacesOverview() {
     raw: true,
   });
   const countMap = Object.fromEntries(counts.map((c) => [c.workspaceId, Number(c.cnt)]));
+  // The link that opens each store, every primary domain in one query.
+  const origins = await primaryHost.storeOriginsOf(workspaces);
 
   const now = new Date();
   return workspaces.map((w) => {
@@ -423,6 +426,8 @@ async function listWorkspacesOverview() {
       status: w.status,
       defaultCurrency: w.defaultCurrency,
       createdAt: w.createdAt,
+      // The primary domain when it can be served, else the platform subdomain (domains/primaryHost).
+      storeUrl: origins.get(w.id) || null,
       // Billing overview, flattened onto the same row.
       plan: sub && sub.plan ? sub.plan.name : sub && sub.planId ? sub.planId : '—',
       planId: sub ? sub.planId : null,
