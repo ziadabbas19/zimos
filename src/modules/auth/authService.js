@@ -17,6 +17,7 @@ const {
 const { AppError, AuthenticationError, ConflictError, ValidationError } = require('../../core/errors/AppError');
 const { recordAudit } = require('../audit/auditService');
 const sessionGate = require('../../core/security/sessionGate');
+const pushSessions = require('../notifications/push/pushSessions');
 const notify = require('../notifications/notify');
 const googleClient = require('./googleClient');
 const otpService = require('../otp/otpService');
@@ -512,7 +513,10 @@ async function refresh(rawRefreshToken, req) {
       { where: { id: session.id, revokedAt: null }, transaction }
     );
     if (ended !== 1) return null;
-    return createSession(user, req, { id: successorId, transaction });
+    const created = await createSession(user, req, { id: successorId, transaction });
+    // This browser's device notifications follow it to the new session (no-op while push is off).
+    await pushSessions.followRotation(session.id, successorId, transaction);
+    return created;
   });
   if (!rotation) {
     const ended = await db.Session.findByPk(session.id);
