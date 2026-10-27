@@ -1,6 +1,6 @@
 'use strict';
 
-const { app, request, setupWorkspaceWithProduct } = require('../helpers/factories');
+const { app, request, setupWorkspaceWithProduct, createProductWithVariant } = require('../helpers/factories');
 const db = require('../../src/db/models');
 
 describe('Public storefront browsing', () => {
@@ -96,6 +96,33 @@ describe('Guest cart', () => {
 
     const removeRes = await request(app).delete(`/api/v1/store/${workspace.id}/cart/items/${itemId}`).set('X-Cart-Token', token);
     expect(removeRes.body.items.length).toBe(0);
+  });
+
+  it('lists lines in the order they were added, by id when two were added at the same moment', async () => {
+    const { auth, workspace, variant: first } = await setupWorkspaceWithProduct({ stock: 20 });
+    const { variant: second } = await createProductWithVariant(auth.accessToken, workspace.id, { stock: 20 });
+    const cartRes = await request(app).post(`/api/v1/store/${workspace.id}/cart`);
+    const token = cartRes.body.guestToken;
+    const add = (variantId) => request(app).post(`/api/v1/store/${workspace.id}/cart/items`).set('X-Cart-Token', token).send({ variantId, quantity: 1 });
+
+    await add(first.id);
+    await add(second.id);
+    // Adding the first product again updates its line; it stays first.
+    const merged = await add(first.id);
+    expect(merged.body.items.map((i) => [i.variantId, i.quantity])).toEqual([
+      [first.id, 2],
+      [second.id, 1],
+    ]);
+    const firstLine = merged.body.items[0].id;
+    await request(app).patch(`/api/v1/store/${workspace.id}/cart/items/${firstLine}`).set('X-Cart-Token', token).send({ quantity: 3 });
+    const read = await request(app).get(`/api/v1/store/${workspace.id}/cart`).set('X-Cart-Token', token);
+    expect(read.body.items.map((i) => i.variantId)).toEqual([first.id, second.id]);
+
+    await db.sequelize.query('UPDATE cart_items SET created_at = :at WHERE cart_id = :cartId', {
+      replacements: { at: new Date('2026-01-01T00:00:00Z'), cartId: read.body.id },
+    });
+    const tied = await request(app).get(`/api/v1/store/${workspace.id}/cart`).set('X-Cart-Token', token);
+    expect(tied.body.items.map((i) => i.id)).toEqual(read.body.items.map((i) => i.id).sort());
   });
 });
 
