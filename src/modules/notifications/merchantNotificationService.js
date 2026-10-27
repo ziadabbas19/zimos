@@ -17,13 +17,16 @@ const notify = require('./notify');
  * Each teammate gets their own row, so "read" is theirs alone.
  *
  * Channels: `inApp` (the bell), `email` (the existing email provider),
- * `push` (notifications/push) and `whatsapp` — from the platform's own
+ * `push` (nothing sends it yet: see OFFERED_CHANNELS) and `whatsapp` — from the platform's own
  * number to the teammate's verified phone (platformWhatsapp.js, its alert
  * template). WhatsApp is off for every type until the teammate turns it on.
  * A new channel is one more key in CHANNELS and one more branch in create().
  */
 
 const CHANNELS = ['inApp', 'email', 'push', 'whatsapp'];
+// The columns the settings screen shows. `push` is left out until something sends it;
+// a choice saved for it before is kept, read and still saved, for when it is.
+const OFFERED_CHANNELS = CHANNELS.filter((channel) => channel !== 'push');
 // Push (notifications/push) is on by default for what needs a quick look; off for the rest.
 const PUSH_ON = new Set(['order.new', 'order.suspicious', 'integration.failed', 'export.ready', 'shipping.batch_done', 'automation', 'plan.limit_reached']);
 
@@ -266,7 +269,7 @@ async function getPreferences(workspaceId, userId, role) {
   const channels = resolveChannels(prefs && prefs.channels);
   return {
     soundEnabled: prefs ? prefs.soundEnabled : true,
-    channels: CHANNELS,
+    channels: OFFERED_CHANNELS,
     types: TYPE_NAMES.filter((type) => roleAllows(role, TYPES[type].permission)).map((type) => ({ type, ...channels[type] })),
   };
 }
