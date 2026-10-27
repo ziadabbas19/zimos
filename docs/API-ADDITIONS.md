@@ -164,6 +164,24 @@ expired; inactivity restarts from the last frozen day
 (`settings.loyalty.frozenSeenAt`, written by the daily job). An order locked
 when delivered (`ORDERS_LOCK_ENABLED`) earns nothing.
 
+### Console: a person's details and the store list — `/admin` (no flag)
+Additive fields only, same permission as before (`workspaces.view`: creators and
+admins; agents and merchants 403). No secret is ever returned (explicit
+attribute lists).
+
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/admin/users/:userId` | adds `phoneVerified` (from `phone_verified_at`) and `location` — `{ country, governorate, source: 'signup_visit', seenAt }` or null: the country and governorate on the marketing-site visits of the session the account signed up from (`site_visits`, Cloudflare's headers via `ANALYTICS_GEO_HEADERS`, the IP's region, approximate; the governorate only on visits recorded with `SITE_TRAFFIC_DETAILS_ENABLED`). No city is stored anywhere; nothing new is tracked |
+| GET | `/admin/users/:userId`, `/admin/users` | each store in `workspaces` adds `createdAt` and `storeUrl` |
+| GET | `/admin/workspaces` | each row adds `storeUrl`; `owner` (id, name, email) was already there |
+
+`storeUrl` is the store's canonical address (`domains/primaryHost.js`): its
+primary domain when verified, certificate issued and not suspended, else
+`https://<slug>.<PLATFORM_ROOT_DOMAIN>`. Looked up for all the stores of a
+response in one query (`storeOriginsOf`), so the number of queries does not
+grow with the number of stores. `/admin/workspaces` is still one unpaginated
+list, as before.
+
 ## Changes to existing files
 
 Kept as small as possible — nothing was restyled or refactored.
