@@ -78,7 +78,8 @@ const checkout = asyncHandler(async (req, res) => {
   if (loyaltyPoints && storeFeatureOn('loyalty')) {
     if (orderBody.paymentMethod !== 'cod') throw new ValidationError([{ field: 'loyaltyPoints', message: 'Points can be used with cash on delivery' }], 'Invalid body');
     const shopper = await require('../shopperAccounts/shopperAuth').readToken(workspaceId, req.headers['x-shopper-token']);
-    pointsOwner = await require('../loyalty/loyaltyService').assertCanSpend(workspace, shopper, loyaltyPoints);
+    // The device id (risk/botProtection's guardCheckout) is for the loyalty guard's one-device rule.
+    pointsOwner = await require('../loyalty/loyaltyService').assertCanSpend(workspace, shopper, loyaltyPoints, { deviceId: req.deviceId || null });
   }
   // Store credit, only a signed-in shopper's, cash on delivery only (modules/storeCredit). Off, ignored.
   let creditOwner = null;
