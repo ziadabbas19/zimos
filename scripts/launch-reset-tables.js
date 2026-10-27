@@ -114,6 +114,7 @@ const TABLES = {
   product_specs: wipe(STORE),
   product_variants: wipe(STORE),
   products: wipe(STORE),
+  push_subscriptions: wipe("browsers subscribed to device notifications, bound to sign-in sessions that go (migration 724), the creator's included"),
   referral_codes: wipe('referral codes of agents (accounts that go; agent_id is NOT NULL, ON DELETE RESTRICT) (decided: wipe)'),
   refunds: wipe(STORE),
   report_deliveries: wipe(STORE),

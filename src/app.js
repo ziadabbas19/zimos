@@ -168,6 +168,8 @@ app.use(hostResolver);
 // --- API v1 --------------------------------------------------------------
 const v1 = express.Router();
 v1.use('/auth', authRoutes);
+// The signed-in account's devices for device notifications (PUSH_ENABLED; off, 404).
+v1.use('/me/push', require('./modules/notifications/push/pushRoutes'));
 // Public template gallery — no auth, shown before a workspace even exists.
 v1.use('/templates', templateRoutes);
 // Must be registered BEFORE the generic '/workspaces' mount: workspaceRoutes

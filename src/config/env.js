@@ -899,6 +899,28 @@ const env = {
     handshakesPerMinute: positiveInt('REALTIME_HANDSHAKES_PER_MINUTE', 60),
   },
 
+  // Device notifications (Web Push, modules/notifications/push). Off unless
+  // PUSH_ENABLED is exactly "true" AND the VAPID pair below is usable
+  // (pushConfig.js): off, /me/push answers 404 like an unknown path, the
+  // notification settings offer no push column, a refresh and a sign-out never
+  // touch push_subscriptions and the daily cleanup does nothing — today's
+  // behaviour exactly. On with a missing or malformed pair, push stays off and a
+  // warning is logged (the keys themselves never are).
+  //   VAPID_PUBLIC_KEY    base64url, 65 bytes: handed to browsers (GET /me/push/config)
+  //   VAPID_PRIVATE_KEY   base64url, 32 bytes: a secret, Railway only. Changing the
+  //                       pair ends every subscription until each browser subscribes again
+  //   VAPID_SUBJECT       mailto:<address> or https://<site>: how push services reach us
+  //   maxDevicesPerUser   PUSH_MAX_DEVICES_PER_USER, per account and app; the
+  //                       least recently seen goes when one more subscribes
+  // Under NODE_ENV=test it starts off with no keys; a test sets them here.
+  push: {
+    enabled: process.env.NODE_ENV !== 'test' && process.env.PUSH_ENABLED === 'true',
+    vapidPublicKey: process.env.NODE_ENV === 'test' ? '' : (process.env.VAPID_PUBLIC_KEY || '').trim(),
+    vapidPrivateKey: process.env.NODE_ENV === 'test' ? '' : (process.env.VAPID_PRIVATE_KEY || '').trim(),
+    vapidSubject: process.env.NODE_ENV === 'test' ? '' : (process.env.VAPID_SUBJECT || '').trim(),
+    maxDevicesPerUser: positiveInt('PUSH_MAX_DEVICES_PER_USER', 10),
+  },
+
   // ALLOW_DEMO_SEED_IN_PRODUCTION=true lets the demo seeder run under
   // NODE_ENV=production. Off (the default) it refuses there: it creates an
   // owner account with a public password, and its `down` empties whole tables.

@@ -182,6 +182,41 @@ response in one query (`storeOriginsOf`), so the number of queries does not
 grow with the number of stores. `/admin/workspaces` is still one unpaginated
 list, as before.
 
+### Device notifications (Web Push) — `/me/push` (`PUSH_ENABLED` + VAPID)
+The signed-in account's own browsers, in no store (`authenticate` only). On
+only while `PUSH_ENABLED` is exactly `true` and `VAPID_PUBLIC_KEY`,
+`VAPID_PRIVATE_KEY` and `VAPID_SUBJECT` make a usable pair
+(`notifications/push/pushConfig.js`). Off, every path below answers 404 like an
+unknown one, the notification settings return `channels` without `push`, and
+neither a refresh nor a sign-out touches `push_subscriptions` — as before.
+
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/me/push/config` | `{ enabled: true, publicKey }` |
+| PUT | `/me/push/subscriptions` | `{ app: dashboard\|console, subscription: { endpoint, expirationTime, keys: { p256dh, auth } }, locale: ar\|en }`. Upsert by the endpoint's SHA-256; bound to the request's session. The endpoint must be a push service (fcm.googleapis.com, updates.push.services.mozilla.com, *.push.apple.com, *.notify.windows.com, HTTPS, default port), else 422 `PUSH_ENDPOINT_NOT_ALLOWED`. `console` needs a console account (403). Another account's browser passes to this one. Over `PUSH_MAX_DEVICES_PER_USER` (10) per app, the least recently seen goes |
+| GET | `/me/push/subscriptions` | my devices, `?app=`; never the endpoint or keys; `current` = this session's |
+| PATCH | `/me/push/subscriptions/:id` | `{ enabled }`; switched on again, its failures reset |
+| DELETE | `/me/push/subscriptions/:id` | mine only (404 otherwise) |
+| POST | `/me/push/test` | `{ id? }`: that device of mine, or every device of this session. 5 a minute per account. 404 `PUSH_NO_DEVICE`, 409 `PUSH_DEVICE_DISABLED`. Answers `{ sent, results: [{ id, outcome }] }` |
+
+- **Sessions:** a refresh moves the device to the new session in its own
+  transaction; a session that ends (sign-out, sign out everywhere, the other
+  devices after a password or second-step change, a replayed refresh token, a
+  suspension) deletes its devices in the transaction that ends it (hooks on
+  `Session`, `pushSessions.js`). Before each send and once a day the chain is
+  followed like the session gate's: an ended or expired one deletes the device.
+- **Payload:** `{ v, type, title, body, url, tag, count }` only, the text from
+  `pushPayload.TEXTS` filled with the params each type lists; nothing about a
+  customer, never the bell's own title/body/data. Only `push.test` exists yet.
+- **Answers:** 404/410 delete the device, 429 is a retry (not a failure),
+  other 4xx and 5xx count; 5 in a row switch it off.
+- **Daily** (`push.cleanup`, notifications/jobs.js): devices of ended sessions
+  and devices not seen for 60 days are removed. Nothing while off.
+- **Migration 724** `push_subscriptions`. **Environment:** `PUSH_ENABLED`,
+  `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY` (secret), `VAPID_SUBJECT`,
+  `PUSH_MAX_DEVICES_PER_USER`. The pair: `npx web-push generate-vapid-keys`,
+  once, in a terminal.
+
 ## Changes to existing files
 
 Kept as small as possible — nothing was restyled or refactored.

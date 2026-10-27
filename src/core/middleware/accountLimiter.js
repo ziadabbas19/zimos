@@ -65,6 +65,27 @@ function createPhoneVerificationLimiter({ max = PHONE_VERIFICATION_CODES_PER_DAY
 
 const phoneVerificationLimiter = createPhoneVerificationLimiter();
 
+/*
+ * Test notifications to one's own devices (POST /me/push/test,
+ * notifications/push): each one is a request to a push service, so a few a
+ * minute per account, on a counter of their own.
+ */
+const PUSH_TESTS_PER_MINUTE = 5;
+
+function createPushTestLimiter({ max = PUSH_TESTS_PER_MINUTE, skip = () => env.isTest } = {}) {
+  return rateLimit({
+    windowMs: 60 * 1000,
+    limit: max,
+    standardHeaders: true,
+    legacyHeaders: false,
+    skip,
+    keyGenerator: (req) => `push-test:${req.user.id}`,
+    handler: (req, res, next) => next(new RateLimitError()),
+  });
+}
+
+const pushTestLimiter = createPushTestLimiter();
+
 module.exports = {
   ACCOUNT_CHANGES_PER_HOUR,
   accountLimiter,
@@ -73,4 +94,7 @@ module.exports = {
   PHONE_VERIFICATION_CODES_PER_DAY,
   phoneVerificationLimiter,
   createPhoneVerificationLimiter,
+  PUSH_TESTS_PER_MINUTE,
+  pushTestLimiter,
+  createPushTestLimiter,
 };
