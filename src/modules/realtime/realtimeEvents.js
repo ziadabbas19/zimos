@@ -12,6 +12,7 @@ const logger = require('../../core/utils/logger');
  *   subscription.paid    billing/subscriptionChargeService.settlePaid
  *   merchant.created     a sign-up, from its audit entry (onAudit below)
  *   ticket.created       a support ticket, from its audit entry
+ *   referral.used        a store entered a referral code, from its audit entry
  */
 
 async function record(transaction, type, payload, options = {}) {
@@ -31,6 +32,7 @@ const FROM_AUDIT = {
   'user.register': (e) => ['merchant.created', { userId: e.entityId }, { aggregateType: 'user', aggregateId: e.entityId }],
   'user.register.google': (e) => ['merchant.created', { userId: e.entityId }, { aggregateType: 'user', aggregateId: e.entityId }],
   'support_ticket.create': (e) => ['ticket.created', { workspaceId: e.workspaceId, ticketId: e.entityId }, {}],
+  'subscription.referral_code_attach': (e) => ['referral.used', { workspaceId: e.workspaceId }, { aggregateType: 'workspace', aggregateId: e.workspaceId }],
 };
 
 /** Called by audit/auditService for every entry, in its transaction. Never throws. */

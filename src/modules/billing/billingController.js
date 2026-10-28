@@ -59,7 +59,10 @@ const getWorkspaceBilling = asyncHandler(async (req, res) => {
 // POST /api/v1/workspaces/:workspaceId/billing/referral-code
 // 201 when the code was attached; 200 when it already was.
 const attachReferralCode = asyncHandler(async (req, res) => {
-  const { billing, attached } = await service.attachReferralCode(req.tenant.workspaceId, req.body.code, req);
+  const { billing, attached } = await service.attachReferralCode(req.tenant.workspaceId, req.body.code, req, {
+    planId: req.body.planId || null,
+    billingCycle: req.body.billingCycle || null,
+  });
   res.status(attached ? 201 : 200).json({ billing, attached });
 });
 
@@ -89,7 +92,9 @@ const listPlans = asyncHandler(async (req, res) => {
 });
 
 const previewCode = asyncHandler(async (req, res) => {
-  res.json(await merchantPlans.previewCode(req.tenant.workspaceId, req.body.code));
+  res.json(
+    await merchantPlans.previewCode(req.tenant.workspaceId, req.body.code, { planId: req.body.planId || null, billingCycle: req.body.billingCycle || null })
+  );
 });
 
 const listInvoices = asyncHandler(async (req, res) => {

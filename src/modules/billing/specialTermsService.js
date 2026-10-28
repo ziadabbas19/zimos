@@ -4,7 +4,7 @@ const { Op } = require('sequelize');
 const db = require('../../db/models');
 const { ConflictError, NotFoundError } = require('../../core/errors/AppError');
 const { recordAudit } = require('../audit/auditService');
-const referralCodes = require('../referrals/referralCodeService');
+const referralPricing = require('../referrals/referralPricing');
 const { addMonths, addBillingPeriod } = require('./planPricing');
 
 /**
@@ -227,8 +227,13 @@ async function grantPriceOverride(subscription, { priceAmount, charges, note }, 
   });
   let repriced = null;
   if (open && open.currency === plan.currency) {
-    const code = open.referralCodeId ? await db.ReferralCode.findByPk(open.referralCodeId, { transaction }) : null;
-    const discountAmount = referralCodes.discountFor(code && code.active ? code : null, priceAmount, open.currency);
+    // The code's discount on that payment, as the charge service prices it (its schedule or its one discount).
+    const sub = await db.Subscription.findByPk(open.subscriptionId, { attributes: ['billingCycle'], transaction });
+    const { discountAmount } = await referralPricing.forPayment(
+      open,
+      { cycle: open.targetBillingCycle || (sub ? sub.billingCycle : 'monthly'), gross: priceAmount, monthlyPrice: Number(plan.monthlyPriceAmount) },
+      transaction
+    );
     repriced = { from: Number(open.grossAmount), to: priceAmount };
     await open.update(
       { grossAmount: priceAmount, discountAmount, amount: priceAmount - discountAmount, specialTermsId: term.id },

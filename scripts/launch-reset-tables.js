@@ -40,6 +40,7 @@ const TABLES = {
 
   // ---- wiped -------------------------------------------------------------
   agent_commissions: wipe('commissions of agents (accounts that go) on store invoices'),
+  agent_links: wipe('which agent earns on each store, from a code or set by hand (migration 725)'),
   ai_jobs: wipe(STORE),
   ai_usage: wipe(STORE),
   analytics_events: wipe(STORE),
@@ -116,6 +117,7 @@ const TABLES = {
   products: wipe(STORE),
   push_subscriptions: wipe("browsers subscribed to device notifications, bound to sign-in sessions that go (migration 724), the creator's included"),
   referral_codes: wipe('referral codes of agents (accounts that go; agent_id is NOT NULL, ON DELETE RESTRICT) (decided: wipe)'),
+  referral_code_redemptions: wipe('each store that entered a referral code (migration 725)'),
   refunds: wipe(STORE),
   report_deliveries: wipe(STORE),
   return_requests: wipe(STORE),

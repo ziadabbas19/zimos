@@ -10,7 +10,15 @@ module.exports = {
   METHOD_CODE,
   // The code's own format is checked by referralCodeService, which answers
   // any unusable code with the same REFERRAL_CODE_INVALID.
-  attachReferralCode: { body: Joi.object({ code: Joi.string().trim().min(1).max(64).required() }) },
+  // `planId` / `billingCycle`: the plan being chosen with the code, which its
+  // restrictions are judged against (migration 725); the store's own without them.
+  attachReferralCode: {
+    body: Joi.object({
+      code: Joi.string().trim().min(1).max(64).required(),
+      planId: Joi.string().guid().optional(),
+      billingCycle: Joi.string().valid(...BILLING_CYCLES).optional(),
+    }),
+  },
   // Monthly or annual (10 × monthly); applies from the next charge.
   setBillingCycle: { body: Joi.object({ billingCycle: Joi.string().valid(...BILLING_CYCLES).required() }) },
   // The Pay button. Takes no amount: the server prices the charge. `method`
@@ -44,7 +52,13 @@ module.exports = {
     params: Joi.object({ workspaceId: Joi.string().required(), chargeId: Joi.string().guid().required() }),
   },
   // What a referral code would take off each plan, before it is attached.
-  previewCode: { body: Joi.object({ code: Joi.string().trim().min(1).max(64).required() }) },
+  previewCode: {
+    body: Joi.object({
+      code: Joi.string().trim().min(1).max(64).required(),
+      planId: Joi.string().guid().optional(),
+      billingCycle: Joi.string().valid(...BILLING_CYCLES).optional(),
+    }),
+  },
   listInvoices: {
     query: Joi.object({
       page: Joi.number().integer().min(1).max(10000).default(1),
@@ -69,14 +83,18 @@ module.exports = {
       planId: Joi.string().guid().required(),
       billingCycle: Joi.string().valid(...BILLING_CYCLES).optional(),
       timing: Joi.string().valid(...SWITCH_TIMINGS).optional(),
+      referralCode: Joi.string().trim().min(1).max(64).optional(),
     }),
   },
+  // `referralCode` (REFERRAL_CODES_V2_ENABLED): a code entered with the switch,
+  // judged against the plan and cycle switched to; it prices the charge to come.
   startPlanSwitch: {
     body: Joi.object({
       planId: Joi.string().guid().required(),
       billingCycle: Joi.string().valid(...BILLING_CYCLES).optional(),
       timing: Joi.string().valid(...SWITCH_TIMINGS).optional(),
       expectedAmount: Joi.number().integer().min(0).max(1e12).optional(),
+      referralCode: Joi.string().trim().min(1).max(64).optional(),
     }),
   },
   // A pay-per-order store moving to a plan on offer (merchantPlansService.requestPlanMove).

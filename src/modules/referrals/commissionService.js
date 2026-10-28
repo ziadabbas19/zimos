@@ -5,6 +5,9 @@ const db = require('../../db/models');
 const { ConflictError, NotFoundError } = require('../../core/errors/AppError');
 const { recordAudit } = require('../audit/auditService');
 const { commissionRateFor, suggestedCommission } = require('./commissionPolicy');
+const terms = require('./referralTerms');
+const agentLinks = require('./agentLinkService');
+const { v2Enabled } = require('./referralPricing');
 
 /**
  * The agent commission ledger (agent_commissions, migration 106).
@@ -35,35 +38,95 @@ const LIST_LIMIT_DEFAULT = 50;
 const LIST_LIMIT_MAX = 200;
 
 /**
- * Writes the ledger row for a paid invoice that carries a code. The charge
- * service has already re-checked the code at payment time, so a code still on
- * a paid invoice is one that was active when it was paid. The commission is
- * on what was actually received (`amountPaid`), which a payment recorded by
- * hand can set below or above the amount due. Idempotent on the invoice
- * (unique billing_invoice_id): a second call returns the row the first wrote.
+ * What a paid invoice earns, and for whom: the store's agent link in force
+ * when it was paid (agentLinkService.linkAt). Null when nothing is earned.
+ *
+ *   - a link of the old kind (backfilled from before migration 725, or made
+ *     by a code of the first kind): earns as a code did then, on a payment
+ *     that carries its code (the charge service has re-checked the code at
+ *     payment: a code still on a paid invoice was active), at the code's
+ *     rate now, on what was received; once the console has given that code a
+ *     schedule (flag on), at the schedule's rate for this link's payment;
+ *   - a link from a code of the second kind: while the code is active, on a
+ *     charge written once the store had entered it (the commission starts
+ *     with the payment the code was applied to), at its schedule;
+ *   - a link set by hand: on every payment from its start, at its schedule.
+ *
+ * A schedule's rate is the one for the link's next payment number (1 + its
+ * live rows); past its last finite step nothing is earned and no row is
+ * written. The basis is what was received ('paid', which a payment recorded
+ * by hand can set below or above the amount due) or the charge's price
+ * before the code's discount ('list').
+ *
+ * A store with no link whose invoice carries a code with an agent (nothing
+ * should be left like that after migration 725's backfill) earns as before.
  */
-async function recordForPaidInvoice(invoice, { isFirstPayment }, transaction) {
-  if (!invoice.referralCodeId || invoice.status !== 'paid') return null;
+async function earningFor(invoice, billingCycle, transaction) {
+  const received = Number(invoice.amountPaid == null ? invoice.amount : invoice.amountPaid);
+  const link = await agentLinks.linkAt(invoice.workspaceId, invoice.paidAt, transaction);
+  if (!link) {
+    if (!invoice.referralCodeId) return null;
+    const code = await db.ReferralCode.findByPk(invoice.referralCodeId, { transaction });
+    if (!code || !code.agentId) return null;
+    const rate = commissionRateFor(code);
+    return { agentId: code.agentId, codeId: code.id, link: null, rate, basis: 'paid', base: received, paymentNo: null };
+  }
+  const code = link.codeId ? await db.ReferralCode.findByPk(link.codeId, { transaction }) : null;
+  const paymentNo = (await db.AgentCommission.count({ where: { agentLinkId: link.id, voidedAt: null }, transaction })) + 1;
+  const earning = { agentId: link.agentId, codeId: link.codeId, link, paymentNo, basis: link.commissionBasis || 'paid' };
+  if (link.legacy) {
+    if (invoice.referralCodeId !== link.codeId || !code) return null;
+    // Its code given a schedule since (flag on): the code's commission steps now, at this link's payment number.
+    if (v2Enabled() && code.terms) {
+      const rate = terms.commissionRateAt(terms.forCycle(code.terms, billingCycle).commission, paymentNo);
+      if (rate == null) return null;
+      const basis = code.commissionBasis || 'paid';
+      return { ...earning, rate, basis, base: terms.commissionOn({ basis, paid: received, list: invoice.grossAmount, rateBp: rate }).base };
+    }
+    return { ...earning, rate: commissionRateFor(code), basis: 'paid', base: received };
+  }
+  if (link.source === 'code') {
+    if (!code || !code.active) return null;
+    if (new Date(invoice.createdAt) < new Date(link.startsAt)) return null;
+  }
+  const rate = terms.commissionRateAt((link.terms && link.terms[billingCycle]) || [], paymentNo);
+  if (rate == null) return null;
+  const { base } = terms.commissionOn({ basis: earning.basis, paid: received, list: invoice.grossAmount, rateBp: rate });
+  return { ...earning, rate, base };
+}
+
+/**
+ * Writes the ledger row for a paid invoice that earns a commission
+ * (earningFor). `amountPaid` keeps what was received whatever the basis.
+ * Idempotent on the invoice (unique billing_invoice_id): a second call
+ * returns the row the first wrote.
+ */
+async function recordForPaidInvoice(invoice, { isFirstPayment, billingCycle = 'monthly' }, transaction) {
+  if (invoice.status !== 'paid') return null;
   const existing = await db.AgentCommission.findOne({
     where: { billingInvoiceId: invoice.id, voidedAt: null },
     transaction,
   });
   if (existing) return existing;
 
-  const code = await db.ReferralCode.findByPk(invoice.referralCodeId, { transaction });
-  const rate = commissionRateFor(code);
+  const earning = await earningFor(invoice, billingCycle, transaction);
+  if (!earning) return null;
   const received = Number(invoice.amountPaid == null ? invoice.amount : invoice.amountPaid);
   return db.AgentCommission.create(
     {
-      agentId: code.agentId,
-      codeId: code.id,
+      agentId: earning.agentId,
+      codeId: earning.codeId,
+      agentLinkId: earning.link ? earning.link.id : null,
+      paymentNo: earning.paymentNo,
+      commissionBasis: earning.basis,
+      baseAmount: earning.base,
       workspaceId: invoice.workspaceId,
       billingInvoiceId: invoice.id,
       amountPaid: received,
       currency: invoice.currency,
       paidAt: invoice.paidAt,
-      commissionRateBp: rate,
-      suggestedCommission: suggestedCommission(received, rate),
+      commissionRateBp: earning.rate,
+      suggestedCommission: suggestedCommission(Math.max(0, earning.base), earning.rate),
       isFirstPayment,
       payoutStatus: 'pending',
     },
@@ -80,7 +143,13 @@ function serializeCommission(row, { forAgent = false } = {}) {
     id: row.id,
     agentId: row.agentId,
     agentName: !forAgent && row.agent ? row.agent.fullName : undefined,
-    code: row.code ? { id: row.code.id, code: row.code.code, label: row.code.label } : { id: row.codeId },
+    // { id: null } for a store linked by hand (migration 725): no code.
+    code: row.code ? { id: row.code.id, code: row.code.code, label: row.code.label } : { id: row.codeId || null },
+    agentLinkId: row.agentLinkId || null,
+    // Which payment of the link it was, and what the rate was applied to.
+    paymentNo: row.paymentNo == null ? null : row.paymentNo,
+    commissionBasis: row.commissionBasis || 'paid',
+    baseAmount: row.baseAmount == null ? Number(row.amountPaid) : Number(row.baseAmount),
     workspace: row.workspace ? { id: row.workspace.id, name: row.workspace.name } : { id: row.workspaceId },
     billingInvoiceId: row.billingInvoiceId,
     amountPaid: Number(row.amountPaid),
@@ -260,6 +329,7 @@ async function voidForInvoice(invoiceId, { reason }, req, transaction) {
 }
 
 module.exports = {
+  earningFor,
   PAYOUT_STATUSES,
   LIST_STATUSES,
   recordForPaidInvoice,

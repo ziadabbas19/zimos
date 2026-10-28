@@ -787,6 +787,20 @@ const env = {
       chargeExpiryHours: intInRange(process.env.PLAN_SWITCH_CHARGE_EXPIRY_HOURS, 48, 1, 24 * 30),
     },
 
+    // Referral codes of the second kind (modules/referrals, migration 725).
+    // REFERRAL_CODES_V2_ENABLED, off unless set to exactly "true": the
+    // console can give a code limits, an audience, dates, restrictions,
+    // schedules and no agent, and link stores to agents by hand; a merchant
+    // can enter a code while changing plan; and every code is entered once
+    // per account, email and store. Off, codes are created and entered as
+    // before (a code of the second kind can't be entered) and a code of the
+    // first kind prices as before. What was already entered keeps its terms
+    // either way, as a plan switch already made still finishes. Under
+    // NODE_ENV=test it starts off; a test that needs it sets it here.
+    referralCodesV2: {
+      enabled: process.env.NODE_ENV !== 'test' && process.env.REFERRAL_CODES_V2_ENABLED === 'true',
+    },
+
     // Zimos's own Fawaterak account (billing/fawaterak). All secrets except
     // `env`, `baseUrl` and `tokenUrl`, none with a fallback. Under
     // NODE_ENV=test nothing here is read from the environment: a test sets

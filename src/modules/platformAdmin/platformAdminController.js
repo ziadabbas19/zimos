@@ -15,6 +15,9 @@ const entitlements = require('../billing/entitlementsService');
 const supportService = require('../support/supportService');
 const agents = require('../referrals/agentService');
 const referralCodes = require('../referrals/referralCodeService');
+const referralCodeAdmin = require('../referrals/referralCodeAdmin');
+const agentLinks = require('../referrals/agentLinkService');
+const redemptions = require('../referrals/redemptionService');
 const commissions = require('../referrals/commissionService');
 const charges = require('../billing/subscriptionChargeService');
 const planSwitches = require('../billing/planSwitchService');
@@ -377,6 +380,48 @@ const updateReferralCode = asyncHandler(async (req, res) => {
   res.json({ code: await referralCodes.updateCode(req.params.codeId, req.body, req) });
 });
 
+// Agents -> Referral codes (migration 725).
+const listReferralCodes = asyncHandler(async (req, res) => {
+  res.json(await referralCodeAdmin.listCodes(req.query));
+});
+
+const createStandaloneReferralCode = asyncHandler(async (req, res) => {
+  const { agentId = null, ...body } = req.body;
+  res.status(201).json({ code: await referralCodes.createCode(agentId, body, req) });
+});
+
+const getReferralCode = asyncHandler(async (req, res) => {
+  res.json(await referralCodeAdmin.getCode(req.params.codeId));
+});
+
+const listCodeRedemptions = asyncHandler(async (req, res) => {
+  res.json(await redemptions.forCode(req.params.codeId, req.query));
+});
+
+const simulateReferralCode = asyncHandler(async (req, res) => {
+  res.json(await referralCodeAdmin.simulate(req.body));
+});
+
+const getWorkspaceReferrals = asyncHandler(async (req, res) => {
+  res.json(await referralCodeAdmin.forWorkspace(req.params.workspaceId));
+});
+
+const getUserReferrals = asyncHandler(async (req, res) => {
+  res.json(await referralCodeAdmin.forUser(req.params.userId));
+});
+
+const createAgentLink = asyncHandler(async (req, res) => {
+  res.status(201).json({ link: await agentLinks.createManual(req.params.workspaceId, req.body, req) });
+});
+
+const updateAgentLink = asyncHandler(async (req, res) => {
+  res.json({ link: await agentLinks.update(req.params.linkId, req.body, req) });
+});
+
+const endAgentLink = asyncHandler(async (req, res) => {
+  res.json({ link: await agentLinks.end(req.params.linkId, req.body || {}, req) });
+});
+
 const listCommissions = asyncHandler(async (req, res) => {
   res.json(await commissions.listCommissions(req.query));
 });
@@ -482,6 +527,16 @@ module.exports = {
   getAgent,
   createReferralCode,
   updateReferralCode,
+  listReferralCodes,
+  createStandaloneReferralCode,
+  getReferralCode,
+  listCodeRedemptions,
+  simulateReferralCode,
+  getWorkspaceReferrals,
+  getUserReferrals,
+  createAgentLink,
+  updateAgentLink,
+  endAgentLink,
   listCommissions,
   markCommissionPaid,
   getMyReferrals,

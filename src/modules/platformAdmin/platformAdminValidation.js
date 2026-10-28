@@ -6,7 +6,13 @@ const { TEMPLATE_KINDS } = require('../templates/templateValidation');
 const { TYPES: BLOCKLIST_TYPES } = require('../risk/platformBlocklistService');
 const { STATUSES: TICKET_STATUSES, PRIORITIES: TICKET_PRIORITIES } = require('../support/supportService');
 const { messageBody: ticketMessageBody } = require('../support/supportValidation');
-const { DISCOUNT_TYPES: REFERRAL_DISCOUNT_TYPES } = require('../referrals/referralCodeService');
+const {
+  DISCOUNT_TYPES: REFERRAL_DISCOUNT_TYPES,
+  AUDIENCES: REFERRAL_AUDIENCES,
+  GRANT_TYPES: REFERRAL_GRANT_TYPES,
+  CODE_STATES: REFERRAL_CODE_STATES,
+} = require('../referrals/referralCodeService');
+const { CYCLES: REFERRAL_CYCLES, DISCOUNT_STEP_TYPES, COMMISSION_BASES, MAX_STEPS, MAX_COUNT } = require('../referrals/referralTerms');
 const { LIST_STATUSES: COMMISSION_LIST_STATUSES } = require('../referrals/commissionService');
 const { BILLING_CYCLES } = require('../billing/planPricing');
 const { KINDS: SPECIAL_TERMS_KINDS } = require('../billing/specialTermsService');
@@ -206,9 +212,44 @@ const referralCodeFields = {
   // Overrides the platform default commission rate; null = the default.
   commissionRateBp: Joi.number().integer().min(0).max(10000).allow(null),
 };
+// The second kind (migration 725, REFERRAL_CODES_V2_ENABLED; refused with
+// 409 REFERRAL_V2_DISABLED while it is off). The shape of a schedule is
+// checked here, its rules (only the last step open-ended, ranges per type)
+// by referrals/referralTerms.
+const stepCount = Joi.number().integer().min(1).max(MAX_COUNT).allow(null).required();
+const discountStep = Joi.object({
+  count: stepCount,
+  type: Joi.string().valid(...DISCOUNT_STEP_TYPES).required(),
+  value: Joi.number().integer().min(1).max(1e12).required(),
+  currency: Joi.string().trim().uppercase().length(3),
+});
+const commissionStep = Joi.object({ count: stepCount, rateBp: Joi.number().integer().min(0).max(10000).required() });
+const commissionSteps = Joi.array().items(commissionStep).max(MAX_STEPS);
+const cycleTerms = Joi.object({
+  discount: Joi.array().items(discountStep).max(MAX_STEPS).default([]),
+  commission: commissionSteps.default([]),
+});
+const codeTerms = Joi.object({ monthly: cycleTerms.required(), yearly: cycleTerms.required() });
+const linkTerms = Joi.object({ monthly: commissionSteps.required(), yearly: commissionSteps.required() });
+const referralCodeV2Fields = {
+  audience: Joi.string().valid(...REFERRAL_AUDIENCES),
+  startsAt: Joi.date().iso().allow(null),
+  endsAt: Joi.date().iso().allow(null),
+  maxUses: Joi.number().integer().min(1).max(1000000).allow(null),
+  allowedPlanIds: Joi.array().items(uuid).max(50).allow(null),
+  allowedCycles: Joi.array().items(Joi.string().valid(...REFERRAL_CYCLES)).max(2).allow(null),
+  minPriceAmount: Joi.number().integer().min(0).max(1e12).allow(null),
+  minPriceCurrency: Joi.string().trim().uppercase().length(3).allow(null),
+  terms: codeTerms.allow(null),
+  commissionBasis: Joi.string().valid(...COMMISSION_BASES),
+  linksAgent: Joi.boolean(),
+  grantType: Joi.string().valid(...REFERRAL_GRANT_TYPES).allow(null),
+  grantValue: Joi.number().integer().min(1).allow(null),
+};
 const referralCodeBody = Joi.object({
   code: Joi.string().trim().min(3).max(32).required(),
   ...referralCodeFields,
+  ...referralCodeV2Fields,
   discountType: referralCodeFields.discountType.default('none'),
 });
 
@@ -439,6 +480,69 @@ module.exports = {
   },
   agentParams: { params: Joi.object({ agentId: uuid.required() }) },
   createReferralCode: { params: Joi.object({ agentId: uuid.required() }), body: referralCodeBody },
+  // A code with or without an agent (Agents -> Referral codes).
+  createStandaloneReferralCode: { body: referralCodeBody.keys({ agentId: uuid.allow(null).optional() }) },
+  listReferralCodes: {
+    query: Joi.object({
+      q: Joi.string().trim().max(100).allow('').optional(),
+      // 'none': the codes with no agent.
+      agentId: Joi.alternatives().try(uuid, Joi.string().valid('none')).optional(),
+      state: Joi.string().valid(...REFERRAL_CODE_STATES).optional(),
+      audience: Joi.string().valid(...REFERRAL_AUDIENCES).optional(),
+      limit: Joi.number().integer().min(1).max(200).default(50),
+      offset: Joi.number().integer().min(0).default(0),
+    }),
+  },
+  referralCodeParams: { params: Joi.object({ codeId: uuid.required() }) },
+  listCodeRedemptions: {
+    params: Joi.object({ codeId: uuid.required() }),
+    query: Joi.object({
+      q: Joi.string().trim().max(100).allow('').optional(),
+      status: Joi.string().valid('current', 'ended').optional(),
+      merchantKind: Joi.string().valid('new', 'existing').optional(),
+      source: Joi.string().valid('signup', 'plan_page', 'plan_switch', 'legacy').optional(),
+      limit: Joi.number().integer().min(1).max(200).default(50),
+      offset: Joi.number().integer().min(0).default(0),
+    }),
+  },
+  // The simulator: unsaved form values, nothing written.
+  simulateReferralCode: {
+    body: Joi.object({
+      planId: uuid.required(),
+      billingCycle: Joi.string().valid(...REFERRAL_CYCLES).required(),
+      terms: codeTerms.required(),
+      commissionBasis: Joi.string().valid(...COMMISSION_BASES).default('paid'),
+      hasAgent: Joi.boolean().default(true),
+      payments: Joi.number().integer().min(1).max(60).default(12),
+    }),
+  },
+  workspaceReferrals: { params: Joi.object({ workspaceId: uuid.required() }) },
+  userReferrals: { params: Joi.object({ userId: uuid.required() }) },
+  // Linking a store to an agent by hand; an open link is ended ('replaced').
+  createAgentLink: {
+    params: Joi.object({ workspaceId: uuid.required() }),
+    body: Joi.object({
+      agentId: uuid.required(),
+      startsAt: Joi.date().iso().optional(),
+      endsAt: Joi.date().iso().allow(null).optional(),
+      terms: linkTerms.required(),
+      commissionBasis: Joi.string().valid(...COMMISSION_BASES).default('paid'),
+      note: Joi.string().trim().max(1000).allow('', null).optional(),
+    }),
+  },
+  updateAgentLink: {
+    params: Joi.object({ linkId: uuid.required() }),
+    body: Joi.object({
+      endsAt: Joi.date().iso().allow(null),
+      terms: linkTerms,
+      commissionBasis: Joi.string().valid(...COMMISSION_BASES),
+      note: Joi.string().trim().max(1000).allow('', null),
+    }).min(1),
+  },
+  endAgentLink: {
+    params: Joi.object({ linkId: uuid.required() }),
+    body: Joi.object({ note: Joi.string().trim().max(1000).allow('', null).optional() }),
+  },
   // The code string is fixed once created (merchants and print use it).
   updateReferralCode: {
     params: Joi.object({ codeId: uuid.required() }),
@@ -449,6 +553,9 @@ module.exports = {
       discountCurrency: referralCodeFields.discountCurrency,
       commissionRateBp: referralCodeFields.commissionRateBp,
       active: Joi.boolean(),
+      ...referralCodeV2Fields,
+      // Giving a code an agent, another one, or none (null).
+      agentId: uuid.allow(null),
     }).min(1),
   },
   listCommissions: {

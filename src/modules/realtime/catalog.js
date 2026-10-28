@@ -34,6 +34,8 @@ const CONSOLE = Object.freeze({
   'merchant.created': { name: 'merchant.created', permission: P.WORKSPACES_VIEW, entity: (p) => ['user', p.userId] },
   'subscription.paid': { name: 'subscription.paid', permission: P.SUBSCRIPTIONS_VIEW, entity: (p) => ['billing_invoice', p.billingInvoiceId] },
   'ticket.created': { name: 'ticket.created', permission: P.SUPPORT_VIEW, entity: (p) => ['support_ticket', p.ticketId] },
+  // A store entered a referral code (migration 725); the bell's referral_signup has the same permission.
+  'referral.used': { name: 'referral.used', permission: P.SUBSCRIPTIONS_VIEW, entity: (p) => ['workspace', p.workspaceId] },
 });
 
 const EVENTS = Object.freeze([...Object.keys(STORE), ...Object.keys(CONSOLE)]);

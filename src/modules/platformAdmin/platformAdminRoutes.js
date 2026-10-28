@@ -183,6 +183,21 @@ router.post('/agents', can(P.AGENTS_MANAGE), validate(schemas.createAgent), cont
 router.get('/agents/:agentId', can(P.AGENTS_VIEW), validate(schemas.agentParams), controller.getAgent);
 router.post('/agents/:agentId/codes', can(P.AGENTS_MANAGE), validate(schemas.createReferralCode), controller.createReferralCode);
 router.patch('/referral-codes/:codeId', can(P.AGENTS_MANAGE), validate(schemas.updateReferralCode), controller.updateReferralCode);
+// Agents -> Referral codes (migration 725): every code, with or without an
+// agent. Reading is agents.view; creating, editing and switching a code off
+// (PATCH active: false) are agents.manage, as before. The simulator writes
+// nothing. A store's and an account's codes, and linking a store to an agent
+// by hand (agents.manage; REFERRAL_CODES_V2_ENABLED, except ending a link).
+router.get('/referral-codes', can(P.AGENTS_VIEW), validate(schemas.listReferralCodes), controller.listReferralCodes);
+router.post('/referral-codes', can(P.AGENTS_MANAGE), validate(schemas.createStandaloneReferralCode), controller.createStandaloneReferralCode);
+router.post('/referral-codes/simulate', can(P.AGENTS_VIEW), validate(schemas.simulateReferralCode), controller.simulateReferralCode);
+router.get('/referral-codes/:codeId', can(P.AGENTS_VIEW), validate(schemas.referralCodeParams), controller.getReferralCode);
+router.get('/referral-codes/:codeId/redemptions', can(P.AGENTS_VIEW), validate(schemas.listCodeRedemptions), controller.listCodeRedemptions);
+router.get('/workspaces/:workspaceId/referrals', can(P.AGENTS_VIEW), validate(schemas.workspaceReferrals), controller.getWorkspaceReferrals);
+router.get('/users/:userId/referrals', can(P.AGENTS_VIEW), validate(schemas.userReferrals), controller.getUserReferrals);
+router.post('/workspaces/:workspaceId/agent-links', can(P.AGENTS_MANAGE), validate(schemas.createAgentLink), controller.createAgentLink);
+router.patch('/agent-links/:linkId', can(P.AGENTS_MANAGE), validate(schemas.updateAgentLink), controller.updateAgentLink);
+router.post('/agent-links/:linkId/end', can(P.AGENTS_MANAGE), validate(schemas.endAgentLink), controller.endAgentLink);
 router.get('/commissions', can(P.AGENTS_VIEW), validate(schemas.listCommissions), controller.listCommissions);
 router.post('/commissions/:commissionId/mark-paid', can(P.COMMISSIONS_MARK_PAID), validate(schemas.markCommissionPaid), controller.markCommissionPaid);
 router.get('/my/referrals', can(P.REFERRALS_VIEW_OWN), controller.getMyReferrals);
