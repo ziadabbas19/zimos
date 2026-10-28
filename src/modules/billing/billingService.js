@@ -5,6 +5,7 @@ const logger = require('../../core/utils/logger');
 const { ConflictError, NotFoundError } = require('../../core/errors/AppError');
 const { recordAudit } = require('../audit/auditService');
 const referralCodes = require('../referrals/referralCodeService');
+const redemptions = require('../referrals/redemptionService');
 const charges = require('./subscriptionChargeService');
 const { yearlyPriceFor, planPrice } = require('./planPricing');
 const env = require('../../config/env');
@@ -210,42 +211,21 @@ async function getSubscription(workspaceId) {
 // ------------------------------------------------------------ referral code
 
 /**
- * Attaches the referral code a merchant typed to their subscription. It stays
- * attached for the life of the subscription and prices every charge (see
- * subscriptionChargeService). One code per subscription: the same code again
- * is a no-op (`attached: false`), a different one is refused, so a merchant
- * cannot move between agents or shop for a bigger discount.
+ * Attaches the referral code a merchant typed to their subscription
+ * (referrals/redemptionService, which holds every rule). It prices the
+ * charges from the next one on (see subscriptionChargeService). The same
+ * code again is a no-op (`attached: false`); a different one is refused
+ * while the current one still takes something off a payment to come, so a
+ * merchant cannot move between agents or shop for a bigger discount.
+ * `source`: signup | plan_page | plan_switch; `planId` / `billingCycle`: the
+ * plan being chosen with it.
  *
  * Audited in the workspace. The agent is not named there, because the
  * merchant can read their own audit log.
  */
-async function attachReferralCodeInTransaction(workspaceId, input, req, transaction) {
-  const subscription = await db.Subscription.findOne({
-    where: { workspaceId },
-    transaction,
-    lock: transaction.LOCK.UPDATE,
-  });
-  if (!subscription) throw new NotFoundError('Subscription');
-
-  const code = await referralCodes.findUsableCode(input, transaction);
-  if (subscription.referralCodeId === code.id) return { subscription, code, attached: false };
-  if (subscription.referralCodeId) {
-    throw new ConflictError('This workspace already has a referral code.', 'REFERRAL_CODE_ALREADY_SET');
-  }
-
-  await subscription.update({ referralCodeId: code.id, referralCodeAttachedAt: new Date() }, { transaction });
-  await recordAudit({
-    workspaceId,
-    actorUserId: req.user.id,
-    action: 'subscription.referral_code_attach',
-    entityType: 'Subscription',
-    entityId: subscription.id,
-    before: { referralCode: null },
-    after: { referralCode: code.code },
-    req,
-    transaction,
-  });
-  return { subscription, code, attached: true };
+async function attachReferralCodeInTransaction(workspaceId, input, req, transaction, { source = 'plan_page', planId = null, billingCycle = null } = {}) {
+  const { subscription, code, attached } = await redemptions.redeemInTransaction(workspaceId, input, { source, req, planId, billingCycle }, transaction);
+  return { subscription, code, attached };
 }
 
 /**
@@ -309,9 +289,9 @@ async function setBillingCycle(workspaceId, billingCycle, req, { platform = fals
   });
 }
 
-async function attachReferralCode(workspaceId, input, req) {
+async function attachReferralCode(workspaceId, input, req, { planId = null, billingCycle = null } = {}) {
   const { attached } = await db.sequelize.transaction((transaction) =>
-    attachReferralCodeInTransaction(workspaceId, input, req, transaction)
+    attachReferralCodeInTransaction(workspaceId, input, req, transaction, { source: 'plan_page', planId, billingCycle })
   );
   return { billing: await getWorkspaceBilling(workspaceId), attached };
 }
@@ -336,7 +316,7 @@ async function getWorkspaceBilling(workspaceId) {
 
   let nextCharge = null;
   if (plan && planPrice(plan, subscription.billingCycle) > 0) {
-    const { referralCodeId, specialTermsId, ...pricing } = await charges.priceCharge(subscription, plan);
+    const { referralCodeId, referralRedemptionId, referralPaymentNo, specialTermsId, ...pricing } = await charges.priceCharge(subscription, plan);
     nextCharge = pricing;
   }
 

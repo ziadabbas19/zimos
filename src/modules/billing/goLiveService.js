@@ -163,7 +163,10 @@ async function startTrial(workspaceId, req, { planId = null } = {}) {
     if (!trial.eligible) throw refused(trial.reason);
 
     const now = new Date();
-    const end = new Date(now.getTime() + trial.days * DAY_MS);
+    // A code entered on the draft that adds trial days (referrals/redemptionService) gives them now.
+    // eslint-disable-next-line global-require
+    const extraDays = await require('../referrals/redemptionService').takePendingTrialDays(subscription, transaction);
+    const end = new Date(now.getTime() + (trial.days + extraDays) * DAY_MS);
     const recorded = await recordTrial(
       { userId: workspace.ownerUserId, planId: plan.id, workspaceId, source: 'start_trial', startedAt: now },
       transaction
@@ -191,7 +194,7 @@ async function startTrial(workspaceId, req, { planId = null } = {}) {
       entityId: subscription.id,
       before,
       after: { ...subscriptionState(subscription), planId: plan.id },
-      metadata: { planId: plan.id, days: trial.days },
+      metadata: { planId: plan.id, days: trial.days, ...(extraDays ? { referralDays: extraDays } : {}) },
       req,
       transaction,
     });

@@ -6,6 +6,9 @@ const { AppError, ConflictError, NotFoundError } = require('../../core/errors/Ap
 const { recordAudit } = require('../audit/auditService');
 const access = require('../workspaces/workspaceAccessService');
 const referralCodes = require('../referrals/referralCodeService');
+const referralPricing = require('../referrals/referralPricing');
+const redemptions = require('../referrals/redemptionService');
+const referralTerms = require('../referrals/referralTerms');
 const goLive = require('./goLiveService');
 const charges = require('./subscriptionChargeService');
 const publicPlans = require('./publicPlansService');
@@ -27,20 +30,37 @@ const { planPrice, BILLING_CYCLES } = require('./planPricing');
 
 const { PLAN_ORDER } = publicPlans;
 
-function priced(plan, cycle, code) {
+/** One period's price and the code's discount on the next payment; `discountOf(plan, cycle, gross)` (referralPricing). */
+function priced(plan, cycle, discountOf) {
   const gross = planPrice(plan, cycle);
-  const discount = referralCodes.discountFor(code, gross, plan.currency);
+  const discount = discountOf(plan, cycle, gross);
   return { gross, discount, net: gross - discount };
 }
 
-function serializePlan(plan, { code, currentPlanId }) {
+function serializePlan(plan, { discountOf, currentPlanId }) {
   return {
     ...publicPlans.serializePublicPlan(plan),
     isCurrent: plan.id === currentPlanId,
     // A private plan is listed only as the store's current one; it can't be chosen.
     isPublic: Boolean(plan.isPublic && plan.isActive),
-    prices: { monthly: priced(plan, 'monthly', code), yearly: priced(plan, 'yearly', code) },
+    prices: { monthly: priced(plan, 'monthly', discountOf), yearly: priced(plan, 'yearly', discountOf) },
   };
+}
+
+/**
+ * The first payments of `plan` under a code a store is about to enter,
+ * before and after, per cycle (the merchant's side of the console's
+ * simulator: no commission). Null for a code of the first kind: its one
+ * discount is the same on every payment.
+ */
+function scheduleFor(code, plan) {
+  if (!code.terms) return null;
+  const out = {};
+  for (const cycle of BILLING_CYCLES) {
+    const { rows } = referralTerms.simulate({ terms: code.terms, cycle, gross: planPrice(plan, cycle), monthlyPrice: Number(plan.monthlyPriceAmount), currency: plan.currency, hasAgent: false });
+    out[cycle] = rows.map(({ paymentNo, listPrice, discount, merchantPays }) => ({ paymentNo, listPrice, discount, merchantPays }));
+  }
+  return out;
 }
 
 async function loadSubscription(workspaceId, transaction, { lock = false } = {}) {
@@ -147,7 +167,10 @@ async function listPlans(workspaceId) {
     db.Workspace.findByPk(workspaceId, { attributes: ['id', 'ownerUserId'] }),
     subscription.referralCodeId ? db.ReferralCode.findByPk(subscription.referralCodeId) : null,
   ]);
-  const usable = code && code.active ? code : null;
+  const [discountOf, entered] = await Promise.all([
+    referralPricing.nextPaymentPricer(subscription),
+    code ? referralPricing.currentRedemption(subscription.id) : null,
+  ]);
   const plans = await plansFor(subscription);
   const draft = access.isDraftSubscription(subscription);
   const trialUsed = await goLive.accountTrialUsed(workspace.ownerUserId);
@@ -164,8 +187,11 @@ async function listPlans(workspaceId) {
     // on) and once per account; each plan says how long its own is.
     trial: { available: draft && !trialUsed, used: trialUsed },
     planChange: planChangeMode(subscription),
-    referralCode: code ? referralCodes.serializeCodeForMerchant(code) : null,
-    plans: plans.map((plan) => serializePlan(plan, { code: usable, currentPlanId: subscription.planId })),
+    referralCode: code ? referralCodes.serializeCodeForMerchant(code, { entered: entered && entered.codeId === code.id ? entered : null }) : null,
+    plans: plans.map((plan) => serializePlan(plan, { discountOf, currentPlanId: subscription.planId })),
+    // Entering a code while changing plan (REFERRAL_CODES_V2_ENABLED): the code
+    // field is offered on a paid subscription too, not only before the first payment.
+    referralCodeEntry: { enabled: referralPricing.v2Enabled() },
     payPerOrder: await payPerOrderFor(subscription),
     // A store on pay per order moving to one of `plans` by itself (requestPlanMove).
     move: await moveFor(workspaceId, subscription, plans),
@@ -177,19 +203,25 @@ async function listPlans(workspaceId) {
 }
 
 /**
- * POST /workspaces/:id/billing/code-preview — what a code would take off each
- * listed plan, before it is attached. 422 REFERRAL_CODE_INVALID for any code
- * that can't be used. Shows the discount, never the agent.
+ * POST /workspaces/:id/billing/code-preview — what a code would take off the
+ * next payment of each listed plan, before it is attached, and (a code with
+ * a schedule) its first payments before and after. Every rule of entering
+ * it is checked, writing nothing (redemptionService.preview): 422
+ * REFERRAL_CODE_INVALID for a code that can't be used, and with the flag on
+ * the clearer refusals (expired, used, not for this plan, ...). `planId` /
+ * `billingCycle`: the plan being chosen with it. Shows the discount, never
+ * the agent.
  */
-async function previewCode(workspaceId, input) {
-  const code = await referralCodes.findUsableCode(input);
-  const subscription = await loadSubscription(workspaceId);
+async function previewCode(workspaceId, input, { planId = null, billingCycle = null } = {}) {
+  const { code, subscription } = await redemptions.preview(workspaceId, input, { planId, billingCycle });
   const plans = await plansFor(subscription);
+  const discountOf = (plan, cycle, gross) => referralPricing.firstPaymentDiscount(code, plan, cycle, gross);
   return {
     code: referralCodes.serializeCodeForMerchant(code),
     plans: plans.map((plan) => ({
       planId: plan.id,
-      prices: { monthly: priced(plan, 'monthly', code), yearly: priced(plan, 'yearly', code) },
+      prices: { monthly: priced(plan, 'monthly', discountOf), yearly: priced(plan, 'yearly', discountOf) },
+      schedule: scheduleFor(code, plan),
     })),
   };
 }
@@ -469,6 +501,7 @@ async function expirePendingMoves({ now = new Date(), limit = 200 } = {}) {
 module.exports = {
   listPlans,
   previewCode,
+  scheduleFor,
   listInvoices,
   changePlan,
   requestPlanMove,

@@ -111,11 +111,14 @@ function model(name, defaults = {}) {
 const MODELS = {
   Plan: { isActive: true, isPublic: true, perOrderFeeAmount: 0, currency: 'EGP' },
   Subscription: { pricingKind: 'paid', referralCodeId: null, graceUntil: null, trialEndsAt: null, cancelAtPeriodEnd: false },
-  BillingInvoice: { status: 'pending', discountAmount: 0, referralCodeId: null, specialTermsId: null, targetPlanId: null, targetBillingCycle: null, amountPaid: null },
+  BillingInvoice: { status: 'pending', discountAmount: 0, referralCodeId: null, referralRedemptionId: null, referralPaymentNo: null, specialTermsId: null, targetPlanId: null, targetBillingCycle: null, amountPaid: null },
   PlanSwitch: {},
   BillingPaymentAttempt: {},
   PaymentProof: {},
   ReferralCode: {},
+  // Migration 725: a store's use of a code, and its agent link.
+  ReferralCodeRedemption: { endedAt: null },
+  AgentLink: { endedAt: null },
   SubscriptionTerm: {},
   WalletLedgerEntry: {},
   WorkspaceWallet: {},

@@ -163,7 +163,11 @@ async function createWorkspace({ name, ownerUserId, referralCode = null, planId 
     // is entered first. A code that is not usable rolls the whole creation
     // back with REFERRAL_CODE_INVALID, so the merchant can correct it.
     if (referralCode) {
-      await billingService.attachReferralCodeInTransaction(workspace.id, referralCode, req, t);
+      await billingService.attachReferralCodeInTransaction(workspace.id, referralCode, req, t, {
+        source: 'signup',
+        planId: start.plan ? start.plan.id : null,
+        billingCycle: start.billingCycle,
+      });
     }
 
     return workspace;
