@@ -369,6 +369,8 @@ describe('a code of the first kind given a schedule (FREE100)', () => {
 
 describe('history, the code page and the bell', () => {
   it('every code a store and an account entered, the first marked; the code page lists and searches its stores', async () => {
+    // platform_notifications has no model, so the truncate between tests leaves its rows: count this test's only.
+    const since = new Date();
     await makeCode({ code: 'FIRSTONE', audience: 'any', terms: both([pct(1, 5000)]) });
     await makeCode({ code: 'SECONDONE', audience: 'any', terms: both([pct(1, 1000)]) });
     const store = await signup('FIRSTONE', { name: 'Findable Bakery' });
@@ -394,7 +396,10 @@ describe('history, the code page and the bell', () => {
     const current = await request(app).get(`/api/v1/admin/referral-codes/${firstId}/redemptions?status=current`).set(admin.H);
     expect(current.body.redemptions.map((r) => r.workspace.name)).toEqual(['Another Shop']);
 
-    const bell = await db.sequelize.query("SELECT title FROM platform_notifications WHERE type = 'referral_signup' ORDER BY created_at", { type: db.Sequelize.QueryTypes.SELECT });
+    const bell = await db.sequelize.query(
+      "SELECT title FROM platform_notifications WHERE type = 'referral_signup' AND created_at >= :since ORDER BY created_at",
+      { replacements: { since }, type: db.Sequelize.QueryTypes.SELECT }
+    );
     expect(bell.map((b) => b.title)).toEqual(['A store used the code FIRSTONE', 'A store used the code SECONDONE', 'A store used the code FIRSTONE']);
   });
 

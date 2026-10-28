@@ -802,6 +802,7 @@ describe('catalog', () => {
       ['merchant.created', { userId: id }, 'merchant.created', 'p:workspaces.view'],
       ['subscription.paid', { billingInvoiceId: id }, 'subscription.paid', 'p:subscriptions.view'],
       ['ticket.created', { ticketId: id }, 'ticket.created', 'p:support.view'],
+      ['referral.used', { workspaceId }, 'referral.used', 'p:subscriptions.view'],
     ];
     for (const [type, payload, name, room] of cases) {
       const routed = route({ id, type, workspaceId, payload, occurredAt: at });
