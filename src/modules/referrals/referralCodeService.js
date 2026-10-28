@@ -343,8 +343,10 @@ const EDITABLE = ['label', 'discountType', 'discountValue', 'discountCurrency', 
  * stay editable on a code with no terms, as before. With the flag on, the
  * second-kind fields too, `agentId` included (giving an agentless code an
  * agent, or another one: stores already linked keep their agent). Sending
- * `terms` turns a first-kind code into the second kind: from then on its
- * schedule prices every store using it, at each store's own payment number.
+ * `terms` turns a first-kind code into the second kind: from then on (flag
+ * on) its schedule prices every store using it, at each store's own payment
+ * number; its first-kind discount and rate stay as they were (read-only),
+ * and are what prices it again if the flag is turned off.
  */
 async function updateCode(codeId, patch, req) {
   return db.sequelize.transaction(async (transaction) => {
@@ -377,8 +379,8 @@ async function updateCode(codeId, patch, req) {
       if (patch.agentId != null) await assertAgent(patch.agentId, transaction);
       second.agentId = patch.agentId;
     }
-    // A schedule replaces the first-kind discount and rate.
-    if (second.terms) Object.assign(next, { discountType: 'none', discountValue: null, discountCurrency: null, commissionRateBp: null });
+    // A first-kind code given a schedule keeps its own discount and rate
+    // columns, untouched: with the flag off again it prices exactly as before.
 
     const before = auditState(code);
     await code.update({ ...next, ...second, updatedByUserId: req.user.id }, { transaction });

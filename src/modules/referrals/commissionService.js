@@ -7,6 +7,7 @@ const { recordAudit } = require('../audit/auditService');
 const { commissionRateFor, suggestedCommission } = require('./commissionPolicy');
 const terms = require('./referralTerms');
 const agentLinks = require('./agentLinkService');
+const { v2Enabled } = require('./referralPricing');
 
 /**
  * The agent commission ledger (agent_commissions, migration 106).
@@ -44,7 +45,8 @@ const LIST_LIMIT_MAX = 200;
  *     by a code of the first kind): earns as a code did then, on a payment
  *     that carries its code (the charge service has re-checked the code at
  *     payment: a code still on a paid invoice was active), at the code's
- *     rate now, on what was received;
+ *     rate now, on what was received; once the console has given that code a
+ *     schedule (flag on), at the schedule's rate for this link's payment;
  *   - a link from a code of the second kind: while the code is active, on a
  *     charge written once the store had entered it (the commission starts
  *     with the payment the code was applied to), at its schedule;
@@ -74,6 +76,13 @@ async function earningFor(invoice, billingCycle, transaction) {
   const earning = { agentId: link.agentId, codeId: link.codeId, link, paymentNo, basis: link.commissionBasis || 'paid' };
   if (link.legacy) {
     if (invoice.referralCodeId !== link.codeId || !code) return null;
+    // Its code given a schedule since (flag on): the code's commission steps now, at this link's payment number.
+    if (v2Enabled() && code.terms) {
+      const rate = terms.commissionRateAt(terms.forCycle(code.terms, billingCycle).commission, paymentNo);
+      if (rate == null) return null;
+      const basis = code.commissionBasis || 'paid';
+      return { ...earning, rate, basis, base: terms.commissionOn({ basis, paid: received, list: invoice.grossAmount, rateBp: rate }).base };
+    }
     return { ...earning, rate: commissionRateFor(code), basis: 'paid', base: received };
   }
   if (link.source === 'code') {
