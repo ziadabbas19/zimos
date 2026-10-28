@@ -78,7 +78,7 @@ async function needsPlan(user) {
 /**
  * An invite to someone's team waits for this address (workspaces/
  * inviteAcceptance.js): matched whatever its case, and not expired — an invite
- * from before its link expired (migration 725) has no end and still counts.
+ * from before its link expired (migration 726) has no end and still counts.
  */
 async function hasPendingInvite(email) {
   if (!email) return false;

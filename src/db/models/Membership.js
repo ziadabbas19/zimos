@@ -17,7 +17,7 @@ module.exports = (sequelize, DataTypes) => {
       },
       invitedEmail: { type: DataTypes.STRING, allowNull: true, field: 'invited_email' },
       // The invite link's token (workspaces/inviteAcceptance.js, migration
-      // 725): only its SHA-256 is stored, never sent back by the API.
+      // 726): only its SHA-256 is stored, never sent back by the API.
       inviteTokenHash: { type: DataTypes.STRING(64), allowNull: true, field: 'invite_token_hash' },
       inviteExpiresAt: { type: DataTypes.DATE, allowNull: true, field: 'invite_expires_at' },
       inviteAcceptedAt: { type: DataTypes.DATE, allowNull: true, field: 'invite_accepted_at' },

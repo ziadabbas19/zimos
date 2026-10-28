@@ -11,7 +11,7 @@ const { recordAudit } = require('../audit/auditService');
  * inviteMember (workspaceService) adds an existing, confirmed account at once;
  * for any other address it keeps a pending membership (status 'invited',
  * invited_email) and emails a link with a random token. Only the token's
- * SHA-256 is stored (memberships.invite_token_hash, migration 725), the link
+ * SHA-256 is stored (memberships.invite_token_hash, migration 726), the link
  * works for INVITE_TTL_DAYS and once, and a resend replaces the token.
  *
  * The invitee opens the link, signs in or signs up (Google included) with

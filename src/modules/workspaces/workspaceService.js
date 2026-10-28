@@ -589,7 +589,7 @@ async function resendInvite({ workspaceId, membershipId }, req) {
   }
 
   // A fresh link that works for the full period again; the previous one stops
-  // working (an invite sent before migration 725 gets its first link here).
+  // working (an invite sent before migration 726 gets its first link here).
   const link = invites.newInviteToken();
   await membership.update(link.fields);
 
