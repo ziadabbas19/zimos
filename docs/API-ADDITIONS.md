@@ -248,7 +248,7 @@ device (`push/pushDigest.js`). Off: nothing of it, and the bell is as before.
   most). A device that is gone is removed.
 - **Never in the way:** a failure never fails the notification, the order or
   the payment. A lost send is caught by `push.flush_overdue` every 5 minutes.
-- **Migration 727** `push_digests`.
+- **Migration 728** `push_digests`.
 
 ## Changes to existing files
 

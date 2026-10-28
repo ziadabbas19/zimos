@@ -2,7 +2,7 @@
 
 module.exports = (sequelize, DataTypes) => {
   // Device notifications of one kind for one teammate, gathered until they are
-  // sent as one (notifications/push/pushDigest.js, migration 727). `refs` holds
+  // sent as one (notifications/push/pushDigest.js, migration 728). `refs` holds
   // ids of the latest one only, never anything about a customer.
   const PushDigest = sequelize.define(
     'PushDigest',
