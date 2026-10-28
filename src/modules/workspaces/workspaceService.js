@@ -430,9 +430,11 @@ async function listWorkspacesForUser(userId) {
       { model: db.Role, as: 'role' },
     ],
   });
+  // The role's permissions as resolveTenant reads them ('*' = every one): the
+  // dashboard shows a page only to a role its API lets in (lib/navigation).
   return memberships.map((m) => ({
     workspace: m.workspace,
-    role: { key: m.role.key, name: m.role.name },
+    role: { key: m.role.key, name: m.role.name, permissions: m.role.permissions || [] },
   }));
 }
 
