@@ -115,6 +115,8 @@ const TABLES = {
   product_specs: wipe(STORE),
   product_variants: wipe(STORE),
   products: wipe(STORE),
+  push_digests: wipe('device notifications gathered for a few seconds before they are sent (migration 728)'),
+  push_sent_keys: wipe('what already reached each teammate\'s devices, so it is sent once (migration 728); 3 days at most'),
   push_subscriptions: wipe("browsers subscribed to device notifications, bound to sign-in sessions that go (migration 724), the creator's included"),
   referral_codes: wipe('referral codes of agents (accounts that go; agent_id is NOT NULL, ON DELETE RESTRICT) (decided: wipe)'),
   referral_code_redemptions: wipe('each store that entered a referral code (migration 725)'),

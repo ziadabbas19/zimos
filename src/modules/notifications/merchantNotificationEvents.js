@@ -5,6 +5,7 @@ const env = require('../../config/env');
 const logger = require('../../core/utils/logger');
 const { toDisplay } = require('../../core/utils/money');
 const service = require('./merchantNotificationService');
+const pushConfig = require('./push/pushConfig');
 
 /**
  * Where business events become merchant notifications. Other modules call one
@@ -187,6 +188,64 @@ function walletFallback(workspaceId, { subscriptionId, fromPlan, fee }) {
   });
 }
 
+/*
+ * The three that came with device notifications (decision 6 of
+ * REPORT-push-notifications.md): nothing at all while push is off
+ * (service.create refuses them too), so the bell is what it was before.
+ */
+
+/**
+ * An order paid online or by a transfer whose proof was approved (the
+ * order.paid event, notifications/jobs.js). Cash on delivery is left out: a
+ * courier's settlement marks hundreds of orders paid at once, and the team
+ * already saw each of them arrive.
+ */
+async function orderPaid(workspaceId, orderId) {
+  if (!pushConfig.isOn()) return null;
+  const order = await db.Order.findOne({
+    where: { id: orderId, workspaceId },
+    attributes: ['id', 'orderNumber', 'totalAmount', 'currency', 'paymentMethod', 'financialState'],
+  });
+  if (!order || order.paymentMethod === 'cod' || order.financialState !== 'paid') return null;
+  const total = `${toDisplay(Number(order.totalAmount))} ${order.currency}`;
+  return service.create(workspaceId, {
+    type: 'order.paid',
+    title: `تم دفع الطلب ${order.orderNumber}`,
+    body: total,
+    link: `/orders/${order.id}`,
+    data: { orderId: order.id, orderNumber: order.orderNumber, total },
+    dedupeKey: `order.paid:${order.id}`,
+  });
+}
+
+/** A checkout filed as a lost order (the lost_order.created event). Who it was is on the lost orders page, not here. */
+async function lostOrderCreated(workspaceId, checkoutSessionId) {
+  if (!pushConfig.isOn()) return null;
+  return service.create(workspaceId, {
+    type: 'lost_order.new',
+    title: 'طلب مفقود جديد',
+    body: 'لم يكتمل طلب أحد العملاء. تجده في صفحة الطلبات المفقودة.',
+    link: '/abandoned-carts',
+    data: { checkoutSessionId },
+    dedupeKey: `lost_order.new:${checkoutSessionId}`,
+  });
+}
+
+/**
+ * A customer wrote on WhatsApp: a device notification only (no bell row),
+ * gathered per conversation for 5 minutes. Not what they wrote, nor who they
+ * are. Called by the inbox's incoming messages (session P2).
+ */
+function whatsappMessage(workspaceId, { conversationId }) {
+  if (!pushConfig.isOn()) return Promise.resolve(null);
+  return service.create(workspaceId, {
+    type: 'whatsapp.message',
+    title: 'رسالة واتساب جديدة',
+    link: '/inbox',
+    data: { conversationId },
+  });
+}
+
 const HANDLERS = { 'order.created': orderCreated };
 
 /** Fire-and-forget, like automationEngine.emit; awaited under test for the same reason. */
@@ -199,4 +258,18 @@ function emit(workspaceId, event, entityId) {
   return env.isTest ? work : undefined;
 }
 
-module.exports = { emit, orderCreated, integrationFailed, checkoutOtpUndelivered, exportReady, walletLow, walletLimitReached, walletRefund, walletCredit, walletFallback };
+module.exports = {
+  emit,
+  orderCreated,
+  orderPaid,
+  lostOrderCreated,
+  whatsappMessage,
+  integrationFailed,
+  checkoutOtpUndelivered,
+  exportReady,
+  walletLow,
+  walletLimitReached,
+  walletRefund,
+  walletCredit,
+  walletFallback,
+};

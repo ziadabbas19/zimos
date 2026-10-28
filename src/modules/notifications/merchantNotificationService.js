@@ -8,6 +8,7 @@ const { PERMISSIONS } = require('../../core/security/permissions');
 const { recordAudit } = require('../audit/auditService');
 const notify = require('./notify');
 const pushConfig = require('./push/pushConfig');
+const pushDigest = require('./push/pushDigest');
 
 /**
  * Merchant notifications (SPEC §14.6): what the bell in the dashboard shows.
@@ -30,15 +31,27 @@ const CHANNELS = ['inApp', 'email', 'push', 'whatsapp'];
 // saved for it is kept, read and still saved, for when they are.
 const WITHOUT_PUSH = CHANNELS.filter((channel) => channel !== 'push');
 const offeredChannels = () => (pushConfig.isOn() ? CHANNELS : WITHOUT_PUSH);
-// Push (notifications/push) is on by default for what needs a quick look; off for the rest.
-const PUSH_ON = new Set(['order.new', 'order.suspicious', 'integration.failed', 'export.ready', 'shipping.batch_done', 'automation', 'plan.limit_reached']);
+// Device notifications (notifications/push) are on by default for what needs a
+// quick look (decision 5 of REPORT-push-notifications.md); off for the rest,
+// until the teammate turns them on. A choice saved before stays as it was.
+const PUSH_ON = new Set(['order.new', 'order.paid', 'whatsapp.message', 'order.suspicious', 'integration.failed']);
 
 /**
  * type → the permission needed to receive it (null = every teammate) and
  * the channels that are on until the teammate says otherwise.
+ *   pushOnly   only the push channel exists for it (no bell row, no email)
+ *   withPush   exists only while device notifications are on (pushConfig.isOn()):
+ *              off, nothing creates it and the settings do not list it, so the
+ *              bell is what it was before push
  */
 const TYPES = Object.freeze({
   'order.new': { permission: PERMISSIONS.ORDERS_VIEW, defaults: { inApp: true, email: false } },
+  // An order paid online or by a transfer whose proof was approved, not cash on delivery (merchantNotificationEvents.orderPaid).
+  'order.paid': { permission: PERMISSIONS.ORDERS_VIEW, defaults: { inApp: true, email: false }, withPush: true },
+  // A checkout that ended without an order: refused, or its online payment failed (checkoutSessions/lostOrderService).
+  'lost_order.new': { permission: PERMISSIONS.ORDERS_VIEW, defaults: { inApp: true, email: false }, withPush: true },
+  // A customer wrote on WhatsApp: the device is told, never what was written (the inbox shows it).
+  'whatsapp.message': { permission: PERMISSIONS.ORDERS_CONFIRM, defaults: { inApp: false, email: false }, withPush: true, pushOnly: true },
   'order.suspicious': { permission: PERMISSIONS.ORDERS_VIEW, defaults: { inApp: true, email: false } },
   'stock.low': { permission: PERMISSIONS.INVENTORY_VIEW, defaults: { inApp: true, email: false } },
   'integration.failed': { permission: PERMISSIONS.WORKSPACE_MANAGE, defaults: { inApp: true, email: true } },
@@ -68,13 +81,20 @@ const TYPE_NAMES = Object.keys(TYPES);
 const roleAllows = (role, permission) =>
   !permission || role.permissions.includes('*') || role.permissions.includes(permission);
 
-/** The stored choices laid over the defaults, for every type. */
+/** A type that is there now: always, or (withPush) only while device notifications are on. */
+const typeLive = (type) => Boolean(TYPES[type]) && (!TYPES[type].withPush || pushConfig.isOn());
+
+/** The stored choices laid over the defaults, for every type. A push-only type has no other channel. */
 function resolveChannels(stored) {
   const saved = stored && typeof stored === 'object' ? stored : {};
   const out = {};
   for (const type of TYPE_NAMES) {
     out[type] = {};
     for (const channel of CHANNELS) {
+      if (TYPES[type].pushOnly && channel !== 'push') {
+        out[type][channel] = false;
+        continue;
+      }
       const fallback = TYPES[type].defaults[channel] ?? (channel === 'push' && PUSH_ON.has(type));
       const value = saved[type] && typeof saved[type][channel] === 'boolean' ? saved[type][channel] : fallback;
       out[type][channel] = value;
@@ -109,12 +129,19 @@ const inboxWhere = (workspaceId, userId) => ({ workspaceId, [Op.or]: [{ userId }
  *   dedupeKey  the same key is delivered to a person at most once
  *   userIds    only these teammates (still subject to permission/preferences)
  *
+ * Device notifications (push) go to each teammate whose `push` channel is on
+ * for the type and who has a device; they are gathered for a few seconds and
+ * sent as one (push/pushDigest.js), from an allowlist that never carries the
+ * title, body or data given here. Nothing of it while push is off.
+ *
  * Never throws: a notification must not fail the action that caused it.
  */
 async function create(workspaceId, { type, title, body = null, link = null, data = {}, dedupeKey = null, userIds = null }) {
   try {
     const spec = TYPES[type];
     if (!spec) throw new Error(`unknown notification type "${type}"`);
+    // A type that came with device notifications is not created while they are off.
+    if (!typeLive(type)) return { created: 0, emailed: 0 };
 
     const where = { workspaceId, status: 'active', userId: userIds ? userIds : { [Op.ne]: null } };
     const memberships = await db.Membership.findAll({
@@ -154,6 +181,15 @@ async function create(workspaceId, { type, title, body = null, link = null, data
       }
     }
 
+    // Device notifications. Once per dedupe key and person on their own record
+    // (push_sent_keys), whether or not the bell kept a row: a product running
+    // low reaches a device once a day even with the bell off for it. Never throws.
+    let pushed = 0;
+    if (pushConfig.isOn()) {
+      const pushTo = members.filter((m) => channelsFor(m.userId).push).map((m) => m.userId);
+      pushed = await pushDigest.record(workspaceId, type, pushTo, data, { dedupeKey });
+    }
+
     let emailed = 0;
     for (const m of members) {
       if (!channelsFor(m.userId).email) continue;
@@ -168,7 +204,7 @@ async function create(workspaceId, { type, title, body = null, link = null, data
       if (dedupeKey && channelsFor(m.userId).inApp && !deliveredTo.has(m.userId)) continue;
       await notify.whatsapp({ recipient: m.user.phone, template: 'merchant_notification', data: { title, body, link }, workspaceId });
     }
-    return { created: deliveredTo.size, emailed };
+    return pushConfig.isOn() ? { created: deliveredTo.size, emailed, pushed } : { created: deliveredTo.size, emailed };
   } catch (err) {
     logger.error(`[merchant-notifications] ${type} for workspace ${workspaceId} failed: ${err.message}`);
     return { created: 0, emailed: 0, error: err.message };
@@ -266,15 +302,36 @@ async function markAllRead(workspaceId, userId) {
   return { updated, unreadCount: 0 };
 }
 
-/** What the settings screen shows: every type this person may receive. */
+/**
+ * What the settings screen shows: every type this person may receive. A
+ * push-only type says so (`only: ['push']`): the screen draws no box for its
+ * other channels. The types that came with push are listed only while it is on.
+ */
 async function getPreferences(workspaceId, userId, role) {
   const prefs = await db.NotificationPreference.findOne({ where: { workspaceId, userId } });
   const channels = resolveChannels(prefs && prefs.channels);
   return {
     soundEnabled: prefs ? prefs.soundEnabled : true,
     channels: offeredChannels(),
-    types: TYPE_NAMES.filter((type) => roleAllows(role, TYPES[type].permission)).map((type) => ({ type, ...channels[type] })),
+    types: TYPE_NAMES.filter((type) => typeLive(type) && roleAllows(role, TYPES[type].permission)).map((type) => ({
+      type,
+      ...channels[type],
+      ...(TYPES[type].pushOnly ? { only: ['push'] } : {}),
+    })),
   };
+}
+
+/**
+ * At a device notification's send (push/pushDigest.js): the teammate is
+ * still in the store, still holds the type's permission, and still has its
+ * push channel on.
+ */
+async function pushAllowed(workspaceId, userId, type) {
+  if (!typeLive(type)) return false;
+  const membership = await db.Membership.findOne({ where: { workspaceId, userId, status: 'active' }, include: [{ model: db.Role, as: 'role' }] });
+  if (!membership || !membership.role || !roleAllows(membership.role, TYPES[type].permission)) return false;
+  const prefs = await db.NotificationPreference.findOne({ where: { workspaceId, userId } });
+  return resolveChannels(prefs && prefs.channels)[type].push === true;
 }
 
 async function updatePreferences(workspaceId, userId, role, { soundEnabled, types }, req) {
@@ -290,6 +347,8 @@ async function updatePreferences(workspaceId, userId, role, { soundEnabled, type
       if (!roleAllows(role, TYPES[entry.type].permission)) continue;
       channels[entry.type] = { ...(channels[entry.type] || {}) };
       for (const channel of CHANNELS) {
+        // A push-only type keeps only its push choice.
+        if (TYPES[entry.type].pushOnly && channel !== 'push') continue;
         if (typeof entry[channel] === 'boolean') channels[entry.type][channel] = entry[channel];
       }
     }
@@ -322,4 +381,6 @@ module.exports = {
   markAllRead,
   getPreferences,
   updatePreferences,
+  pushAllowed,
+  PUSH_ON,
 };

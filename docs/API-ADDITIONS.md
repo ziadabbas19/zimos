@@ -207,7 +207,7 @@ neither a refresh nor a sign-out touches `push_subscriptions` — as before.
   followed like the session gate's: an ended or expired one deletes the device.
 - **Payload:** `{ v, type, title, body, url, tag, count }` only, the text from
   `pushPayload.TEXTS` filled with the params each type lists; nothing about a
-  customer, never the bell's own title/body/data. Only `push.test` exists yet.
+  customer, never the bell's own title/body/data.
 - **Answers:** 404/410 delete the device, 429 is a retry (not a failure),
   other 4xx and 5xx count; 5 in a row switch it off.
 - **Daily** (`push.cleanup`, notifications/jobs.js): devices of ended sessions
@@ -216,6 +216,46 @@ neither a refresh nor a sign-out touches `push_subscriptions` — as before.
   `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY` (secret), `VAPID_SUBJECT`,
   `PUSH_MAX_DEVICES_PER_USER`. The pair: `npx web-push generate-vapid-keys`,
   once, in a terminal.
+
+#### The merchant's notifications on their devices (`PUSH_ENABLED`)
+`merchantNotificationService.create()` records a device notification for each
+teammate with the type's permission, its `push` channel on, and a dashboard
+device (`push/pushDigest.js`). Off: nothing of it, and the bell is as before.
+
+- **Push on by default:** `order.new`, `order.paid`, `whatsapp.message`,
+  `order.suspicious` and `integration.failed`. Every other type is off until
+  the teammate turns it on. A choice saved before is kept.
+- **New types** exist only while push is on: none is created, and the settings
+  do not list them, while it is off.
+  - `order.paid`: an order paid online or by a transfer whose proof was
+    approved (`paymentMethod` other than `cod`), from the `order.paid` event.
+    A cash-on-delivery settlement is not told.
+  - `lost_order.new`: from the `lost_order.created` event. Push is off by default.
+  - `whatsapp.message`: push only, never a bell row. Preferences answer
+    `only: ['push']` for it.
+- **Gathered:** the first event of a kind opens a `push_digests` row and
+  queues `notifications/push.flush` for the window's end. The ones that follow
+  only count. The windows are 20 s for orders, 5 min per WhatsApp
+  conversation, 1 h for lost orders, and 20 s for the rest.
+- **What is sent:** one notification. For a single event it carries the order's
+  number and amount (read at the send). For more it says "5 new orders" and
+  opens the list. The title is the store's name, and the link carries
+  `?workspace=<id>`. The texts are in `pushPayload.TEXTS`, in Arabic and English,
+  and never include a customer's name, phone, address or message, a locked
+  order's included.
+- **The same thing once:** a notification's dedupe key reaches a person's
+  devices once (`push_sent_keys`), whether or not the bell kept a row for it.
+  - A product running low: once per product and (UTC) day, whichever of its
+    variants. The bell stays one row per variant and day.
+  - A failed connection or a low wallet: once a day, the day being in their key.
+  - An order: once.
+  - Sent keys are forgotten after 3 days (`push.forget_sent_keys`, daily).
+- **At the send:** the teammate's membership, permission and channel are
+  checked again. A 429 or 5xx is tried again (`push.resend`, three times at
+  most). A device that is gone is removed.
+- **Never in the way:** a failure never fails the notification, the order or
+  the payment. A lost send is caught by `push.flush_overdue` every 5 minutes.
+- **Migration 728** `push_digests` and `push_sent_keys`.
 
 ## Changes to existing files
 
