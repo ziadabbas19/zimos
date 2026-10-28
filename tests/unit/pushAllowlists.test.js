@@ -86,7 +86,7 @@ describe('what a device notification carries', () => {
   });
 
   it('refuses a type it has no text for', () => {
-    expect(() => pushPayload.build('order.new', {})).toThrow(/Unknown push type/);
+    expect(() => pushPayload.build('order.unknown', {})).toThrow(/Unknown push type/);
   });
 });
 
