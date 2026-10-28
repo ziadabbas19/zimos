@@ -228,6 +228,11 @@ module.exports = {
       onUpdate: 'CASCADE',
     });
     await qi.addColumn('billing_invoices', 'referral_payment_no', { type: DataTypes.INTEGER, allowNull: true });
+    // A payment's number counts the paid charges of one use; built CONCURRENTLY by the guard (outside a transaction).
+    await qi.addIndex('billing_invoices', ['referral_redemption_id'], {
+      name: 'billing_invoices_referral_redemption_idx',
+      where: { referral_redemption_id: { [Sequelize.Op.ne]: null } },
+    });
 
     // --- backfill: what exists today, as the first kind ----------------------
     // Every statement is a no-op the second time (ON CONFLICT, IS NULL, GREATEST).
@@ -313,6 +318,7 @@ module.exports = {
     for (const column of ['base_amount', 'commission_basis', 'payment_no', 'agent_link_id']) await qi.removeColumn('agent_commissions', column);
     await q('ALTER TABLE agent_commissions ALTER COLUMN code_id SET NOT NULL');
 
+    await qi.removeIndex('billing_invoices', 'billing_invoices_referral_redemption_idx');
     for (const column of ['referral_payment_no', 'referral_redemption_id']) await qi.removeColumn('billing_invoices', column);
 
     await qi.dropTable('agent_links');
