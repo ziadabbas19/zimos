@@ -2,12 +2,14 @@
 
 const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
+const { Op } = require('sequelize');
 const db = require('../../db/models');
 const env = require('../../config/env');
 const { AppError, AuthenticationError } = require('../../core/errors/AppError');
 const { recordAudit } = require('../audit/auditService');
 const publicPlans = require('../billing/publicPlansService');
 const verificationCodes = require('../otp/verificationCodeService');
+const invites = require('../workspaces/inviteAcceptance');
 
 /**
  * What sign-up asks for, behind two of the three switches in config/env.js
@@ -73,8 +75,21 @@ async function needsPlan(user) {
   return publicPlans.anyOffered();
 }
 
+/**
+ * An invite to someone's team waits for this address (workspaces/
+ * inviteAcceptance.js): matched whatever its case, and not expired — an invite
+ * from before its link expired (migration 726) has no end and still counts.
+ */
 async function hasPendingInvite(email) {
-  const invite = await db.Membership.findOne({ where: { invitedEmail: email, status: 'invited' }, attributes: ['id'] });
+  if (!email) return false;
+  const invite = await db.Membership.findOne({
+    where: {
+      status: 'invited',
+      [Op.and]: [invites.invitedEmailIs(email)],
+      [Op.or]: [{ inviteExpiresAt: null }, { inviteExpiresAt: { [Op.gt]: new Date() } }],
+    },
+    attributes: ['id'],
+  });
   return Boolean(invite);
 }
 
@@ -110,9 +125,14 @@ async function registrationFields({ email, planId, billingCycle, acceptTerms }) 
   return fields;
 }
 
-/** Marks a new Google account that must still choose a plan. */
-async function googleAccountFields() {
-  return (await planRequired()) ? { requiresPlanSelection: true } : {};
+/**
+ * Marks a new Google account that must still choose a plan — unless someone
+ * invited this address to their store, as an email sign-up is spared it
+ * (registrationFields).
+ */
+async function googleAccountFields(email) {
+  if (!(await planRequired())) return {};
+  return (await hasPendingInvite(email)) ? {} : { requiresPlanSelection: true };
 }
 
 /** POST /auth/me/plan — the plan a signed-in account chooses (a Google one). */

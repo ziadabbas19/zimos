@@ -234,18 +234,39 @@ ${codeHtml}
     };
   },
 
+  // workspaces/workspaceService inviteMember. With `token`: a pending invite,
+  // accepted on the dashboard's /invites page (workspaces/inviteAcceptance).
+  // Without: an existing account that was added at once.
   workspace_invite(data = {}) {
     const store = data.workspaceName || 'a store';
     const role = data.roleName ? ` as ${data.roleName}` : '';
-    const url = `${env.frontendUrl.replace(/\/$/, '')}/invites`;
+    const storeHtml = escapeHtml(store);
+    const roleHtml = data.roleName ? ` as ${escapeHtml(data.roleName)}` : '';
+    if (!data.token) {
+      const url = `${env.frontendUrl.replace(/\/$/, '')}/workspaces`;
+      return {
+        subject: `You've been added to ${store}`,
+        ...wrap(
+          `<p>Hi,</p>
+<p>You've been added to <strong>${storeHtml}</strong>${roleHtml} on Zimos.</p>
+<p><a href="${url}">Open your stores</a></p>`,
+          `Hi,\n\nYou've been added to ${store}${role} on Zimos.\nOpen your stores: ${url}`
+        ),
+      };
+    }
+    const url = link('/invites', data.token);
+    const days = Number(data.expiresInDays) || 7;
+    const email = data.email ? String(data.email) : '';
+    const withEmail = email ? ` with ${email}` : '';
+    const withEmailHtml = email ? ` with <strong>${escapeHtml(email)}</strong>` : '';
     return {
       subject: `You've been invited to ${store}`,
       ...wrap(
         `<p>Hi,</p>
-<p>You've been invited to join <strong>${store}</strong>${role} on Zimos.</p>
-<p><a href="${url}">View the invitation</a></p>
-<p>If you don't have an account yet, sign up with this email address and the invite will be waiting for you.</p>`,
-        `Hi,\n\nYou've been invited to join ${store}${role} on Zimos.\nView the invitation: ${url}`
+<p>You've been invited to join <strong>${storeHtml}</strong>${roleHtml} on Zimos.</p>
+<p><a href="${url}">Accept the invitation</a></p>
+<p>Sign in${withEmailHtml}, or create an account${withEmailHtml} if you don't have one yet. The link works for ${days} days and only once.</p>`,
+        `Hi,\n\nYou've been invited to join ${store}${role} on Zimos.\nAccept the invitation: ${url}\n\nSign in${withEmail}, or create an account${withEmail} if you don't have one yet. The link works for ${days} days and only once.`
       ),
     };
   },

@@ -27,13 +27,23 @@ const { isVerified } = require('../auth/signupPolicy');
 const env = require('../../config/env');
 const { assertBumpOfferUsable } = require('../checkout/orderBump');
 const { checkLogoUrl } = require('./workspaceLogo');
+const invites = require('./inviteAcceptance');
 
-async function sendInviteEmail(workspace, email, role) {
+/**
+ * `token` is the accept link's for a pending invite; null when an existing
+ * account was added at once (its email says so and links to the dashboard).
+ */
+async function sendInviteEmail(workspace, email, role, token = null) {
   await notify.email({
     workspaceId: workspace.id,
     recipient: email,
     template: 'workspace_invite',
-    data: { workspaceName: workspace.name, roleName: role.name },
+    data: {
+      workspaceName: workspace.name,
+      roleName: role.name,
+      email,
+      ...(token ? { token, expiresInDays: invites.INVITE_TTL_DAYS } : {}),
+    },
   });
 }
 
@@ -420,9 +430,11 @@ async function listWorkspacesForUser(userId) {
       { model: db.Role, as: 'role' },
     ],
   });
+  // The role's permissions as resolveTenant reads them ('*' = every one): the
+  // dashboard shows a page only to a role its API lets in (lib/navigation).
   return memberships.map((m) => ({
     workspace: m.workspace,
-    role: { key: m.role.key, name: m.role.name },
+    role: { key: m.role.key, name: m.role.name, permissions: m.role.permissions || [] },
   }));
 }
 
@@ -485,7 +497,7 @@ async function actorUnderLock(workspaceId, req, transaction, permission, alsoLoc
 }
 
 async function inviteMember({ workspaceId, email, roleId }, req) {
-  const { membership, role } = await db.sequelize.transaction(async (transaction) => {
+  const { membership, role, token } = await db.sequelize.transaction(async (transaction) => {
     const { actor } = await actorUnderLock(workspaceId, req, transaction, PERMISSIONS.USERS_MANAGE);
     const invitedRole = await db.Role.findOne({ where: { id: roleId, workspaceId }, transaction });
     if (!invitedRole) throw new NotFoundError('Role');
@@ -506,27 +518,34 @@ async function inviteMember({ workspaceId, email, roleId }, req) {
       const existing = await db.Membership.findOne({ where: { workspaceId, userId: user.id }, transaction });
       if (existing) throw new ConflictError('User is already a member of this workspace', 'ALREADY_MEMBER');
     } else {
-      const pending = await db.Membership.findOne({ where: { workspaceId, invitedEmail: email }, transaction });
+      const pending = await db.Membership.findOne({
+        where: { workspaceId, status: 'invited', [Op.and]: [invites.invitedEmailIs(email)] },
+        transaction,
+      });
       if (pending) throw new ConflictError('That email already has a pending invite', 'ALREADY_INVITED');
     }
 
+    // Anyone else gets a pending membership and a link to accept it with
+    // (workspaces/inviteAcceptance.js).
+    const link = user ? null : invites.newInviteToken();
     const created = await db.Membership.create(
       {
         workspaceId,
         userId: user ? user.id : null,
         roleId,
         status: user ? 'active' : 'invited',
-        invitedEmail: user ? null : email,
+        invitedEmail: user ? null : invites.normalizeEmail(email),
+        ...(link ? link.fields : {}),
       },
       { transaction }
     );
-    return { membership: created, role: invitedRole };
+    return { membership: created, role: invitedRole, token: link ? link.token : null };
   });
 
   // Once the membership exists: no email for an invite that was refused, and
   // no row lock held while the email is sent.
   const workspace = await db.Workspace.findByPk(workspaceId);
-  await sendInviteEmail(workspace, email, role);
+  await sendInviteEmail(workspace, email, role, token);
 
   await recordAudit({
     workspaceId,
@@ -569,8 +588,13 @@ async function resendInvite({ workspaceId, membershipId }, req) {
     throw new AppError('NOT_PENDING', 'That invite has already been accepted', 409);
   }
 
+  // A fresh link that works for the full period again; the previous one stops
+  // working (an invite sent before migration 726 gets its first link here).
+  const link = invites.newInviteToken();
+  await membership.update(link.fields);
+
   const workspace = await db.Workspace.findByPk(workspaceId);
-  await sendInviteEmail(workspace, membership.invitedEmail, membership.role);
+  await sendInviteEmail(workspace, membership.invitedEmail, membership.role, link.token);
 
   await recordAudit({
     workspaceId,

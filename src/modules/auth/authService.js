@@ -408,7 +408,7 @@ async function loginWithGoogle(code, req) {
         status: 'active',
         emailVerifiedAt: new Date(),
         // While a plan is required at sign-up, it picks one after signing in.
-        ...(await signupPolicy.googleAccountFields()),
+        ...(await signupPolicy.googleAccountFields(profile.email)),
       });
       action = 'user.register.google';
     }
