@@ -243,12 +243,19 @@ device (`push/pushDigest.js`). Off: nothing of it, and the bell is as before.
   `?workspace=<id>`. The texts are in `pushPayload.TEXTS`, in Arabic and English,
   and never include a customer's name, phone, address or message, a locked
   order's included.
+- **The same thing once:** a notification's dedupe key reaches a person's
+  devices once (`push_sent_keys`), whether or not the bell kept a row for it.
+  - A product running low: once per product and (UTC) day, whichever of its
+    variants. The bell stays one row per variant and day.
+  - A failed connection or a low wallet: once a day, the day being in their key.
+  - An order: once.
+  - Sent keys are forgotten after 3 days (`push.forget_sent_keys`, daily).
 - **At the send:** the teammate's membership, permission and channel are
   checked again. A 429 or 5xx is tried again (`push.resend`, three times at
   most). A device that is gone is removed.
 - **Never in the way:** a failure never fails the notification, the order or
   the payment. A lost send is caught by `push.flush_overdue` every 5 minutes.
-- **Migration 728** `push_digests`.
+- **Migration 728** `push_digests` and `push_sent_keys`.
 
 ## Changes to existing files
 
