@@ -18,8 +18,16 @@ const { guarded } = require('../migrationGuards');
  *                  never a customer's name, phone, address or message
  *   flush_at       when it is due; a sweep sends one whose queued send was lost
  *
- * Additive and run-twice safe: a new table, its index added only when missing.
- * down drops it.
+ * push_sent_keys  what already reached a teammate's devices, so the same thing
+ *                 is sent once (decision 6 as Ziad settled it): a product
+ *                 running low once a day, a failed connection once a day, an
+ *                 order once, whether or not the bell kept a row for it
+ *   dedupe_key     the notification's own key, or the push one (stock.low:
+ *                  per product and UTC day); keys that repeat carry their day
+ *   created_at     rows older than 3 days are removed by the daily cleanup
+ *
+ * Additive and run-twice safe: new tables, their indexes added only when
+ * missing. down drops them.
  */
 
 module.exports = {
@@ -43,10 +51,19 @@ module.exports = {
     });
     await qi.addIndex('push_digests', ['workspace_id', 'user_id', 'group_key'], { name: 'push_digests_open_key', unique: true });
     await qi.addIndex('push_digests', ['flush_at'], { name: 'push_digests_flush_at_idx' });
+
+    await qi.createTable('push_sent_keys', {
+      workspace_id: { type: DataTypes.UUID, primaryKey: true, allowNull: false, references: { model: 'workspaces', key: 'id' }, onDelete: 'CASCADE', onUpdate: 'CASCADE' },
+      user_id: { type: DataTypes.UUID, primaryKey: true, allowNull: false, references: { model: 'users', key: 'id' }, onDelete: 'CASCADE', onUpdate: 'CASCADE' },
+      dedupe_key: { type: DataTypes.STRING(200), primaryKey: true, allowNull: false },
+      created_at: { type: DataTypes.DATE, allowNull: false, defaultValue: Sequelize.fn('NOW') },
+    });
+    await qi.addIndex('push_sent_keys', ['created_at'], { name: 'push_sent_keys_created_at_idx' });
   },
 
   down: async (queryInterface) => {
     const qi = guarded(queryInterface);
+    await qi.dropTable('push_sent_keys');
     await qi.dropTable('push_digests');
   },
 };

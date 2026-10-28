@@ -181,13 +181,13 @@ async function create(workspaceId, { type, title, body = null, link = null, data
       }
     }
 
-    // Device notifications, same once-only rule as email below. Never throws.
+    // Device notifications. Once per dedupe key and person on their own record
+    // (push_sent_keys), whether or not the bell kept a row: a product running
+    // low reaches a device once a day even with the bell off for it. Never throws.
     let pushed = 0;
     if (pushConfig.isOn()) {
-      const pushTo = members
-        .filter((m) => channelsFor(m.userId).push && !(dedupeKey && channelsFor(m.userId).inApp && !deliveredTo.has(m.userId)))
-        .map((m) => m.userId);
-      pushed = await pushDigest.record(workspaceId, type, pushTo, data);
+      const pushTo = members.filter((m) => channelsFor(m.userId).push).map((m) => m.userId);
+      pushed = await pushDigest.record(workspaceId, type, pushTo, data, { dedupeKey });
     }
 
     let emailed = 0;

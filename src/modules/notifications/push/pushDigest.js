@@ -62,7 +62,17 @@ const KINDS = {
     urgency: 'high',
     topic: 'wa',
   },
-  'stock.low': { windowMs: 20 * SECOND, refs: ['productId'], one: (refs) => (refs.productId ? `/catalog/${refs.productId}` : '/catalog'), many: () => '/catalog' },
+  'stock.low': {
+    windowMs: 20 * SECOND,
+    refs: ['productId'],
+    one: (refs) => (refs.productId ? `/catalog/${refs.productId}` : '/catalog'),
+    many: () => '/catalog',
+    // The bell's key is per variant and (UTC) day; a device hears of a product once that day, whichever of its variants ran low.
+    onceKey: (refs, dedupeKey) => {
+      const day = /:(\d{4}-\d{2}-\d{2})$/.exec(dedupeKey || '');
+      return refs.productId && day ? `stock.low:${refs.productId}:${day[1]}` : dedupeKey;
+    },
+  },
 };
 const DEFAULT_KIND = { windowMs: 20 * SECOND, refs: [], ttlSeconds: 12 * HOUR / SECOND, urgency: 'normal' };
 
@@ -92,6 +102,32 @@ async function withDevices(userIds) {
   return new Set(rows.map((row) => row.userId));
 }
 
+const SENT_KEY_DAYS = 3;
+
+/**
+ * Of `userIds`, those `key` has not reached yet; the key is marked as theirs
+ * in the same statement, so two notifications at once cannot both pass. A
+ * notification without a key (each one different) always passes.
+ */
+async function firstTimeFor(workspaceId, userIds, key) {
+  if (!key || userIds.length === 0) return userIds;
+  const rows = await db.sequelize.query(
+    `INSERT INTO push_sent_keys (workspace_id, user_id, dedupe_key, created_at)
+     SELECT :workspaceId, u, :key, now() FROM unnest(ARRAY[:userIds]::uuid[]) AS u
+     ON CONFLICT DO NOTHING
+     RETURNING user_id AS "userId"`,
+    { replacements: { workspaceId, userIds, key: String(key).slice(0, 200) }, type: QueryTypes.SELECT }
+  );
+  return rows.map((row) => row.userId);
+}
+
+/** Daily (notifications/jobs.js): sent keys older than 3 days go; every key that repeats carries its day. */
+async function forgetSentKeys() {
+  if (!pushConfig.isOn()) return { skipped: true };
+  const removed = await db.PushSentKey.destroy({ where: { createdAt: { [db.Sequelize.Op.lt]: new Date(Date.now() - SENT_KEY_DAYS * 24 * HOUR) } } });
+  return { removed };
+}
+
 const UPSERT_SQL = `
   INSERT INTO push_digests (id, workspace_id, user_id, type, group_key, count, refs, first_at, last_at, flush_at, created_at, updated_at)
   VALUES (:id, :workspaceId, :userId, :type, :groupKey, 1, CAST(:refs AS jsonb), now(), now(), now() + (:windowMs * INTERVAL '1 millisecond'), now(), now())
@@ -101,18 +137,26 @@ const UPSERT_SQL = `
 
 /**
  * One notification of `type` for each of `userIds` (create() has already
- * applied permission, preference and the dedupe key). Teammates without a
- * device are skipped. Never throws.
+ * applied permission and preference). Teammates without a device are skipped,
+ * and so are those `dedupeKey` (or the type's own once-key) already reached:
+ * the same thing goes to a person's devices once, whether or not the bell kept
+ * a row for it. Never throws.
  */
-async function record(workspaceId, type, userIds, data) {
+async function record(workspaceId, type, userIds, data, { dedupeKey = null } = {}) {
   try {
     if (!pushConfig.isOn() || userIds.length === 0) return 0;
     const devices = await withDevices(userIds);
     const kind = kindOf(type);
     const refs = refsOf(type, data);
     const groupKey = groupKeyOf(type, refs);
+    const onceKey = kind.onceKey ? kind.onceKey(refs, dedupeKey) : dedupeKey;
+    const firstTime = await firstTimeFor(
+      workspaceId,
+      userIds.filter((id) => devices.has(id)),
+      onceKey
+    );
     let recorded = 0;
-    for (const userId of userIds.filter((id) => devices.has(id))) {
+    for (const userId of firstTime) {
       const [row] = await db.sequelize.query(UPSERT_SQL, {
         replacements: { id: crypto.randomUUID(), workspaceId, userId, type, groupKey, refs: JSON.stringify(refs), windowMs: kind.windowMs },
         type: QueryTypes.SELECT,
@@ -229,4 +273,4 @@ async function flushOverdue() {
   return { flushed: due.length };
 }
 
-module.exports = { record, flush, resend, flushOverdue, refsOf, groupKeyOf, kindOf, KINDS };
+module.exports = { record, flush, resend, flushOverdue, forgetSentKeys, refsOf, groupKeyOf, kindOf, KINDS, SENT_KEY_DAYS };

@@ -22,6 +22,12 @@ module.exports = {
       handle: () => require('./push/pushService').cleanup(),
     },
     {
+      // What already reached each teammate's devices, older than 3 days, is forgotten (push/pushDigest.js). Nothing while off.
+      name: 'push.forget_sent_keys',
+      everyMs: DAY,
+      handle: () => pushDigest().forgetSentKeys(),
+    },
+    {
       // Gathered device notifications whose queued send was lost are sent (push/pushDigest.js). Nothing while off.
       name: 'push.flush_overdue',
       everyMs: 5 * MINUTE,
