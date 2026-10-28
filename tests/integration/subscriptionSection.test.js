@@ -96,7 +96,17 @@ describe('GET /billing/plans', () => {
     const mine = res.body.plans.find((p) => p.id === s.plan.id);
     expect(mine.prices.monthly).toEqual({ gross: 30000, discount: 3000, net: 27000 });
     expect(mine.prices.yearly).toEqual({ gross: 300000, discount: 30000, net: 270000 });
-    expect(res.body.referralCode).toEqual({ code: 'SAVE10', discountType: 'percentage', discountValue: 1000, discountCurrency: null, active: true });
+    // A first-kind code: no schedule, no one-time benefit, no end (the fields migration 725 added).
+    expect(res.body.referralCode).toEqual({
+      code: 'SAVE10',
+      discountType: 'percentage',
+      discountValue: 1000,
+      discountCurrency: null,
+      active: true,
+      discountSchedule: null,
+      grant: null,
+      endsAt: null,
+    });
     expect(JSON.stringify(res.body)).not.toContain(agent.userId); // never the agent
   });
 });
