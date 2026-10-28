@@ -8,7 +8,6 @@ const { authenticate } = require('../../core/middleware/authenticate');
 const { resolveTenant } = require('../../core/middleware/tenantContext');
 const { requirePermission } = require('../../core/middleware/rbac');
 const { PERMISSIONS } = require('../../core/security/permissions');
-const { recordAudit } = require('../audit/auditService');
 const pnl = require('./pnlService');
 const economics = require('./economicsService');
 const adSpend = require('./adSpendService');
@@ -138,24 +137,14 @@ router.delete(
   asyncHandler(async (req, res) => res.json(await adSpend.remove(req.tenant.workspaceId, req.params.entryId, req)))
 );
 
-// --- campaigns and the sync ---
+// --- campaigns ---
+// Spend comes in by hand or from a CSV (/ad-spend, /ad-spend/import); nothing
+// pulls it from the ad platforms.
 router.get(
   '/campaigns',
   READ,
   validate({ params: Joi.object(ws), query: Joi.object(range) }),
   asyncHandler(async (req, res) => res.json(await adSpend.campaigns(req.tenant.workspaceId, req.query)))
-);
-router.post(
-  '/ads/sync',
-  WRITE,
-  validate({ params: Joi.object(ws) }),
-  asyncHandler(async (req, res) => {
-    const sync = await syncSpend({ workspaceId: req.tenant.workspaceId });
-    await recordAudit({
-      workspaceId: req.tenant.workspaceId, actorUserId: req.user.id, action: 'ad_spend.sync', entityType: 'AdSpendDaily', after: sync, req,
-    });
-    res.json({ sync });
-  })
 );
 
 module.exports = router;
