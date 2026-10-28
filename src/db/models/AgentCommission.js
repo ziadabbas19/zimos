@@ -1,15 +1,23 @@
 'use strict';
 
 module.exports = (sequelize, DataTypes) => {
-  // One commission ledger row per paid billing invoice that carried a referral
-  // code (migration 106). Informational only: the one write after creation is
+  // One commission ledger row per paid billing invoice of a store linked to
+  // an agent (migration 106; since migration 725 the link, agent_links, says
+  // which agent and at what rate: from a code, or set by hand with no code). Informational only: the one write after creation is
   // a person flipping payoutStatus to marked_paid.
   const AgentCommission = sequelize.define(
     'AgentCommission',
     {
       id: { type: DataTypes.UUID, defaultValue: DataTypes.UUIDV4, primaryKey: true },
       agentId: { type: DataTypes.UUID, allowNull: false, field: 'agent_id' },
-      codeId: { type: DataTypes.UUID, allowNull: false, field: 'code_id' },
+      // Null for a link set by hand (migration 725).
+      codeId: { type: DataTypes.UUID, allowNull: true, field: 'code_id' },
+      agentLinkId: { type: DataTypes.UUID, allowNull: true, field: 'agent_link_id' },
+      // Which payment of the link this was (1 = the first), the basis the
+      // rate was applied to ('paid' | 'list') and that amount (migration 725).
+      paymentNo: { type: DataTypes.INTEGER, allowNull: true, field: 'payment_no' },
+      commissionBasis: { type: DataTypes.STRING(10), allowNull: true, field: 'commission_basis' },
+      baseAmount: { type: DataTypes.BIGINT, allowNull: true, field: 'base_amount' },
       workspaceId: { type: DataTypes.UUID, allowNull: false, field: 'workspace_id' },
       // One LIVE row per invoice (partial unique index, migration 108): a
       // reversed payment voids its row, and paying again writes a new one.
@@ -40,6 +48,7 @@ module.exports = (sequelize, DataTypes) => {
   AgentCommission.associate = (models) => {
     AgentCommission.belongsTo(models.User, { foreignKey: 'agentId', as: 'agent' });
     AgentCommission.belongsTo(models.ReferralCode, { foreignKey: 'codeId', as: 'code' });
+    AgentCommission.belongsTo(models.AgentLink, { foreignKey: 'agentLinkId', as: 'link' });
     AgentCommission.belongsTo(models.Workspace, { foreignKey: 'workspaceId', as: 'workspace' });
     AgentCommission.belongsTo(models.BillingInvoice, { foreignKey: 'billingInvoiceId', as: 'invoice' });
     AgentCommission.belongsTo(models.User, { foreignKey: 'markedPaidByAdminId', as: 'markedPaidBy' });

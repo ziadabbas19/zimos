@@ -42,6 +42,11 @@ module.exports = (sequelize, DataTypes) => {
       // a PAID invoice with a code is one the code was active for, and it has
       // a commission row.
       referralCodeId: { type: DataTypes.UUID, allowNull: true, field: 'referral_code_id' },
+      // The store's use of that code (migration 725) and which payment of it
+      // this was (1 = the first paid with it), set when it is paid; the
+      // code's schedule priced it by that number.
+      referralRedemptionId: { type: DataTypes.UUID, allowNull: true, field: 'referral_redemption_id' },
+      referralPaymentNo: { type: DataTypes.INTEGER, allowNull: true, field: 'referral_payment_no' },
       currency: { type: DataTypes.STRING(3), allowNull: false },
       // 'void': a charge that no longer asks for money (migration 224; any
       // pending charge since migration 703).
@@ -87,6 +92,7 @@ module.exports = (sequelize, DataTypes) => {
   BillingInvoice.associate = (models) => {
     BillingInvoice.belongsTo(models.Subscription, { foreignKey: 'subscriptionId', as: 'subscription' });
     BillingInvoice.belongsTo(models.ReferralCode, { foreignKey: 'referralCodeId', as: 'referralCode' });
+    BillingInvoice.belongsTo(models.ReferralCodeRedemption, { foreignKey: 'referralRedemptionId', as: 'referralRedemption' });
     BillingInvoice.belongsTo(models.User, { foreignKey: 'recordedByUserId', as: 'recordedBy' });
     BillingInvoice.belongsTo(models.SubscriptionTerm, { foreignKey: 'specialTermsId', as: 'specialTerms' });
     // Checkouts started for this charge (migration 129).
