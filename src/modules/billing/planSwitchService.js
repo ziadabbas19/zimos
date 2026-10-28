@@ -6,6 +6,8 @@ const logger = require('../../core/utils/logger');
 const { AppError, ConflictError, NotFoundError } = require('../../core/errors/AppError');
 const { recordAudit } = require('../audit/auditService');
 const referralCodes = require('../referrals/referralCodeService');
+const referralPricing = require('../referrals/referralPricing');
+const redemptions = require('../referrals/redemptionService');
 const charges = require('./subscriptionChargeService');
 const publicPlans = require('./publicPlansService');
 const paymentMethods = require('./paymentMethodService');
@@ -152,15 +154,16 @@ async function specialTermsRunning(subscription, transaction, now) {
  * `target` on `cycle`.
  */
 async function decisionFor(subscription, target, cycle, transaction, now) {
-  const [current, code, terms] = await Promise.all([
+  const [current, discountOf, terms] = await Promise.all([
     subscription.planId ? db.Plan.findByPk(subscription.planId, { transaction }) : null,
-    subscription.referralCodeId ? db.ReferralCode.findByPk(subscription.referralCodeId, { transaction }) : null,
+    // A code's schedule changes from one payment to the next, so plans are
+    // compared without it; a first-kind code's one discount counts, as before.
+    referralPricing.nextPaymentPricer(subscription, transaction, { classify: true }),
     specialTermsRunning(subscription, transaction, now),
   ]);
-  const usable = code && code.active ? code : null;
   const price = (plan, billingCycle) => {
     const gross = planPrice(plan, billingCycle);
-    return gross - referralCodes.discountFor(usable, gross, plan.currency);
+    return gross - discountOf(plan, billingCycle, gross);
   };
   const decision = rules.decide({ subscription, current, target, targetCycle: cycle, specialTerms: terms, now, price });
   return { current, price, decision };
@@ -350,8 +353,37 @@ function timingOf(decision, timing) {
 // ---------------------------------------------------------------- preview
 
 /** POST /workspaces/:id/billing/plan-switch/preview — writes nothing. */
-async function preview(workspaceId, { planId, billingCycle, timing } = {}) {
+function codeEntryDisabled() {
+  return new AppError('REFERRAL_V2_DISABLED', 'A code cannot be entered with a plan change yet.', 409);
+}
+
+/**
+ * A code entered with the switch (REFERRAL_CODES_V2_ENABLED), next to the
+ * switch's own preview: every rule of entering it checked against the plan
+ * and cycle switched to (redemptionService.preview, writing nothing), and the
+ * payment it would apply to — the charge now, or the renewal — before and
+ * after, with its first payments when it has a schedule. A special-terms
+ * price is not in `after`: the charge itself is priced by subscriptionChargeService.
+ */
+async function codePreview(workspaceId, input, { target, cycle, described }) {
+  const { code } = await redemptions.preview(workspaceId, input, { planId: target.id, billingCycle: cycle });
+  const gross = planPrice(target, cycle);
+  const after = gross - referralPricing.firstPaymentDiscount(code, target, cycle, gross);
+  const chargedNow = described.amountDue > 0;
+  const before = chargedNow ? described.amountDue : described.nextRenewal ? described.nextRenewal.amount : 0;
+  return {
+    code: referralCodes.serializeCodeForMerchant(code),
+    appliesTo: chargedNow ? 'charge_now' : 'renewal',
+    before,
+    after: gross > 0 ? after : 0,
+    currency: target.currency,
+    schedule: merchantPlans().scheduleFor(code, target),
+  };
+}
+
+async function preview(workspaceId, { planId, billingCycle, timing, referralCode } = {}) {
   if (!enabled()) throw disabledError();
+  if (referralCode && !referralPricing.v2Enabled()) throw codeEntryDisabled();
   const target = await findSwitchTarget(planId);
   const subscription = await loadSubscription(workspaceId);
   const now = new Date();
@@ -365,7 +397,9 @@ async function preview(workspaceId, { planId, billingCycle, timing } = {}) {
   ]);
   const proof = pending ? await proofWaiting(pending.id) : false;
   const billed = await billedOnSchedule(open);
-  return { preview: await describe({ subscription, current, target, cycle, decision, resolved, price, now, pending, open, proof, billed }) };
+  const described = await describe({ subscription, current, target, cycle, decision, resolved, price, now, pending, open, proof, billed });
+  if (referralCode) described.referralCode = await codePreview(workspaceId, referralCode, { target, cycle, described });
+  return { preview: described };
 }
 
 // ------------------------------------------------------------------ start
@@ -421,11 +455,21 @@ async function closeOpen(open, locked, status, req, transaction) {
  * ("now", the default, or "period_end"); any other switch has one timing
  * (409 SWITCH_TIMING_NOT_AVAILABLE for another).
  */
-async function start(workspaceId, { planId, billingCycle, timing, expectedAmount } = {}, req) {
+async function start(workspaceId, { planId, billingCycle, timing, expectedAmount, referralCode } = {}, req) {
   if (!enabled()) throw disabledError();
+  if (referralCode && !referralPricing.v2Enabled()) throw codeEntryDisabled();
   const target = await findSwitchTarget(planId);
+  const cycle = cycleFor(target, await loadSubscription(workspaceId), billingCycle);
+  // The code first, in its own transaction, judged against the plan and cycle
+  // switched to: it then prices the switch's charge (or the renewal) like any
+  // charge. Entering the same code again is a no-op, so a switch refused
+  // after it (a proof under review, say) can simply be asked again.
+  if (referralCode) {
+    await db.sequelize.transaction((transaction) =>
+      redemptions.redeemInTransaction(workspaceId, referralCode, { source: 'plan_switch', req, planId: target.id, billingCycle: cycle }, transaction)
+    );
+  }
   const peek = await loadSubscription(workspaceId);
-  const cycle = cycleFor(target, peek, billingCycle);
   const peekPlan = peek.planId ? await db.Plan.findByPk(peek.planId) : null;
   const { mode } = rules.selfServeMode({ subscription: peek, current: peekPlan });
 
