@@ -88,6 +88,7 @@ describe('push off: exactly as before', () => {
 
     expect(sendSpy).not.toHaveBeenCalled();
     expect(await db.PushDigest.count()).toBe(0);
+    expect(await db.PushSentKey.count()).toBe(0);
     const types = (await db.MerchantNotification.findAll({ where: { workspaceId: store.wid } })).map((n) => n.type);
     expect(types).toContain('order.new');
     expect(types.filter((type) => ['order.paid', 'lost_order.new', 'whatsapp.message'].includes(type))).toEqual([]);
@@ -256,6 +257,100 @@ describe('push on: gathered in a window', () => {
     await setPush(store, { 'order.new': false });
     expect(await pushDigest.flush(held[0].payload.digestId)).toMatchObject({ sent: 0, skipped: 'not_allowed' });
     expect(sendSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe('push on: the same thing once (decision 6)', () => {
+  beforeEach(() => pushOn());
+
+  const day = (offset = 0) => new Date(Date.now() + offset * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  // What merchantNotificationEvents.orderCreated writes for a variant running low (one bell row a variant a day).
+  const lowStock = (store, productId, variantId, date = day()) =>
+    service.create(store.wid, {
+      type: 'stock.low',
+      title: 'x',
+      link: `/catalog/${productId}`,
+      data: { productId, variantId, label: 'M', available: 1 },
+      dedupeKey: `stock.low:${variantId}:${date}`,
+    });
+  const choose = (store, types) =>
+    request(app).put(`/api/v1/workspaces/${store.wid}/notifications/preferences`).set(H(store.token)).send({ types });
+
+  it('a product running low reaches a device once a day, with the bell off for it, whichever of its variants and however many orders', async () => {
+    const store = await monthlyStore();
+    await device(store.token);
+    expect((await choose(store, [{ type: 'stock.low', push: true, inApp: false }])).status).toBe(200);
+    const held = holdFlushes();
+    const [shirt, mug] = [crypto.randomUUID(), crypto.randomUUID()];
+
+    await lowStock(store, shirt, 'shirt-m');
+    await lowStock(store, shirt, 'shirt-m'); // the next order with the same size
+    await lowStock(store, shirt, 'shirt-l'); // another size of the same product
+    await lowStock(store, mug, 'mug-1');
+    expect(await db.MerchantNotification.count({ where: { workspaceId: store.wid, type: 'stock.low' } })).toBe(0);
+    const digests = await db.PushDigest.findAll();
+    expect(digests.map((d) => d.count)).toEqual([2]);
+    await pushDigest.flush(held[0].payload.digestId);
+    expect(payloads()).toEqual([expect.objectContaining({ type: 'stock.low', count: 2, body: '2 products are running low' })]);
+
+    // Later the same day: nothing more for either product.
+    await lowStock(store, shirt, 'shirt-m');
+    await lowStock(store, mug, 'mug-1');
+    expect(await db.PushDigest.count()).toBe(0);
+    expect(held).toHaveLength(1);
+
+    // The next day, once again.
+    await lowStock(store, shirt, 'shirt-m', day(1));
+    expect((await db.PushDigest.findAll()).map((d) => d.count)).toEqual([1]);
+    expect(held).toHaveLength(2);
+  });
+
+  it('with the bell on as well, and for any other type that repeats (a failed connection): once a day', async () => {
+    const store = await monthlyStore();
+    await device(store.token);
+    expect((await choose(store, [{ type: 'integration.failed', inApp: false, push: true }])).status).toBe(200);
+    const held = holdFlushes();
+    const failed = () => service.create(store.wid, { type: 'integration.failed', title: 'x', data: { integration: 'bosta' }, dedupeKey: `integration.failed:bosta:${day()}` });
+    await failed();
+    await failed();
+    await failed();
+    expect((await db.PushDigest.findAll()).map((d) => d.count)).toEqual([1]);
+
+    await pushDigest.flush(held[0].payload.digestId);
+    expect((await choose(store, [{ type: 'stock.low', push: true }])).status).toBe(200);
+    const shirt = crypto.randomUUID();
+    await lowStock(store, shirt, 'shirt-m');
+    await lowStock(store, shirt, 'shirt-l');
+    expect(await db.MerchantNotification.count({ where: { workspaceId: store.wid, type: 'stock.low' } })).toBe(2);
+    expect((await db.PushDigest.findAll()).map((d) => d.count)).toEqual([1]);
+  });
+
+  it('a teammate without a device is not marked: the device subscribed later that day still hears of the product', async () => {
+    const store = await monthlyStore();
+    expect((await choose(store, [{ type: 'stock.low', push: true }])).status).toBe(200);
+    const shirt = crypto.randomUUID();
+    await lowStock(store, shirt, 'shirt-m');
+    expect(await db.PushSentKey.count()).toBe(0);
+    await device(store.token);
+    holdFlushes();
+    await lowStock(store, shirt, 'shirt-l');
+    expect((await db.PushDigest.findAll()).map((d) => d.count)).toEqual([1]);
+  });
+
+  it('what was sent is forgotten after 3 days by the daily job', async () => {
+    const store = await monthlyStore();
+    await device(store.token);
+    expect((await choose(store, [{ type: 'stock.low', push: true }])).status).toBe(200);
+    holdFlushes();
+    await lowStock(store, crypto.randomUUID(), 'old');
+    await lowStock(store, crypto.randomUUID(), 'new');
+    expect(await db.PushSentKey.count()).toBe(2);
+    // One of the two was sent four days ago.
+    await db.sequelize.query(
+      "UPDATE push_sent_keys SET created_at = now() - interval '4 days' WHERE ctid IN (SELECT ctid FROM push_sent_keys ORDER BY dedupe_key LIMIT 1)"
+    );
+    expect(await pushDigest.forgetSentKeys()).toEqual({ removed: 1 });
+    expect(await db.PushSentKey.count()).toBe(1);
   });
 });
 
