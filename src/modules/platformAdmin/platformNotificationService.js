@@ -128,7 +128,17 @@ const FROM_AUDIT = {
   }),
   'payment_proof.submit': (e) => ({ type: 'payment_proof_submitted', title: 'Payment proof sent', workspaceId: ws(e), link: `/payment-proofs/${e.entityId}` }),
   'support_ticket.create': (e) => ({ type: 'support_ticket', title: 'New support ticket', workspaceId: ws(e), link: `/tickets/${e.entityId}` }),
-  'subscription.referral_code_attach': (e) => ({ type: 'referral_signup', title: 'Store joined with a referral code', workspaceId: ws(e), link: `/workspaces/${ws(e)}` }),
+  // Every use of a code, the moment it is entered (sign-up, plans page, plan switch); live with REALTIME_ENABLED.
+  'subscription.referral_code_attach': (e) => {
+    const code = e.after && e.after.referralCode;
+    return {
+      type: 'referral_signup',
+      title: code ? `A store used the code ${code}` : 'Store joined with a referral code',
+      workspaceId: ws(e),
+      link: `/workspaces/${ws(e)}`,
+      data: { code: code || null, source: (e.metadata && e.metadata.source) || null },
+    };
+  },
   'suggestion.create': (e) => ({
     type: 'suggestion',
     title: 'New suggestion',
