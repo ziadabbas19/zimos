@@ -5,8 +5,8 @@ const env = require('../../config/env');
 const { ConflictError, NotFoundError } = require('../../core/errors/AppError');
 const logger = require('../../core/utils/logger');
 const { recordAudit } = require('../audit/auditService');
-const referralCodes = require('../referrals/referralCodeService');
 const commissions = require('../referrals/commissionService');
+const referralPricing = require('../referrals/referralPricing');
 const { planPrice, addBillingPeriod } = require('./planPricing');
 const specialTerms = require('./specialTermsService');
 const manualPricing = require('./manualPricing');
@@ -51,11 +51,6 @@ const realtimeEvents = require('../realtime/realtimeEvents');
  */
 
 
-/** A code counts only while it exists and is active. */
-function usableCode(code) {
-  return code && code.active ? code : null;
-}
-
 /**
  * What the next charge would be for this subscription and plan: the gross
  * price, the referral discount (active code only) and the amount due. The
@@ -69,18 +64,28 @@ async function priceCharge(subscription, plan, transaction, { override } = {}) {
   const term = override === undefined ? await specialTerms.activePriceOverride(subscription.id, { transaction }) : override;
   const useOverride = Boolean(term && term.currency === plan.currency);
   const grossAmount = useOverride ? Number(term.priceAmount) : planPrice(plan, subscription.billingCycle);
-  const code = subscription.referralCodeId
-    ? await db.ReferralCode.findByPk(subscription.referralCodeId, { transaction })
-    : null;
-  const usable = usableCode(code);
-  const discountAmount = referralCodes.discountFor(usable, grossAmount, plan.currency);
+  // The code's discount for this payment (referrals/referralPricing: its schedule, or its one discount).
+  const referral = await referralPricing.forNewCharge(subscription, plan, { cycle: subscription.billingCycle, gross: grossAmount }, transaction);
   return {
     grossAmount,
-    discountAmount,
-    amount: grossAmount - discountAmount,
+    discountAmount: referral.discountAmount,
+    amount: grossAmount - referral.discountAmount,
     currency: plan.currency,
-    referralCodeId: usable ? usable.id : null,
+    referralCodeId: referral.referralCodeId,
+    referralRedemptionId: referral.referralRedemptionId,
+    referralPaymentNo: referral.referralPaymentNo,
     specialTermsId: useOverride ? term.id : null,
+  };
+}
+
+/** The cycle and monthly price an invoice is for: its move's, else the subscription's plan. */
+async function invoiceTerms(invoice, transaction) {
+  const subscription = await db.Subscription.findByPk(invoice.subscriptionId, { attributes: ['id', 'planId', 'billingCycle'], transaction });
+  const planId = invoice.targetPlanId || (subscription && subscription.planId);
+  const plan = planId ? await db.Plan.findByPk(planId, { attributes: ['id', 'monthlyPriceAmount'], transaction }) : null;
+  return {
+    cycle: invoice.targetBillingCycle || (subscription ? subscription.billingCycle : 'monthly'),
+    monthlyPrice: plan ? Number(plan.monthlyPriceAmount) : 0,
   };
 }
 
@@ -91,28 +96,28 @@ async function priceCharge(subscription, plan, transaction, { override } = {}) {
  */
 async function payableNow(invoice, transaction) {
   const grossAmount = Number(invoice.grossAmount);
-  const pricedWith = invoice.referralCodeId
-    ? await db.ReferralCode.findByPk(invoice.referralCodeId, { transaction })
-    : null;
-  const usable = usableCode(pricedWith);
-  const discountAmount = referralCodes.discountFor(usable, grossAmount, invoice.currency);
+  const referral = await referralPricing.forPayment(invoice, { ...(await invoiceTerms(invoice, transaction)), gross: grossAmount }, transaction);
   return {
     grossAmount,
-    discountAmount,
-    amount: grossAmount - discountAmount,
-    referralCodeId: usable ? usable.id : null,
-    codeLapsed: Boolean(invoice.referralCodeId) && !usable,
+    discountAmount: referral.discountAmount,
+    amount: grossAmount - referral.discountAmount,
+    referralCodeId: referral.referralCodeId,
+    referralRedemptionId: referral.referralRedemptionId,
+    referralPaymentNo: referral.referralPaymentNo,
+    codeLapsed: referral.codeLapsed,
   };
 }
 
 /** `payableNow`'s shape for a price frozen at checkout (see settlePaid). */
-async function frozenPayable(frozen, transaction) {
+async function frozenPayable(invoice, frozen, transaction) {
   const pricedWith = frozen.referralCodeId ? await db.ReferralCode.findByPk(frozen.referralCodeId, { transaction }) : null;
-  const usable = usableCode(pricedWith);
+  const usable = pricedWith && pricedWith.active ? pricedWith : null;
+  const use = await referralPricing.frozenUse(invoice, usable ? usable.id : null, transaction);
   return {
     discountAmount: Number(frozen.discountAmount),
     amount: Number(frozen.amount),
     referralCodeId: usable ? usable.id : null,
+    ...use,
     codeLapsed: Boolean(frozen.referralCodeId) && !usable,
   };
 }
@@ -352,7 +357,7 @@ async function settlePaid(
     where: { subscriptionId: invoice.subscriptionId, status: 'paid' },
     transaction,
   });
-  const payable = frozen ? await frozenPayable(frozen, transaction) : await payableNow(invoice, transaction);
+  const payable = frozen ? await frozenPayable(invoice, frozen, transaction) : await payableNow(invoice, transaction);
 
   await invoice.update(
     {
@@ -362,6 +367,8 @@ async function settlePaid(
       discountAmount: payable.discountAmount,
       amount: payable.amount,
       referralCodeId: payable.referralCodeId,
+      referralRedemptionId: payable.referralRedemptionId,
+      referralPaymentNo: payable.referralPaymentNo,
       amountPaid: amountPaid == null ? payable.amount : amountPaid,
       paymentSource: source,
       paymentRecordedAt: source === 'manual' ? new Date() : null,
@@ -428,7 +435,18 @@ async function settlePaid(
     );
   }
 
-  const commission = await commissions.recordForPaidInvoice(invoice, { isFirstPayment: earlierPaid === 0 }, transaction);
+  // The first payment a use of a code was applied to, kept on the use (its history row).
+  if (payable.referralRedemptionId) {
+    await db.ReferralCodeRedemption.update(
+      { firstInvoiceId: invoice.id },
+      { where: { id: payable.referralRedemptionId, firstInvoiceId: null }, transaction }
+    );
+  }
+  const commission = await commissions.recordForPaidInvoice(
+    invoice,
+    { isFirstPayment: earlierPaid === 0, billingCycle: invoice.targetBillingCycle || subscription.billingCycle },
+    transaction
+  );
   logger.info(
     `billing invoice ${invoice.id} paid (${invoice.amountPaid} of ${invoice.amount} ${invoice.currency} due)` +
       (payable.codeLapsed ? ', referral code no longer active: no discount, no commission' : '') +
@@ -1124,7 +1142,7 @@ async function listCharges(workspaceId) {
   const hasPending = invoices.some((i) => i.status === 'pending');
   let nextCharge = null;
   if (plan && !hasPending && !manualPricing.isManuallyPriced(subscription) && planPrice(plan, subscription.billingCycle) > 0) {
-    const { referralCodeId, specialTermsId, ...pricing } = await priceCharge(subscription, plan);
+    const { referralCodeId, referralRedemptionId, referralPaymentNo, specialTermsId, ...pricing } = await priceCharge(subscription, plan);
     nextCharge = pricing;
   }
   const terms = await specialTerms.listTerms(subscription.id);

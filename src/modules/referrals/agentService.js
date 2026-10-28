@@ -95,7 +95,34 @@ function codeWithStats(code, stats) {
   };
 }
 
-function agentWithCodes(user, codes, stats) {
+/**
+ * Per agent and currency, over every live row: the codes' rows and those of
+ * stores linked by hand (no code, migration 725) alike.
+ */
+async function agentTotals(agentIds) {
+  if (agentIds.length === 0) return new Map();
+  const rows = await db.sequelize.query(
+    `SELECT agent_id AS "agentId", currency,
+            COALESCE(SUM(suggested_commission) FILTER (WHERE payout_status = 'pending'), 0) AS pending,
+            COALESCE(SUM(suggested_commission) FILTER (WHERE payout_status = 'marked_paid'), 0) AS "markedPaid",
+            COALESCE(SUM(amount_paid), 0) AS "amountPaid",
+            COUNT(*)::int AS payments
+       FROM agent_commissions
+      WHERE agent_id IN (:agentIds) AND voided_at IS NULL
+      GROUP BY agent_id, currency
+      ORDER BY currency`,
+    { replacements: { agentIds }, type: QueryTypes.SELECT }
+  );
+  const out = new Map();
+  for (const r of rows) {
+    const list = out.get(r.agentId) || [];
+    list.push({ currency: r.currency, pending: Number(r.pending), markedPaid: Number(r.markedPaid), amountPaid: Number(r.amountPaid), payments: r.payments });
+    out.set(r.agentId, list);
+  }
+  return out;
+}
+
+function agentWithCodes(user, codes, stats, totalsByAgent) {
   const withStats = codes.map((c) => codeWithStats(c, stats));
   const totals = new Map();
   for (const c of withStats) mergeTotals(totals, c.commission);
@@ -103,12 +130,12 @@ function agentWithCodes(user, codes, stats) {
     ...serializeAgent(user),
     codes: withStats,
     merchantsReferred: withStats.reduce((n, c) => n + c.merchantsReferred, 0),
-    commission: [...totals.values()].sort((a, b) => (a.currency < b.currency ? -1 : 1)),
+    commission: totalsByAgent ? totalsByAgent.get(user.id) || [] : [...totals.values()].sort((a, b) => (a.currency < b.currency ? -1 : 1)),
   };
 }
 
 async function listAgents() {
-  const owners = await db.sequelize.query('SELECT DISTINCT agent_id AS "agentId" FROM referral_codes', {
+  const owners = await db.sequelize.query('SELECT DISTINCT agent_id AS "agentId" FROM referral_codes WHERE agent_id IS NOT NULL', {
     type: QueryTypes.SELECT,
   });
   const users = await db.User.findAll({
@@ -129,12 +156,14 @@ async function listAgents() {
     ],
   });
   const stats = await codeStats(codes.map((c) => c.id));
+  const totals = await agentTotals(users.map((u) => u.id));
   return {
     agents: users.map((u) =>
       agentWithCodes(
         u,
         codes.filter((c) => c.agentId === u.id),
-        stats
+        stats,
+        totals
       )
     ),
     defaultCommissionRateBp: DEFAULT_COMMISSION_RATE_BP,
@@ -163,7 +192,36 @@ async function referredMerchants(codes) {
     subscriptionStatus: s.status,
     planName: s.plan ? s.plan.name : null,
     billingCycle: s.billingCycle,
+    via: 'code',
   }));
+}
+
+/** The stores linked to the agent by hand (migration 725), newest first: no code (`code.id` null). */
+async function linkedMerchants(agentId) {
+  const links = await db.AgentLink.findAll({
+    where: { agentId, source: 'manual' },
+    include: [{ model: db.Workspace, as: 'workspace', attributes: ['id', 'name'] }],
+    order: [['startsAt', 'DESC'], ['id', 'ASC']],
+  });
+  if (links.length === 0) return [];
+  const subs = await db.Subscription.findAll({
+    where: { workspaceId: links.map((l) => l.workspaceId) },
+    include: [{ model: db.Plan, as: 'plan', attributes: ['id', 'name'] }],
+  });
+  const subOf = new Map(subs.map((s) => [s.workspaceId, s]));
+  return links.map((l) => {
+    const s = subOf.get(l.workspaceId);
+    return {
+      workspace: { id: l.workspaceId, name: l.workspace ? l.workspace.name : null },
+      code: { id: null, code: null },
+      attachedAt: l.startsAt,
+      subscriptionStatus: s ? s.status : null,
+      planName: s && s.plan ? s.plan.name : null,
+      billingCycle: s ? s.billingCycle : null,
+      via: 'manual',
+      linkOpen: l.endedAt == null,
+    };
+  });
 }
 
 async function getAgent(agentId, { forAgent = false } = {}) {
@@ -181,9 +239,10 @@ async function getAgent(agentId, { forAgent = false } = {}) {
     throw new NotFoundError('Agent');
   }
   const stats = await codeStats(codes.map((c) => c.id));
+  const totals = await agentTotals([user.id]);
   return {
-    agent: agentWithCodes(user, codes, stats),
-    merchants: await referredMerchants(codes),
+    agent: agentWithCodes(user, codes, stats, totals),
+    merchants: [...(await referredMerchants(codes)), ...(await linkedMerchants(agentId))],
     defaultCommissionRateBp: DEFAULT_COMMISSION_RATE_BP,
   };
 }
@@ -221,4 +280,4 @@ async function createAgent({ email, firstCode }, req) {
   });
 }
 
-module.exports = { listAgents, getAgent, createAgent };
+module.exports = { listAgents, getAgent, createAgent, codeStats };
