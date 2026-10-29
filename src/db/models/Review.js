@@ -19,8 +19,15 @@ module.exports = (sequelize, DataTypes) => {
       // Links a merchant typed in for a manual review; a shopper's photos are photoUploadIds.
       photos: { type: DataTypes.JSONB, allowNull: false, defaultValue: [] },
       photoUploadIds: { type: DataTypes.ARRAY(DataTypes.UUID), allowNull: false, defaultValue: [], field: 'photo_upload_ids' },
-      // 'customer' (sent from the storefront), 'manual' or 'import'.
+      // 'customer' (sent from the storefront), 'manual' or 'import' (added by the merchant),
+      // or 'external' (brought by the merchant from another site, migration 731).
       source: { type: DataTypes.STRING(16), allowNull: false, defaultValue: 'customer' },
+      // An external review's site: facebook | google | instagram | whatsapp | other (+ its typed name).
+      externalSource: { type: DataTypes.STRING(20), allowNull: true, field: 'external_source' },
+      externalSourceLabel: { type: DataTypes.STRING(60), allowNull: true, field: 'external_source_label' },
+      externalUrl: { type: DataTypes.STRING(1000), allowNull: true, field: 'external_url' },
+      // The day it was written there (optional).
+      reviewedAt: { type: DataTypes.DATEONLY, allowNull: true, field: 'reviewed_at' },
       orderId: { type: DataTypes.UUID, allowNull: true, field: 'order_id' },
       rating: { type: DataTypes.INTEGER, allowNull: false, validate: { min: 1, max: 5 } },
       comment: { type: DataTypes.TEXT, allowNull: true },
