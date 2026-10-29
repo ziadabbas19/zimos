@@ -86,15 +86,20 @@ const createRole = asyncHandler(async (req, res) => {
 
 // GET /workspaces/:workspaceId/access — restriction state and billing phase.
 // A draft also names its plan and whether its trial can still be taken, for
-// the banner every member sees.
-const getAccess = asyncHandler(async (req, res) => {
-  const state = await access.accessFor(req.tenant.workspaceId);
+// the banner every member sees. Also the `access` part of the dashboard's
+// bootstrap (dashboard/bootstrapService).
+async function accessBody(workspaceId) {
+  const state = await access.accessFor(workspaceId);
   const body = access.serializeAccess(state);
   if (state.draft) {
-    const { planId, planName, trial } = await goLive.draftDetails(req.tenant.workspaceId);
+    const { planId, planName, trial } = await goLive.draftDetails(workspaceId);
     body.draftPlan = { planId, planName, trial };
   }
-  res.json({ access: body });
+  return body;
+}
+
+const getAccess = asyncHandler(async (req, res) => {
+  res.json({ access: await accessBody(req.tenant.workspaceId) });
 });
 
 // GET /workspaces/:workspaceId/plan-features — the keys the store holds and
@@ -133,6 +138,7 @@ const storePreviewToken = asyncHandler(async (req, res) => {
 
 module.exports = {
   create,
+  accessBody,
   getAccess,
   getPlanFeatures,
   startTrial,

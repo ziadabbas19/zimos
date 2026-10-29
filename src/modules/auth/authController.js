@@ -145,17 +145,22 @@ const listSessions = [
 // has not chosen one — the dashboard asks for it before anything else.
 // `confirmed`: its email (or phone) is confirmed; until it is, starting a
 // trial and publishing are refused and the dashboard shows its banner.
+// Also the `me` part of the dashboard's bootstrap (dashboard/bootstrapService).
+async function meBody(account) {
+  const user = account.toSafeJSON();
+  const needsPlan = await signupPolicy.needsPlan(account);
+  const confirmed = signupPolicy.isVerified(account);
+  // What the account settings can offer: a password to confirm changes
+  // with (else a code to the current email), and the phone change switch.
+  const settings = { hasPassword: Boolean(account.passwordHash), phoneChange: env.account.phoneChangeEnabled === true };
+  if (user.username) return { user, needsPlan, confirmed, account: settings };
+  return { user, needsPlan, confirmed, account: settings, suggestedUsername: await usernameService.suggestFor(user.email) };
+}
+
 const me = [
   authenticate,
   asyncHandler(async (req, res) => {
-    const user = req.user.toSafeJSON();
-    const needsPlan = await signupPolicy.needsPlan(req.user);
-    const confirmed = signupPolicy.isVerified(req.user);
-    // What the account settings can offer: a password to confirm changes
-    // with (else a code to the current email), and the phone change switch.
-    const account = { hasPassword: Boolean(req.user.passwordHash), phoneChange: env.account.phoneChangeEnabled === true };
-    if (user.username) return res.json({ user, needsPlan, confirmed, account });
-    return res.json({ user, needsPlan, confirmed, account, suggestedUsername: await usernameService.suggestFor(user.email) });
+    res.json(await meBody(req.user));
   }),
 ];
 
@@ -316,6 +321,7 @@ module.exports = {
   revokeAllSessions,
   listSessions,
   me,
+  meBody,
   usernameAvailable,
   changeUsername,
   changeName,

@@ -9,6 +9,7 @@ const { recordAudit } = require('../audit/auditService');
 const { forViewer } = require('../../core/utils/phoneMask');
 const searchService = require('./searchService');
 const setupGuideService = require('./setupGuideService');
+const bootstrapService = require('./bootstrapService');
 
 /**
  * Dashboard-wide helpers (SPEC §18.6): global search, the setup guide and the
@@ -33,6 +34,22 @@ router.get(
   validate({ params, query: Joi.object({ q: Joi.string().trim().max(100).allow('').default('') }) }),
   // Customers' phones are masked for roles without customers.reveal_sensitive, as in the orders list.
   asyncHandler(async (req, res) => res.json(forViewer(req, await searchService.search(req.tenant, req.query.q))))
+);
+
+// What the dashboard's frame reads on every page load, in one answer
+// (bootstrapService). Any member; the parts a role may not read are null.
+// The id is checked before the membership lookup, so a malformed one is a 422.
+router.get(
+  '/bootstrap',
+  authenticate,
+  validate({ params }),
+  resolveTenant,
+  asyncHandler(async (req, res) => {
+    const bootstrap = await bootstrapService.bootstrap(req);
+    // One member's own data: never kept by a shared cache, nor by the browser.
+    res.set('Cache-Control', 'private, no-store');
+    res.json({ bootstrap });
+  })
 );
 
 router.get(
