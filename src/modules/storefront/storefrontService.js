@@ -66,8 +66,9 @@ async function getProductBySlugOrId(workspaceId, idOrSlug) {
   });
   if (!product) throw new NotFoundError('Product');
 
-  // Approved reviews with author, photos and the verified-buyer flag.
-  const { rating, reviews } = await require('../reviews/manualReviews').publicReviews(workspaceId, product.id);
+  // The stars (published reviews from delivered purchases only) and the published reviews,
+  // with first name, photos and the verified-buyer flag (reviews/reviewService.js).
+  const { rating, reviews } = await reviewService.publicProductReviews(workspaceId, product.id);
   const publicProduct = toPublicProduct(product);
   // The product's quantity bundle, every tier priced for every variant (null when it has none).
   const bundlePricing = require('../bundles/bundlePricing');
@@ -150,6 +151,13 @@ async function getStorefront(workspaceId) {
     orderBump: await presentStoreBump(w),
     // The store as an installable app for its shoppers, or null (storeApp.js).
     storeApp: require('./storeApp').publicStoreApp(w),
+    // The store's own stars (published store reviews from delivered purchases,
+    // reviews/reviewRating.js) and whether shoppers may send reviews now
+    // (REVIEWS_PUBLIC_SUBMISSION_ENABLED): the storefront shows its forms only then.
+    reviews: {
+      open: require('../../config/env').reviews.publicSubmissionEnabled,
+      storeRating: await require('../reviews/reviewRating').storeRating(w.id),
+    },
     // The browser ad-pixel IDs; the rest of settings stays private.
     ...(await publicTracking(w.id)),
   };

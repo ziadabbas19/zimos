@@ -14,8 +14,12 @@ const router = Router({ mergeParams: true });
 router.use(authenticate, resolveTenant, requirePermission(PERMISSIONS.PRODUCTS_MANAGE));
 
 router.get('/', validate(schemas.list), controller.list);
+// How many wait, are published, are hidden: the sidebar's badge.
+router.get('/summary', validate(schemas.summary), controller.summary);
 router.patch('/:reviewId', validate(schemas.moderate), controller.moderate);
-// POST / (add a review by hand) and DELETE /:reviewId (remove one of those).
+// Any review: a shopper's or one added by hand.
+router.delete('/:reviewId', validate(schemas.remove), controller.remove);
+// POST / (add a review by hand).
 router.use(require('./manualReviews').router);
 
 module.exports = router;

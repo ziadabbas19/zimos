@@ -63,7 +63,8 @@ async function loadOrderSubject(workspaceId, orderId) {
   const productId = items.map((i) => i.productId).find(Boolean);
   if (productId && base) {
     const product = await db.Product.findOne({ where: { id: productId, workspaceId }, attributes: ['slug'] });
-    if (product && product.slug) reviewLink = `${base}/products/${product.slug}#reviews`;
+    // `review` carries the order's signed token, so the review is linked to this order (modules/reviews).
+    if (product && product.slug) reviewLink = `${base}/products/${product.slug}?review=${require('../storefront/orderTrackingExtras').tokenFor(order)}#reviews`;
   }
 
   return {
