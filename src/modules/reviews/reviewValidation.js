@@ -50,6 +50,8 @@ module.exports = {
     query: Joi.object({
       status: Joi.string().valid('pending', 'approved', 'rejected').optional(),
       kind: Joi.string().valid('product', 'store').optional(),
+      // customer (a shopper's), manual / import (added by hand), external (from another site).
+      source: Joi.string().valid('customer', 'manual', 'import', 'external').optional(),
       productId: uuid.optional(),
       // Without a limit every review comes back, as before.
       limit: Joi.number().integer().min(1).max(200).optional(),

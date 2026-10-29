@@ -186,10 +186,11 @@ function staffPhotos(review) {
  * only to someone who may see customers (customers.view), and are hidden on a
  * locked store's locked customers (orders/orderLock) like everywhere else.
  */
-async function listReviews(workspaceId, { status, kind, productId, limit, offset = 0 } = {}, req = null) {
+async function listReviews(workspaceId, { status, kind, source, productId, limit, offset = 0 } = {}, req = null) {
   const where = { workspaceId };
   if (status) where.status = status;
   if (kind) where.kind = kind;
+  if (source) where.source = source;
   if (productId) where.productId = productId;
   const { rows, count } = await db.Review.findAndCountAll({
     where,
@@ -233,6 +234,11 @@ async function listReviews(workspaceId, { status, kind, productId, limit, offset
       status: row.status,
       showText: row.showText,
       source: row.source,
+      // An external review's site, its link and the day it was written there (manualReviews.js).
+      externalSource: row.externalSource,
+      externalSourceLabel: row.externalSourceLabel,
+      externalUrl: row.externalUrl,
+      reviewedAt: row.reviewedAt,
       authorName: hide(row.authorName),
       // The phone the reviewer typed (also when no customer has it).
       reviewerPhone: seesContact ? hide(row.phoneNormalized) : null,
@@ -325,10 +331,14 @@ function publicPhotoUrl(workspaceId, uploadId) {
   return `${env.appUrl.replace(/\/$/, '')}/api/${env.apiVersion}/store/${workspaceId}/review-photos/${uploadId}`;
 }
 
-/** Published reviews as a shopper sees them: first name, stars, and the text and photos unless published as stars only. */
+/**
+ * Published reviews as a shopper sees them: first name, stars, and the text
+ * and photos unless published as stars only. Reviews brought from another
+ * site are never in this list: they show apart (publicExternal).
+ */
 async function publicList(workspaceId, where, limit = 50) {
   const rows = await db.Review.findAll({
-    where: { workspaceId, status: 'approved', ...where },
+    where: { workspaceId, status: 'approved', source: { [Op.ne]: 'external' }, ...where },
     order: [['createdAt', 'DESC']],
     limit,
     attributes: ['id', 'rating', 'comment', 'createdAt', 'authorName', 'photos', 'photoUploadIds', 'source', 'showText'],
@@ -349,19 +359,52 @@ async function publicList(workspaceId, where, limit = 50) {
   }));
 }
 
-/** A product's stars (delivered purchases only) and its latest published reviews. */
+/**
+ * Published reviews the merchant brought from other sites, apart from the
+ * shoppers' own: each with its source (its name for "other"), a link to the
+ * original and the day it was written there. Never a verified buyer, never
+ * in the stars.
+ */
+async function publicExternal(workspaceId, where, limit = 50) {
+  const rows = await db.Review.findAll({
+    where: { workspaceId, status: 'approved', source: 'external', ...where },
+    order: [
+      ['reviewedAt', 'DESC NULLS LAST'],
+      ['createdAt', 'DESC'],
+    ],
+    limit,
+    attributes: ['id', 'rating', 'comment', 'createdAt', 'authorName', 'photos', 'showText', 'externalSource', 'externalSourceLabel', 'externalUrl', 'reviewedAt'],
+  });
+  return rows.map((row) => ({
+    id: row.id,
+    rating: row.rating,
+    comment: row.showText ? row.comment : null,
+    authorName: publicAuthor(row),
+    photos: row.showText && Array.isArray(row.photos) ? row.photos : [],
+    source: row.externalSource,
+    sourceLabel: row.externalSource === 'other' ? row.externalSourceLabel || null : null,
+    url: row.externalUrl || null,
+    reviewedAt: row.reviewedAt || null,
+    createdAt: row.createdAt,
+    verified: false,
+  }));
+}
+
+/** A product's stars (delivered purchases only), its latest published reviews, and those brought from other sites. */
 async function publicProductReviews(workspaceId, productId) {
   return {
     rating: await rating.productRating(workspaceId, productId),
     reviews: await publicList(workspaceId, { kind: 'product', productId }),
+    externalReviews: await publicExternal(workspaceId, { kind: 'product', productId }),
   };
 }
 
-/** The store's stars and its latest published store reviews. */
+/** The store's stars, its latest published store reviews, and those brought from other sites. */
 async function publicStoreReviews(workspaceId) {
   return {
     rating: await rating.storeRating(workspaceId),
     reviews: await publicList(workspaceId, { kind: 'store' }),
+    externalReviews: await publicExternal(workspaceId, { kind: 'store' }),
   };
 }
 
@@ -389,6 +432,7 @@ module.exports = {
   publicAuthor,
   publicProductReviews,
   publicStoreReviews,
+  publicExternal,
   publicPhoto,
   publicRatingFor,
 };

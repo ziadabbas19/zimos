@@ -68,7 +68,7 @@ async function getProductBySlugOrId(workspaceId, idOrSlug) {
 
   // The stars (published reviews from delivered purchases only) and the published reviews,
   // with first name, photos and the verified-buyer flag (reviews/reviewService.js).
-  const { rating, reviews } = await reviewService.publicProductReviews(workspaceId, product.id);
+  const { rating, reviews, externalReviews } = await reviewService.publicProductReviews(workspaceId, product.id);
   const publicProduct = toPublicProduct(product);
   // The product's quantity bundle, every tier priced for every variant (null when it has none).
   const bundlePricing = require('../bundles/bundlePricing');
@@ -90,6 +90,8 @@ async function getProductBySlugOrId(workspaceId, idOrSlug) {
     purchaseLimits: require('../catalog/purchaseLimits').limitsOf(product),
     rating,
     reviews,
+    // Reviews the merchant brought from other sites, shown apart with their source (never in `rating`).
+    externalReviews,
   };
 }
 
