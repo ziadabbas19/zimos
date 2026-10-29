@@ -2,10 +2,12 @@
 
 // GET /plans/public (billing/publicPlansService): the plans on the marketing
 // site and at sign-up — active and public only, ordered by display_order,
-// nothing internal — and the console's plan fields behind it.
+// nothing internal — the pay-per-order plan beside them, and the console's
+// plan fields behind it.
 
 const { app, request, makePlatformUser } = require('../helpers/factories');
 const db = require('../../src/db/models');
+const env = require('../../src/config/env');
 
 let seq = 0;
 function plan(overrides = {}) {
@@ -34,7 +36,7 @@ describe('GET /plans/public', () => {
     await plan({ isPublic: false });
     const res = await getPublic();
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ plans: [] });
+    expect(res.body).toEqual({ plans: [], payPerOrder: null });
     expect(res.headers['cache-control']).toMatch(/max-age=60/);
   });
 
@@ -75,6 +77,74 @@ describe('GET /plans/public', () => {
     const [row] = (await getPublic()).body.plans;
     expect(row.maxStores).toBeNull();
     expect(row.maxFunnelsPerMonth).toBeNull();
+  });
+});
+
+describe('GET /plans/public — the pay-per-order plan', () => {
+  const feePlan = (overrides = {}) =>
+    plan({ name: 'Pay per order', monthlyPriceAmount: 0, yearlyPriceAmount: 0, perOrderFeeAmount: 500, walletFreeOrders: 10, walletDebtLimitAmount: 2500, ...overrides });
+
+  afterEach(() => {
+    env.wallet.enabled = false;
+    env.ordersLock.enabled = false;
+  });
+
+  it('sends it beside the list while WALLET_ENABLED is on, never in it', async () => {
+    env.wallet.enabled = true;
+    const monthly = await plan({ name: 'Starter' });
+    const ppo = await feePlan();
+
+    const res = await getPublic();
+    expect(res.status).toBe(200);
+    expect(res.body.plans.map((p) => p.id)).toEqual([monthly.id]);
+    expect(res.body.payPerOrder).toEqual({
+      id: ppo.id,
+      name: 'Pay per order',
+      currency: 'EGP',
+      feePerOrder: 500,
+      freeOrders: 10,
+      feeChargedAt: 'placement',
+    });
+  });
+
+  it('serves the free orders the console set, 0 included', async () => {
+    env.wallet.enabled = true;
+    const ppo = await feePlan({ walletFreeOrders: 25 });
+    expect((await getPublic()).body.payPerOrder.freeOrders).toBe(25);
+
+    await ppo.update({ walletFreeOrders: 0 });
+    expect((await getPublic()).body.payPerOrder.freeOrders).toBe(0);
+  });
+
+  it('says the fee is taken at confirmation while ORDERS_LOCK_ENABLED is on', async () => {
+    env.wallet.enabled = true;
+    env.ordersLock.enabled = true;
+    await feePlan();
+    expect((await getPublic()).body.payPerOrder.feeChargedAt).toBe('confirmation');
+  });
+
+  it.each([
+    ['inactive', { isActive: false }],
+    ['hidden from sign-up', { isPublic: false }],
+  ])('leaves it out when %s', async (_label, overrides) => {
+    env.wallet.enabled = true;
+    await feePlan(overrides);
+    expect((await getPublic()).body.payPerOrder).toBeNull();
+  });
+
+  it('leaves it out while WALLET_ENABLED is off', async () => {
+    await feePlan();
+    const res = await getPublic();
+    expect(res.body).toEqual({ plans: [], payPerOrder: null });
+  });
+
+  it('serves nothing internal of it', async () => {
+    env.wallet.enabled = true;
+    await feePlan();
+    const row = (await getPublic()).body.payPerOrder;
+    for (const internal of ['key', 'walletDebtLimitAmount', 'debtLimit', 'transactionFeeBp', 'codFeeBp', 'isPublic', 'isActive', 'displayOrder']) {
+      expect(row).not.toHaveProperty(internal);
+    }
   });
 });
 

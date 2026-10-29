@@ -10,7 +10,8 @@ const { availableFeatureKeys } = require('./featureCatalog');
  * The plans offered to the public — on the marketing site's pricing page and
  * at sign-up: active and marked public (plans.is_public, migration 126),
  * ordered by display_order. Only what a buyer needs is served: no plan code,
- * no fees, nothing internal.
+ * no commission, no debt limit, nothing internal — the pay-per-order plan's
+ * fee for one order is its price, so it is served.
  *
  * GET /plans/public is read by every visit to the pricing page, so the list
  * is kept for a few seconds; saving or deleting a plan in the console drops
@@ -41,8 +42,27 @@ function serializePublicPlan(plan) {
 
 // A pay-per-order plan (a fee per order, nothing monthly) is never listed
 // with the others or chosen at sign-up: it is chosen from the Subscription
-// section, while WALLET_ENABLED is on (billing/walletService).
+// section, while WALLET_ENABLED is on (billing/walletService). The pricing
+// page gets it on its own (`payPerOrder` below).
 const OFFERED = { isPublic: true, isActive: true, perOrderFeeAmount: 0 };
+
+/**
+ * The pay-per-order plan as the pricing page shows it: the fee for one order
+ * in minor units, the orders a store places free before any fee
+ * (plans.wallet_free_orders), and when the fee is taken — at confirmation
+ * while ORDERS_LOCK_ENABLED is on (billing/confirmFeeService), otherwise when
+ * the order is placed (walletService.chargeOrderFee).
+ */
+function serializePayPerOrderPlan(plan) {
+  return {
+    id: plan.id,
+    name: plan.name,
+    currency: plan.currency,
+    feePerOrder: Number(plan.perOrderFeeAmount),
+    freeOrders: Number(plan.walletFreeOrders || 0),
+    feeChargedAt: env.ordersLock.enabled === true ? 'confirmation' : 'placement',
+  };
+}
 
 /**
  * The one order plans are listed in — here, in the Subscription section
@@ -63,12 +83,26 @@ async function loadOffered(transaction) {
   });
 }
 
-/** GET /plans/public — the list, possibly empty. */
+/**
+ * The one the Subscription section offers (walletService.offeredFeePlan:
+ * public, active, EGP, nothing monthly), and only while WALLET_ENABLED is on,
+ * so the pricing page never shows a plan a merchant can't take. Else null.
+ */
+async function loadPayPerOrder() {
+  // eslint-disable-next-line global-require
+  const wallet = require('./walletService');
+  if (!wallet.enabled()) return null;
+  const plan = await wallet.offeredFeePlan();
+  return plan ? serializePayPerOrderPlan(plan) : null;
+}
+
+/** GET /plans/public — the list, possibly empty, and the pay-per-order plan or null. */
 async function listPublicPlans() {
-  if (cached && cached.until > Date.now()) return cached.plans;
-  const plans = (await loadOffered()).map(serializePublicPlan);
-  if (CACHE_MS > 0) cached = { plans, until: Date.now() + CACHE_MS };
-  return plans;
+  if (cached && cached.until > Date.now()) return cached.offer;
+  const [plans, payPerOrder] = await Promise.all([loadOffered(), loadPayPerOrder()]);
+  const offer = { plans: plans.map(serializePublicPlan), payPerOrder };
+  if (CACHE_MS > 0) cached = { offer, until: Date.now() + CACHE_MS };
+  return offer;
 }
 
 function invalidate() {
