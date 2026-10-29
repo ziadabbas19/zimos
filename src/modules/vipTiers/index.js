@@ -80,10 +80,12 @@ async function applyAtCheckout(workspace, items, shopper, orderBody) {
   if (!tier) return { items, tier: null };
   let out = items;
   if (tier.percentOff > 0) {
-    const ids = items.filter((i) => !i.offerId && i.variantId).map((i) => i.variantId);
+    // A combo's lines keep the combo's price (combos/comboPricing.js).
+    const COMBO = Symbol.for('zimos.combo');
+    const ids = items.filter((i) => !i.offerId && !i[COMBO] && i.variantId).map((i) => i.variantId);
     const variants = new Map((await db.ProductVariant.findAll({ where: { id: ids, workspaceId: workspace.id }, include: [{ model: db.Product, as: 'product', attributes: ['id', 'pageSettings'] }] })).map((v) => [v.id, v]));
     out = items.map((item) => {
-      const v = !item.offerId && variants.get(item.variantId);
+      const v = !item.offerId && !item[COMBO] && variants.get(item.variantId);
       if (!v) return item;
       const current = item[PINNED] !== undefined ? Number(item[PINNED]) : Number(effectiveVariantPrice(v, v.product).priceAmount);
       if (current === 0) return item; // gifts and trials stay free

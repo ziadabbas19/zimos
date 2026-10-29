@@ -421,6 +421,9 @@ async function createOrder(workspaceId, payload, req, options = {}) {
         throw bumpFailure(err);
       });
       line.isOrderBump = isOrderBump;
+      // A line of a combo (combos/comboPricing.expandItems): priced by the combo below.
+      const combo = require('../combos/comboPricing').comboOf(item);
+      if (combo) Object.assign(line, { comboKey: combo.key, comboId: combo.comboId, comboName: combo.name, combo });
       // The shopper's answers to the product's custom fields, checked against
       // its current definition (catalog/customFields.js). Required fields are
       // enforced for the storefront checkout (customFields.enforceRequired);
@@ -461,9 +464,12 @@ async function createOrder(workspaceId, payload, req, options = {}) {
     // A funnel with a currency of its own takes orders in it only (funnels/funnelCurrency.js).
     await require('../funnels/funnelCurrency').assertOrderCurrency(workspaceId, funnelId, pricedLines[0] && pricedLines[0].currency, transaction);
 
+    // Combos (modules/combos): their lines' share of each combo's saving, first; quantity
+    // bundles never cover those lines.
+    const comboSnapshots = require('../combos/comboPricing').applyComboPricing(pricedLines);
     // Quantity bundles (modules/bundles): lowers the totals of the lines they
     // cover, before anything else looks at the subtotal.
-    const bundleSnapshots = await applyBundleTiers(workspaceId, pricedLines, transaction);
+    const bundleSnapshots = [...comboSnapshots, ...(await applyBundleTiers(workspaceId, pricedLines, transaction))];
 
     const subtotal = add(...pricedLines.map((l) => l.lineTotalAmount));
     const productIds = pricedLines.map((l) => l.productId);
@@ -668,6 +674,9 @@ async function createOrder(workspaceId, payload, req, options = {}) {
             customizations: line.customizations || null,
             optionsSnapshot: line.optionsSnapshot || null,
             isOrderBump: line.isOrderBump,
+            comboId: line.comboId || null,
+            comboKey: line.comboKey || null,
+            comboNameSnapshot: line.comboName || null,
           },
           { transaction }
         )

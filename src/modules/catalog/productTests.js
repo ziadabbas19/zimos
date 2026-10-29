@@ -343,9 +343,11 @@ async function visitorPrices(workspaceId, variantIds, visitorId, transaction) {
 /** The items with each plain variant line marked with this visitor's test price (read by priceLine). */
 async function pinPrices(workspaceId, items, visitorId, transaction) {
   if (!visitorId || !Array.isArray(items) || items.length === 0) return items;
-  const prices = await visitorPrices(workspaceId, items.filter((i) => !i.offerId).map((i) => i.variantId), visitorId, transaction);
+  // A combo's lines are priced by the combo (combos/comboPricing.js), never by a test.
+  const plain = (item) => !item.offerId && !item[Symbol.for('zimos.combo')];
+  const prices = await visitorPrices(workspaceId, items.filter(plain).map((i) => i.variantId), visitorId, transaction);
   if (prices.size === 0) return items;
-  return items.map((item) => (!item.offerId && prices.has(item.variantId) ? { ...item, [TEST_PRICE]: prices.get(item.variantId) } : item));
+  return items.map((item) => (plain(item) && prices.has(item.variantId) ? { ...item, [TEST_PRICE]: prices.get(item.variantId) } : item));
 }
 
 /** The test price pinPrices put on an item, or undefined. */

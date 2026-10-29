@@ -92,6 +92,8 @@ async function getProductBySlugOrId(workspaceId, idOrSlug) {
     reviews,
     // Reviews the merchant brought from other sites, shown apart with their source (never in `rating`).
     externalReviews,
+    // The combos this page offers ([] while PRODUCT_COMBOS_ENABLED is off, modules/combos).
+    combos: await require('../combos/comboService').forProduct(workspaceId, product.id),
   };
 }
 

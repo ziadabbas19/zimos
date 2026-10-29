@@ -56,6 +56,8 @@ router.get('/store-reviews', validate(reviewSchemas.storeList), reviewController
 router.post('/store-reviews', reviewController.submissionGate, reviewLimiter, validate(reviewSchemas.submitStore), reviewController.submitStore);
 // A shopper's photo on a published review (private storage, served while the review shows it).
 router.get('/review-photos/:uploadId', validate(reviewSchemas.photo), reviewController.photo);
+// The combos a product's page shows (modules/combos, PRODUCT_COMBOS_ENABLED).
+router.use(require('../combos/comboRoutes').store);
 // A product page's A/B test: which variant this visitor sees (catalog/productTests.js).
 router.use(require('../catalog/productTests').publicRouter);
 router.get('/collections', validate(schemas.workspaceParam), controller.listCollections);

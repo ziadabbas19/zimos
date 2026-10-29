@@ -74,6 +74,10 @@ async function apply(workspaceId, orderId, requested, req, transaction) {
   }
 
   const existing = await db.OrderItem.findAll({ where: { orderId: order.id }, order: [['createdAt', 'ASC'], ['id', 'ASC']], transaction });
+  // A combo's lines share its price; editing them one by one would break it (modules/combos).
+  if (existing.some((item) => item.comboKey)) {
+    throw new AppError('ORDER_HAS_COMBO', "An order with a combo cannot have its items edited; cancel it and place it again", 409);
+  }
   const before = totalsOf(order);
   const beforeItems = existing.map((i) => ({ name: i.productNameSnapshot, quantity: i.quantity }));
   const existingByKey = new Map();

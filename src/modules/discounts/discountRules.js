@@ -57,8 +57,8 @@ function scheduleOpen(schedule, now = new Date()) {
 
 /** A line sold below its list price already: a sale price, or a quantity bundle's tier. */
 const alreadyDiscounted = (line) => Boolean(line.onSale) || Number(line.lineDiscountAmount) > 0;
-/** A line that is an offer: a pack or bundle offer, an order bump, an upsell. */
-const isOfferLine = (line) => Boolean(line.offerId || line.isOrderBump || line.isUpsell);
+/** A line that is an offer: a pack or bundle offer, an order bump, an upsell, a combo's line. */
+const isOfferLine = (line) => Boolean(line.offerId || line.isOrderBump || line.isUpsell || line.comboKey);
 
 /**
  * Whether one priced line is covered by the coupon: never a free gift; in its

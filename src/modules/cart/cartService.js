@@ -56,7 +56,55 @@ async function getCart(workspaceId, cartId) {
   const testPrices = await productTests.visitorPrices(workspaceId, (cart.items || []).filter((i) => !i.offerId).map((i) => i.variantId), cart.visitorId);
   // Quantity bundles lower the lines they cover, as they will on the order.
   const optionIndex = await menuOptions.choiceIndex(workspaceId, (cart.items || []).map((i) => i.selectedOptions));
-  return require('../bundles/bundlePricing').applyToCartTotals(workspaceId, cart, withComputedTotals(cart, testPrices, optionIndex));
+  const totals = withComputedTotals(cart, testPrices, optionIndex);
+  await priceCombos(workspaceId, cart, totals);
+  return require('../bundles/bundlePricing').applyToCartTotals(workspaceId, cart, totals);
+}
+
+/**
+ * A combo's line (modules/combos) at the combo's price now, with what it
+ * holds; one that can no longer be bought (archived, a product gone, combos
+ * off) shows `unavailable` and counts nothing. The checkout prices it again.
+ */
+async function priceCombos(workspaceId, cart, totals) {
+  const rows = cart.items || [];
+  if (!rows.some((row) => row.comboId)) return;
+  const comboService = require('../combos/comboService');
+  for (const [index, item] of totals.items.entries()) {
+    const row = rows[index];
+    if (!row || !row.comboId) continue;
+    const line = await comboService.cartLine(workspaceId, row.comboId, row.comboSelection);
+    const unit = line.unavailable ? 0 : line.unitPrice;
+    Object.assign(item, {
+      comboId: row.comboId,
+      comboSelection: row.comboSelection || [],
+      combo: line.unavailable ? null : line.combo,
+      unavailable: Boolean(line.unavailable),
+      fullUnitPrice: line.unavailable ? null : line.fullUnitPrice,
+      currentUnitPrice: unit,
+      priceChanged: !line.unavailable && Number(unit) !== Number(row.unitPriceSnapshot),
+      lineTotal: Number(unit) * item.quantity,
+    });
+  }
+  totals.subtotal = totals.items.reduce((sum, i) => sum + i.lineTotal, 0);
+}
+
+/** A whole combo as one cart line; the same combo with the same picks adds to its line. */
+async function addCombo(workspaceId, cartId, { comboId, comboSelection, quantity }) {
+  const pricing = require('../combos/comboPricing');
+  const combo = await pricing.activeCombo(workspaceId, comboId);
+  const components = await pricing.resolveComponents(workspaceId, combo, comboSelection);
+  const price = pricing.priceComponents(combo, components);
+  // Only the components the shopper picks, in the combo's order: the same picks are the same line.
+  const selection = components.filter(({ item }) => item.pickVariant).map(({ item, variant }) => ({ itemId: item.id, variantId: variant.id }));
+  const lines = await db.CartItem.findAll({ where: { cartId, comboId: combo.id } });
+  const existing = lines.find((line) => JSON.stringify(line.comboSelection || []) === JSON.stringify(selection));
+  if (existing) {
+    await existing.update({ quantity: existing.quantity + quantity, unitPriceSnapshot: price.total });
+  } else {
+    await db.CartItem.create({ cartId, variantId: components[0].variant.id, comboId: combo.id, comboSelection: selection, quantity, unitPriceSnapshot: price.total });
+  }
+  return getCart(workspaceId, cartId);
 }
 
 /**
@@ -108,7 +156,8 @@ function withComputedTotals(cart, testPrices = new Map(), optionIndex = new Map(
   };
 }
 
-async function addItem(workspaceId, cartId, { variantId, offerId, quantity, customizations, options, visitorId }) {
+async function addItem(workspaceId, cartId, { variantId, offerId, quantity, customizations, options, visitorId, comboId, comboSelection }) {
+  if (comboId) return addCombo(workspaceId, cartId, { comboId, comboSelection, quantity });
   // A draft or archived product isn't for sale, even if its variant row is active.
   const variant = await db.ProductVariant.findOne({
     where: { id: variantId, workspaceId, status: 'active' },
@@ -143,7 +192,7 @@ async function addItem(workspaceId, cartId, { variantId, offerId, quantity, cust
 
   // The same product with different answers ("Ahmed" / "Sara" engraved) is a
   // line of its own; only identical ones add up.
-  const candidates = await db.CartItem.findAll({ where: { cartId, variantId, offerId: offerId || null } });
+  const candidates = await db.CartItem.findAll({ where: { cartId, variantId, offerId: offerId || null, comboId: null } });
   const existing = candidates.find(
     (line) => sameCustomizations(line.customizations, snapshot) && menuOptions.sameSelection(line.selectedOptions, picked.input)
   );
@@ -173,7 +222,8 @@ async function updateItemQuantity(workspaceId, cartId, itemId, quantity) {
   if (quantity <= 0) {
     await item.destroy();
   } else {
-    await require('../catalog/purchaseLimits').assertCartMax(workspaceId, cartId, item.variantId, quantity, item.id, item.offerId || null);
+    // A combo's limits are its products', checked at checkout on each of them.
+    if (!item.comboId) await require('../catalog/purchaseLimits').assertCartMax(workspaceId, cartId, item.variantId, quantity, item.id, item.offerId || null);
     await item.update({ quantity });
   }
   return getCart(workspaceId, cartId);
@@ -203,6 +253,9 @@ async function toOrderItems(workspaceId, cartId) {
       customizations: snapshotToInput(i.customizations),
       // Checked and priced again from the menu when the order is made.
       options: i.selectedOptions || undefined,
+      // A whole combo: the checkout turns it into its components (combos/comboPricing.expandItems).
+      comboId: i.comboId || undefined,
+      comboSelection: i.comboSelection || undefined,
     })),
   };
 }
