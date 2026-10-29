@@ -79,8 +79,9 @@ describe('GET /workspaces/:id/bootstrap', () => {
     expect(boot.shortcuts).toEqual(own.shortcuts.body.shortcuts);
     expect(boot.shortcuts).toEqual(['/orders', '/catalog']);
     expect(boot.confirmationCounts).toEqual(own.counts.body.counts);
-    expect(boot.orderPipeline).toEqual(own.pipeline.body);
     expect(boot.inboxUnread).toEqual(own.inbox.body);
+    // The pipeline is left to its own request (it counts every order of the store).
+    expect(boot).not.toHaveProperty('orderPipeline');
     // The order placed above is in the counts, so the parity is not between two empty answers.
     expect(boot.confirmationCounts.pending + boot.confirmationCounts.inProgress).toBeGreaterThan(0);
   });
@@ -93,7 +94,6 @@ describe('GET /workspaces/:id/bootstrap', () => {
     expect(res.status).toBe(200);
     const boot = res.body.bootstrap;
     expect(boot.confirmationCounts).toBeNull();
-    expect(boot.orderPipeline).toBeNull();
     expect(boot.inboxUnread).toBeNull();
 
     const own = await separateReads(editor.accessToken, ws);
@@ -114,7 +114,6 @@ describe('GET /workspaces/:id/bootstrap', () => {
     const boot = (await get(agent.accessToken, `/workspaces/${ws}/bootstrap`)).body.bootstrap;
     const own = await separateReads(agent.accessToken, ws);
     expect(boot.confirmationCounts).toEqual(own.counts.body.counts);
-    expect(boot.orderPipeline).toEqual(own.pipeline.body);
     expect(boot.inboxUnread).toEqual(own.inbox.body);
   });
 

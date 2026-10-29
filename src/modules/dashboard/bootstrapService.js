@@ -9,7 +9,6 @@ const { accessBody } = require('../workspaces/workspaceController');
 const { planFeaturesFor } = require('../billing/planFeatureGate');
 const notificationService = require('../notifications/merchantNotificationService');
 const confirmationService = require('../cod/confirmationService');
-const orderService = require('../orders/orderService');
 const inboxService = require('../whatsapp/inboxService');
 
 /**
@@ -27,12 +26,16 @@ const inboxService = require('../whatsapp/inboxService');
  *   notifications       GET /workspaces/:id/notifications/summary
  *   shortcuts           GET /workspaces/:id/shortcuts    .shortcuts
  *   confirmationCounts  GET /workspaces/:id/confirmation-tasks/counts .counts
- *   orderPipeline       GET /workspaces/:id/orders/pipeline
  *   inboxUnread         GET /workspaces/:id/inbox/conversations?status=open&unread=true&limit=1
  *
- * The last three are null for a role its own endpoint refuses (that endpoint
+ * The last two are null for a role its own endpoint refuses (that endpoint
  * still answers 403 when asked). No lists beyond what the frame shows: the
  * inbox part is the one-row read the menu's unread badge makes.
+ *
+ * Not here: the order pipeline behind the menu's "to ship" badge. It counts
+ * every order of the store by stage (300-500 ms on a store with 60,000
+ * orders), and the whole frame would wait for it; asked on its own, as
+ * before, it only holds that badge back.
  *
  * The frame-level parts fail the whole request; a badge's part that fails is
  * null and logged, so one broken count does not take the dashboard down with
@@ -59,7 +62,7 @@ async function bootstrap(req) {
   const { workspaceId } = tenant;
 
   // Independent reads, side by side: each takes its own connection from the pool.
-  const [me, uiPreferences, workspaces, access, planFeatures, notifications, confirmationCounts, orderPipeline, inboxUnread] =
+  const [me, uiPreferences, workspaces, access, planFeatures, notifications, confirmationCounts, inboxUnread] =
     await Promise.all([
       meBody(user),
       uiPreferencesService.read(user.id),
@@ -69,9 +72,6 @@ async function bootstrap(req) {
       notificationService.summary(workspaceId, user.id),
       allowedAny(tenant, PERMISSIONS.ORDERS_CONFIRM, PERMISSIONS.ORDERS_MANAGE)
         ? badge('confirmationCounts', workspaceId, () => confirmationService.queueCounts(workspaceId, req))
-        : null,
-      allowedAny(tenant, PERMISSIONS.ORDERS_VIEW)
-        ? badge('orderPipeline', workspaceId, () => orderService.orderPipeline(workspaceId, {}))
         : null,
       allowedAny(tenant, PERMISSIONS.ORDERS_CONFIRM)
         ? badge('inboxUnread', workspaceId, () => inboxService.listConversations(workspaceId, user.id, { ...INBOX_UNREAD_QUERY }))
@@ -87,7 +87,6 @@ async function bootstrap(req) {
     notifications,
     shortcuts: tenant.membership.navShortcuts || [],
     confirmationCounts,
-    orderPipeline,
     inboxUnread,
   };
 }
