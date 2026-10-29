@@ -46,9 +46,15 @@ const storefrontCors = cors({
   maxAge: 7200,
 });
 
+// Every dashboard call carries an Authorization header, so the browser asks
+// first (OPTIONS) for each distinct URL. Without a max age it keeps that
+// answer for 5 seconds; 7200 (two hours) is the most Chromium keeps. The
+// actual response still names the origin per request, so taking an origin off
+// CORS_ORIGINS still blocks it at once.
 const allowlistCors = cors({
   origin: env.cors.origins,
   credentials: true,
+  maxAge: 7200,
 });
 
 // The marketing site's anonymous beacon (siteAnalytics/siteEventsRoutes): only
