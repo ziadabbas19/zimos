@@ -58,6 +58,8 @@ const ALLOWED_ELEMENT_TYPES = new Set([
   'tabs',
   'toggle',
   'carousel',
+  // The store's story in pictures (an About page): titled photos in a grid that open whole.
+  'story_gallery',
   'stars_display',
   'currency_converter',
   'price',
@@ -90,6 +92,9 @@ const MAX_NODES = 10000;
 // expression.
 const BINDING_SOURCE =
   /^(?:product\.(?:title|description|price|compare_at|special_offer_text|images\[[0-9]\])|store\.(?:name|phone|email|address)|legal\.(?:refund_policy|privacy_policy|terms_of_service))$/;
+// The most photos one story gallery holds: a page's worth, not a library.
+const STORY_GALLERY_MAX = 24;
+
 const REPEATER_SOURCES = ['product.cms.features', 'product.cms.testimonials', 'product.cms.faqs', 'product.reviews'];
 
 function validateBindings(bindings, field, errors) {
@@ -164,6 +169,24 @@ const check = {
       ? null
       : 'must be a size keyword or a positive number',
   bool: (v) => (typeof v === 'boolean' ? null : 'must be true or false'),
+  // A picture: an http(s) or same-site address only (no mailto:, tel: or anchor).
+  imageUrl: (v) => {
+    if (typeof v !== 'string' || v.length > 1000) return 'must be an image address of at most 1000 characters';
+    if (v === '') return null;
+    if (!isSafeUrl(v) || /^(mailto|tel):/i.test(v.trim()) || v.trim().startsWith('#')) return 'must be an http(s) image address';
+    return null;
+  },
+  // Words a shopper reads as they are: no markup, no control or hidden characters (they could make it read as something else).
+  plainText: (max) => (v) => {
+    if (typeof v !== 'string' || v.length > max) return `must be a string of at most ${max} characters`;
+    if (/<[^>]*>/.test(v)) return 'must be plain text (no markup)';
+    const hidden = (c) => {
+      const n = c.charCodeAt(0);
+      return (n < 32 && n !== 9 && n !== 10 && n !== 13) || n === 127 || (n >= 0x200b && n <= 0x200f) || (n >= 0x202a && n <= 0x202e) || (n >= 0x2066 && n <= 0x2069);
+    };
+    if ([...v].some(hidden)) return 'must not hold control or hidden characters';
+    return null;
+  },
   boolOrString: (max) => (v) =>
     typeof v === 'boolean' || (typeof v === 'string' && v.length <= max)
       ? null
@@ -239,6 +262,14 @@ const ELEMENT_PROP_RULES = {
     title: check.string(300),
     images: check.listOf(20, check.url),
     autoplay: check.bool,
+  },
+  // Up to STORY_GALLERY_MAX photos from the media library, each with an optional
+  // title (its alt text too) and description; their words are translated like
+  // every page text (translations/contentTranslations.js: `title`, `description`).
+  story_gallery: {
+    title: check.plainText(200),
+    columns: check.intRange(2, 4),
+    items: check.listOf(STORY_GALLERY_MAX, check.shape({ src: check.imageUrl, title: check.plainText(120), description: check.plainText(500) })),
   },
   stars_display: { rating: check.intRange(1, 5), label: check.string(200) },
   // productId "" means "the page's product": the funnel step's product, or the
