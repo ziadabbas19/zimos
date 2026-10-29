@@ -22,7 +22,7 @@ const sequelize = new Sequelize(env.db.name, env.db.user, env.db.password, {
   pool: {
     max: env.db.poolMax,
     min: env.db.poolMin,
-    idle: 10000,
+    idle: env.db.poolIdleMs,
     acquire: 30000,
   },
   define: {

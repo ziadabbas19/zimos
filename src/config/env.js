@@ -193,6 +193,14 @@ const env = {
   isTest: process.env.NODE_ENV === 'test',
 
   port: parseInt(process.env.PORT || '4000', 10),
+
+  // The HTTP server (server.js). keepAliveTimeoutMs: how long an idle
+  // keep-alive connection stays open, HTTP_KEEP_ALIVE_TIMEOUT_MS, 5000 to
+  // 600000; unset or anything else is 65000 (above the 60 s proxies keep
+  // theirs). headersTimeout is set one second above it.
+  http: {
+    keepAliveTimeoutMs: intInRange(process.env.HTTP_KEEP_ALIVE_TIMEOUT_MS, 65000, 5000, 600000),
+  },
   appUrl: process.env.APP_URL || 'http://localhost:4000',
   apiVersion: process.env.API_VERSION || 'v1',
   platformRootDomain: process.env.PLATFORM_ROOT_DOMAIN || 'zimos.test',
@@ -210,6 +218,9 @@ const env = {
     ssl: dbUrl ? dbUrl.ssl || process.env.DB_SSL === 'true' : process.env.DB_SSL === 'true',
     poolMax: parseInt(process.env.DB_POOL_MAX || '10', 10),
     poolMin: parseInt(process.env.DB_POOL_MIN || '0', 10),
+    // How long an unused connection stays in the pool before it is closed
+    // (DB_POOL_IDLE_MS, 1000 to 600000; unset or anything else is 10000, as before).
+    poolIdleMs: intInRange(process.env.DB_POOL_IDLE_MS, 10000, 1000, 600000),
   },
 
   // Refresh tokens are random strings stored hashed (core/security/tokens.js),
