@@ -22,6 +22,24 @@ router.post(
 );
 router.get('/', validate(schemas.list), controller.list);
 router.get('/:discountId', validate(schemas.get), controller.get);
+// One coupon's results: uses, discount given, revenue, who used it (discountReport.js), and as a CSV file.
+router.get(
+  '/:discountId/report',
+  validate(schemas.report),
+  require('express-async-handler')(async (req, res) =>
+    res.json({ report: await require('./discountReport').couponReport(req.tenant.workspaceId, req.params.discountId, req.query, req) })
+  )
+);
+router.get(
+  '/:discountId/report.csv',
+  validate(schemas.get),
+  require('express-async-handler')(async (req, res) => {
+    const file = await require('./discountReport').couponReportCsv(req.tenant.workspaceId, req.params.discountId, req);
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${file.filename}"`);
+    res.send(file.body);
+  })
+);
 router.patch('/:discountId/status', validate(schemas.setStatus), controller.setStatus);
 router.patch('/:discountId', validate(schemas.update), controller.update);
 router.delete('/:discountId', validate(schemas.remove), controller.remove);
