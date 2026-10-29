@@ -301,6 +301,17 @@ device (`push/pushDigest.js`). Off: nothing of it, and the bell is as before.
 - One coupon per order: a typed code replaces the automatic discount (as
   before); `stackable` is still unused.
 
+### Combos — `/combos` (PRODUCT_COMBOS_ENABLED, off by default)
+- **Migration 732:** `product_combos`, `product_combo_items`; `cart_items.combo_id/combo_selection`;
+  `order_items.combo_id/combo_key/combo_name_snapshot`.
+- **Staff** (products.view / products.manage): `GET|POST /combos`, `POST /combos/preview`,
+  `GET|PATCH|DELETE /combos/:id` (DELETE archives). Pricing `fixed_price | percent_off | amount_off`.
+- **Storefront:** `product.combos` on the public product, `GET /store/:ws/combos?productId=`,
+  a cart line `{ comboId, comboSelection }`, a Buy Now `item` the same way.
+- **Order:** one ordinary line per product sharing `combo_key`; the saving spread over their
+  `line_discount_amount` and listed as `{ kind: 'combo' }` in `discountsSnapshot`. Editing the
+  items of an order holding a combo answers 409 `ORDER_HAS_COMBO`.
+
 ### Story gallery page element — `story_gallery`
 Up to 24 `{ src, title, description }` from the media library on any page
 (the About page); plain text only; `title`/`description` are translated by
