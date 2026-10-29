@@ -1,28 +1,40 @@
 'use strict';
 
 module.exports = (sequelize, DataTypes) => {
-  // One row per (workspace, product, customer). A resubmission updates the
-  // same row and drops it back to `pending`. See modules/reviews/reviewService.js.
+  // A product or store review. A shopper's review waits (`pending`) until the
+  // merchant publishes it; one per phone and per device for the same product,
+  // or for the store. See modules/reviews/reviewService.js.
   const Review = sequelize.define(
     'Review',
     {
       id: { type: DataTypes.UUID, defaultValue: DataTypes.UUIDV4, primaryKey: true },
       workspaceId: { type: DataTypes.UUID, allowNull: false, field: 'workspace_id' },
-      productId: { type: DataTypes.UUID, allowNull: false, field: 'product_id' },
-      // Null for a review the merchant added by hand (migration 146, reviews/manualReviews.js).
+      // 'product' or 'store' (migration 729); a store review has no product.
+      kind: { type: DataTypes.STRING(16), allowNull: false, defaultValue: 'product', validate: { isIn: [['product', 'store']] } },
+      productId: { type: DataTypes.UUID, allowNull: true, field: 'product_id' },
+      // Null for a review the merchant added by hand (migration 146, reviews/manualReviews.js)
+      // and for a reviewer who never ordered from the store.
       customerId: { type: DataTypes.UUID, allowNull: true, field: 'customer_id' },
       authorName: { type: DataTypes.STRING(120), allowNull: true, field: 'author_name' },
+      // Links a merchant typed in for a manual review; a shopper's photos are photoUploadIds.
       photos: { type: DataTypes.JSONB, allowNull: false, defaultValue: [] },
-      // 'customer' (submitted from the storefront after delivery) or 'manual'.
+      photoUploadIds: { type: DataTypes.ARRAY(DataTypes.UUID), allowNull: false, defaultValue: [], field: 'photo_upload_ids' },
+      // 'customer' (sent from the storefront), 'manual' or 'import'.
       source: { type: DataTypes.STRING(16), allowNull: false, defaultValue: 'customer' },
       orderId: { type: DataTypes.UUID, allowNull: true, field: 'order_id' },
       rating: { type: DataTypes.INTEGER, allowNull: false, validate: { min: 1, max: 5 } },
       comment: { type: DataTypes.TEXT, allowNull: true },
+      // pending = waiting for the merchant, approved = published, rejected = hidden.
       status: {
         type: DataTypes.ENUM('pending', 'approved', 'rejected'),
         allowNull: false,
         defaultValue: 'pending',
       },
+      // false: published as stars only, the text and photos stay in the dashboard.
+      showText: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: true, field: 'show_text' },
+      phoneNormalized: { type: DataTypes.STRING(32), allowNull: true, field: 'phone_normalized' },
+      deviceId: { type: DataTypes.STRING(128), allowNull: true, field: 'device_id' },
+      requestIp: { type: DataTypes.STRING(45), allowNull: true, field: 'request_ip' },
     },
     {
       tableName: 'reviews',
