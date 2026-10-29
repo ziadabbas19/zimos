@@ -103,6 +103,7 @@ const TEXTS = {
   'wallet.credit': counted('أُضيف رصيد إلى محفظتك', 'إضافات إلى رصيد المحفظة: {count}', 'Credit was added to your wallet', '{count} credits were added to your wallet'),
   'wallet.fallback': counted('انتهى الاشتراك، والدفع الآن لكل طلب', 'تنبيهات الاشتراك: {count}', 'Your subscription ended: you now pay per order', '{count} subscription alerts'),
   'product.question': counted('سؤال جديد على منتج', 'أسئلة جديدة على المنتجات: {count}', 'A new question on a product', '{count} new questions on products'),
+  'review.new': counted('تقييم جديد في انتظار موافقتك', 'تقييمات في انتظار موافقتك: {count}', 'A new review is waiting for your approval', '{count} reviews are waiting for your approval'),
   'message.undelivered': counted('رسالة إلى عميل لم تصل', 'رسائل لم تصل: {count}', 'A message to a customer was not delivered', '{count} messages were not delivered'),
 };
 

@@ -73,6 +73,8 @@ const TYPES = Object.freeze({
   'wallet.fallback': { permission: PERMISSIONS.BILLING_MANAGE, defaults: { inApp: true, email: false } },
   // A shopper asked a question on a product (modules/productQuestions).
   'product.question': { permission: PERMISSIONS.PRODUCTS_MANAGE, defaults: { inApp: true, email: false } },
+  // A shopper sent a product or store review: it waits for the team's approval (modules/reviews).
+  'review.new': { permission: PERMISSIONS.PRODUCTS_MANAGE, defaults: { inApp: true, email: false } },
   // An order's email bounced or was marked as spam, or its SMS was not delivered (deliveryStatus/).
   'message.undelivered': { permission: PERMISSIONS.ORDERS_VIEW, defaults: { inApp: true, email: false } },
 });
