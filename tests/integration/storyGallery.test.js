@@ -17,8 +17,15 @@ const { keyOf } = require('../../src/modules/translations/contentTranslations');
  * the media library it takes its photos from.
  */
 
+// The upload folders this run made, never UPLOAD_ROOT itself (it holds a tracked .gitkeep).
 afterAll(() => {
-  fs.rmSync(UPLOAD_ROOT, { recursive: true, force: true });
+  try {
+    for (const entry of fs.readdirSync(UPLOAD_ROOT)) {
+      if (entry !== '.gitkeep') fs.rmSync(path.join(UPLOAD_ROOT, entry), { recursive: true, force: true });
+    }
+  } catch {
+    /* nothing to clean */
+  }
 });
 
 const gallery = (items, extra = {}) => ({ id: 'g1', type: 'story_gallery', props: { title: 'قصتنا', columns: 3, items, ...extra } });
