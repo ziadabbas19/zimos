@@ -14,7 +14,7 @@ router.get(
   publicPlansLimiter,
   asyncHandler(async (req, res) => {
     res.set('Cache-Control', 'public, max-age=60, stale-while-revalidate=300');
-    res.json({ plans: await listPublicPlans() });
+    res.json(await listPublicPlans());
   })
 );
 

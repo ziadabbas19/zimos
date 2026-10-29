@@ -20,8 +20,13 @@ store. See `docs/orders-lock.md`.
   units: 50 = EGP 0.50), nothing monthly, in EGP.
 - **Setting the fee:** the console's plan editor refuses a fee on any other
   plan (`PER_ORDER_FEE_NOT_ALLOWED`).
-- **Where it's offered:** never as a default plan, a public plan, a sign-up
-  choice or a regular card. It has its own card in the Subscription section.
+- **Where it's offered:** never as a default plan, in the public plan list, a
+  sign-up choice or a regular card. It has its own card in the Subscription
+  section, and `GET /plans/public` sends it beside the list as `payPerOrder`
+  (the plan the Subscription section offers, or `null` while there is none
+  or `WALLET_ENABLED` is off) for the marketing site's pricing page: its fee,
+  its free orders and `feeChargedAt` (`confirmation` with `ORDERS_LOCK_ENABLED`
+  on, else `placement`).
 - **Choosing it:** a draft or a trial chooses it at once
   (`POST /workspaces/:id/billing/pay-per-order`), with a period of 100 years
   and nothing to pay. A paid subscription changes through support.
