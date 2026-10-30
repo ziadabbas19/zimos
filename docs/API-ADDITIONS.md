@@ -317,6 +317,20 @@ Up to 24 `{ src, title, description }` from the media library on any page
 (the About page); plain text only; `title`/`description` are translated by
 the page content translations.
 
+### Plan features: reviews, about_gallery, combos, advanced_coupons (`GROWTH_REQUIRE_PLAN_FEATURE`, off)
+Four catalogue keys the console turns on per plan (`combos` is offered only
+while `PRODUCT_COMBOS_ENABLED` is on). Refused only while
+`GROWTH_REQUIRE_PLAN_FEATURE` and `PLAN_FEATURE_ENFORCEMENT` are both on, for
+a store whose plan and overrides lack the key (`billing/growthFeatures.js`):
+`/reviews` and `/combos` answer 403 `PLAN_FEATURE_REQUIRED`; the storefront
+shows no reviews, stars, review form or combos, and a review or a checkout
+naming a combo gets 404; a page can't gain or change a `story_gallery` (403)
+and the live pages leave it out; a coupon can't be created or changed with any
+coupon control off its default (403), and `/discounts/:id/report` refuses.
+Nothing stored is deleted. `GET /plan-features` adds `growthEnforced`. Add the
+keys to the plans before turning the switch on: a key no plan lists is locked
+for every store.
+
 ## Changes to existing files
 
 Kept as small as possible — nothing was restyled or refactored.

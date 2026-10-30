@@ -86,6 +86,8 @@ async function resolveComponents(workspaceId, combo, selection, transaction) {
 /** An active combo of this store, or 404 (off: always 404, as if combos did not exist). */
 async function activeCombo(workspaceId, comboId, transaction) {
   if (!env.combos.enabled) throw new NotFoundError('Combo');
+  // Not sold while the plan lacks `combos` (GROWTH_REQUIRE_PLAN_FEATURE, billing/growthFeatures.js).
+  if (await require('../billing/growthFeatures').locked(workspaceId, 'combos', { transaction })) throw new NotFoundError('Combo');
   const combo = await loadCombo(workspaceId, comboId, transaction);
   if (!combo || combo.status !== 'active') throw new NotFoundError('Combo');
   return combo;

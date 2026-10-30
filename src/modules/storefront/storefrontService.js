@@ -158,13 +158,17 @@ async function getStorefront(workspaceId) {
     // The store's own stars (published store reviews from delivered purchases,
     // reviews/reviewRating.js) and whether shoppers may send reviews now
     // (REVIEWS_PUBLIC_SUBMISSION_ENABLED): the storefront shows its forms only then.
-    reviews: {
-      open: require('../../config/env').reviews.publicSubmissionEnabled,
-      storeRating: await require('../reviews/reviewRating').storeRating(w.id),
-    },
+    // Neither while the plan lacks `reviews` (billing/growthFeatures.js).
+    reviews: await storeReviewsState(w.id),
     // The browser ad-pixel IDs; the rest of settings stays private.
     ...(await publicTracking(w.id)),
   };
+}
+
+async function storeReviewsState(workspaceId) {
+  const reviewRating = require('../reviews/reviewRating');
+  if (await require('../billing/growthFeatures').locked(workspaceId, 'reviews')) return { open: false, storeRating: reviewRating.emptyRating() };
+  return { open: require('../../config/env').reviews.publicSubmissionEnabled, storeRating: await reviewRating.storeRating(workspaceId) };
 }
 
 // The browser pixels (tracking_pixels table, marketing/trackingPixelService):

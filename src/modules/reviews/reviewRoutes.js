@@ -8,10 +8,12 @@ const { requirePermission } = require('../../core/middleware/rbac');
 const { PERMISSIONS } = require('../../core/security/permissions');
 const controller = require('./reviewController');
 const schemas = require('./reviewValidation');
+const { requireGrowthFeature } = require('../billing/growthFeatures');
 
 // Mounted at /api/v1/workspaces/:workspaceId/reviews — staff moderation.
+// The plan's `reviews` with GROWTH_REQUIRE_PLAN_FEATURE (billing/growthFeatures.js).
 const router = Router({ mergeParams: true });
-router.use(authenticate, resolveTenant, requirePermission(PERMISSIONS.PRODUCTS_MANAGE));
+router.use(authenticate, resolveTenant, requirePermission(PERMISSIONS.PRODUCTS_MANAGE), requireGrowthFeature('reviews'));
 
 router.get('/', validate(schemas.list), controller.list);
 // How many wait, are published, are hidden: the sidebar's badge.

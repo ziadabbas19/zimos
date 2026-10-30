@@ -7,6 +7,7 @@ const { AppError, NotFoundError, ConflictError, ValidationError } = require('../
 const { recordAudit } = require('../audit/auditService');
 const slugify = require('../../core/utils/slugify');
 const { validatePageTree, EMPTY_TREE } = require('./pageTree');
+const galleryPlan = require('./galleryPlan');
 const { pickPageFlags, assertPageActive } = require('./pageFlags');
 
 const Op = db.Sequelize.Op;
@@ -249,6 +250,7 @@ async function createPage(workspaceId, websiteId, data, req) {
   assertPathNotReserved(path);
   const draftData = data.draftData !== undefined ? data.draftData : EMPTY_TREE;
   validatePageTree(draftData, { label: `page "${path}"` });
+  await galleryPlan.assertGalleriesKept(workspaceId, EMPTY_TREE, draftData);
 
   const clash = await db.WebsitePage.findOne({ where: { websiteId, path }, attributes: ['id'] });
   if (clash) throw new ConflictError(`A page already exists at "${path}"`, 'PAGE_PATH_TAKEN');
@@ -310,6 +312,7 @@ async function updatePage(workspaceId, websiteId, pageId, data, req) {
     if (data.seo !== undefined) patch.seo = data.seo;
     if (data.draftData !== undefined) {
       validatePageTree(data.draftData, { label: `page "${page.path}"` });
+      await galleryPlan.assertGalleriesKept(workspaceId, before.draftData, data.draftData, { transaction: t });
       patch.draftData = data.draftData;
     }
 
@@ -632,7 +635,10 @@ async function getPublishedPageForStore(workspaceId, rawPath) {
   if (match) {
     // A page the merchant switched off is gone from the store at once.
     await assertPageActive(website.id, path);
-    return { kind: 'page', data: buildRenderData(website, snapshot, match, path) };
+    const data = buildRenderData(website, snapshot, match, path);
+    // Without the plan's about_gallery the page is served without its galleries (galleryPlan.js).
+    data.page.tree = await galleryPlan.servedTree(workspaceId, data.page.tree);
+    return { kind: 'page', data };
   }
 
   const redirect = await db.WebsitePageRedirect.findOne({ where: { websiteId: website.id, fromPath: path } });

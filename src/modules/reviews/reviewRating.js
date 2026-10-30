@@ -147,4 +147,4 @@ async function bestOrderFor(workspaceId, customerId, productId, transaction) {
   return best;
 }
 
-module.exports = { deliveredPurchaseSql, productRating, productRatings, storeRating, verifiedIds, orderStates, orderState, bestOrderFor };
+module.exports = { emptyRating: EMPTY, deliveredPurchaseSql, productRating, productRatings, storeRating, verifiedIds, orderStates, orderState, bestOrderFor };

@@ -535,6 +535,15 @@ const env = {
     guard: process.env.NODE_ENV !== 'test' && process.env.LOYALTY_GUARD_ENABLED === 'true',
   },
 
+  // GROWTH_REQUIRE_PLAN_FEATURE=true: reviews, the About page's gallery,
+  // combos and the coupons' advanced controls need the plan's key of the
+  // same name — refused only while PLAN_FEATURE_ENFORCEMENT is on too
+  // (billing/growthFeatures.js). Off (the default): as before. Under
+  // NODE_ENV=test it starts off; a test sets it.
+  growth: {
+    requirePlanFeature: process.env.NODE_ENV !== 'test' && process.env.GROWTH_REQUIRE_PLAN_FEATURE === 'true',
+  },
+
   // Account settings (auth/accountService). Changing the phone number by an
   // SMS code is off unless exactly "true": off, a request is answered the
   // same way and nothing is sent or changed.

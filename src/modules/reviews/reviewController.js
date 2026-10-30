@@ -11,11 +11,13 @@ const { clientIp } = require('../../core/middleware/clientIp');
 // Sending a review stays closed unless REVIEWS_PUBLIC_SUBMISSION_ENABLED is
 // "true" (env.reviews). Closed, every send gets the same 404, naming no
 // phone, product or store detail; reading reviews, moderation and the rating
-// are untouched.
-function submissionGate(req, res, next) {
-  if (env.reviews.publicSubmissionEnabled) return next();
-  return next(new AppError('NOT_FOUND', 'Not found', 404));
-}
+// are untouched. A store whose plan lacks `reviews` (GROWTH_REQUIRE_PLAN_FEATURE,
+// billing/growthFeatures.js) gets the same 404.
+const submissionGate = asyncHandler(async (req, res, next) => {
+  if (!env.reviews.publicSubmissionEnabled) throw new AppError('NOT_FOUND', 'Not found', 404);
+  if (await require('../billing/growthFeatures').locked(req.tenant.workspaceId, 'reviews')) throw new AppError('NOT_FOUND', 'Not found', 404);
+  return next();
+});
 
 // The visitor id the photo upload was sent with (customerUploads); optional when there are no photos.
 const visitorOf = (req) => {

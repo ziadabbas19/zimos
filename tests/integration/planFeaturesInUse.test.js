@@ -120,7 +120,7 @@ describe('api_access', () => {
     const off = await planFeatures(ctx);
     expect(off.status).toBe(200);
     // Catalogue keys whose feature exists; multi_warehouse is still not one of them.
-    expect(off.body.planFeatures).toEqual({ features: ['funnels', 'api_access'], enforced: false });
+    expect(off.body.planFeatures).toEqual({ features: ['funnels', 'api_access'], enforced: false, growthEnforced: false });
 
     env.planFeatures.enforcement = true;
     expect((await planFeatures(ctx)).body.planFeatures.enforced).toBe(true);

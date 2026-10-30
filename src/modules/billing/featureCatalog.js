@@ -1,5 +1,7 @@
 'use strict';
 
+const env = require('../../config/env');
+
 /**
  * The feature keys a plan can list in plans.features — the one place they are
  * defined. The platform console reads this list from GET /admin/plans (keys,
@@ -56,6 +58,15 @@ const FEATURE_CATALOG = Object.freeze(
     // earned, spent or expired until it has the feature again
     // (loyalty/loyaltyAccess.js).
     { key: 'loyalty', available: true, label: { en: 'Loyalty points', ar: 'نقاط الولاء' } },
+    // Refused only with GROWTH_REQUIRE_PLAN_FEATURE on too; what a store
+    // without each one loses is in billing/growthFeatures.js.
+    { key: 'reviews', available: true, label: { en: 'Product and store reviews', ar: 'تقييمات المنتجات والمتجر' } },
+    { key: 'about_gallery', available: true, label: { en: 'About page photo gallery', ar: 'معرض صور صفحة من نحن' } },
+    // Exists only while PRODUCT_COMBOS_ENABLED is on (modules/combos).
+    { key: 'combos', available: env.combos.enabled, label: { en: 'Product combos', ar: 'باقات المنتجات' } },
+    // Migration 730's controls and the coupon report; plain codes and
+    // automatic discounts stay on every plan.
+    { key: 'advanced_coupons', available: true, label: { en: 'Advanced coupons', ar: 'كوبونات متقدمة' } },
   ].map((f) => Object.freeze({ ...f, type: 'boolean', label: Object.freeze(f.label) }))
 );
 

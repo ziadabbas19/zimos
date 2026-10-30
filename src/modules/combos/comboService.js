@@ -191,6 +191,7 @@ async function preview(workspaceId, data) {
 async function forProduct(workspaceId, productId) {
   const env = require('../../config/env');
   if (!env.combos.enabled) return [];
+  if (await require('../billing/growthFeatures').locked(workspaceId, 'combos')) return [];
   const candidates = await db.ProductCombo.findAll({
     where: {
       workspaceId,

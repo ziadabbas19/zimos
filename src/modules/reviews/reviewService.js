@@ -390,8 +390,13 @@ async function publicExternal(workspaceId, where, limit = 50) {
   }));
 }
 
+// A store whose plan lacks `reviews` (GROWTH_REQUIRE_PLAN_FEATURE) shows none of them; nothing is deleted.
+const hidden = () => ({ rating: rating.emptyRating(), reviews: [], externalReviews: [] });
+const reviewsLocked = (workspaceId) => require('../billing/growthFeatures').locked(workspaceId, 'reviews');
+
 /** A product's stars (delivered purchases only), its latest published reviews, and those brought from other sites. */
 async function publicProductReviews(workspaceId, productId) {
+  if (await reviewsLocked(workspaceId)) return hidden();
   return {
     rating: await rating.productRating(workspaceId, productId),
     reviews: await publicList(workspaceId, { kind: 'product', productId }),
@@ -401,6 +406,7 @@ async function publicProductReviews(workspaceId, productId) {
 
 /** The store's stars, its latest published store reviews, and those brought from other sites. */
 async function publicStoreReviews(workspaceId) {
+  if (await reviewsLocked(workspaceId)) return hidden();
   return {
     rating: await rating.storeRating(workspaceId),
     reviews: await publicList(workspaceId, { kind: 'store' }),
@@ -410,6 +416,7 @@ async function publicStoreReviews(workspaceId) {
 
 /** A shopper's photo, only while a published review shows it (not stars only). Null otherwise. */
 async function publicPhoto(workspaceId, uploadId) {
+  if (await reviewsLocked(workspaceId)) return null;
   const review = await db.Review.findOne({
     where: { workspaceId, status: 'approved', showText: true, photoUploadIds: { [Op.contains]: [uploadId] } },
     attributes: ['id'],
