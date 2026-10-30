@@ -28,7 +28,7 @@ const { calculateTax, taxableLines } = require('../tax/taxService');
 const { completeOrderInTransaction } = require('./orderCompletion');
 const { recordAudit } = require('../audit/auditService');
 const { setConfirmationState, trackStage, nextStages } = require('./orderStateService');
-const { STAGES, STAGE_SQL, ORDERS_WITH_STAGE_FROM } = require('./orderStage');
+const { STAGES, STAGE_SQL, ORDERS_WITH_STAGE_FROM, STORE_ORDERS_WITH_STAGE_FROM } = require('./orderStage');
 const { orderSort, orderByClause, afterAnchorClause, anchorValue } = require('./orderSort');
 const gateways = require('../payments/gateways');
 const { assertNotShipped, generateTrackingCode, insertShipment, transitionShipment } = require('./shipmentLifecycle');
@@ -1273,10 +1273,13 @@ async function orderPipeline(workspaceId, { q, from, to, ...filters } = {}) {
   applyOrderFilters(conditions, bind, filters);
   const lockCtx = q ? await orderLock.contextFor(workspaceId) : null;
   applySearchAndDates(conditions, bind, { q, from, to }, lockCtx);
+  // Without a search or dates nearly every order is counted: the store's
+  // latest shipments hash-joined beat a lookup per order (orderStage).
+  const fromClause = q || from || to ? ORDERS_WITH_STAGE_FROM : STORE_ORDERS_WITH_STAGE_FROM;
 
   const rows = await db.sequelize.query(
     `SELECT ${STAGE_SQL} AS stage, COUNT(*)::int AS count
-       FROM ${ORDERS_WITH_STAGE_FROM}
+       FROM ${fromClause}
       WHERE ${conditions.join(' AND ')}
       GROUP BY 1`,
     { bind, type: QueryTypes.SELECT }
