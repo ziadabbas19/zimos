@@ -9,13 +9,34 @@ const MAX_RANGE_DAYS = 366;
 
 const toNumber = (v) => (v === null || v === undefined ? 0 : Number(v));
 
+// One formatter per time zone: building one costs ~0.1ms, and the summary
+// names the day of every order in its range (10,000 orders, a second). Kept
+// small: a zone name is case-insensitive, so the spellings of one are many.
+const dayFormats = new Map();
+const MAX_DAY_FORMATS = 64;
+
+function dayFormat(timeZone) {
+  if (dayFormats.has(timeZone)) return dayFormats.get(timeZone);
+  let format = null;
+  try {
+    format = new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' });
+  } catch {
+    // An unknown zone: the UTC day below, as before.
+  }
+  if (dayFormats.size >= MAX_DAY_FORMATS) dayFormats.clear();
+  dayFormats.set(timeZone, format);
+  return format;
+}
+
 /** YYYY-MM-DD in the workspace's timezone, so "today" matches the merchant's day. */
 function dayKey(date, timeZone) {
   try {
-    return new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(date);
+    const format = dayFormat(timeZone);
+    if (format) return format.format(date);
   } catch {
-    return date.toISOString().slice(0, 10);
+    // Falls through to the UTC day.
   }
+  return date.toISOString().slice(0, 10);
 }
 
 function resolveRange({ from, to } = {}) {
