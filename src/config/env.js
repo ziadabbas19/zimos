@@ -456,6 +456,15 @@ const env = {
     smsEnabled: process.env.NODE_ENV !== 'test' && process.env.PASSWORD_RESET_SMS_ENABLED === 'true',
   },
 
+  // Combos: different products sold together at one price (modules/combos).
+  // Off unless PRODUCT_COMBOS_ENABLED is exactly "true": every combo route
+  // answers 404, the storefront gets no combos and a checkout naming one is
+  // refused, as before they existed. Under NODE_ENV=test it starts off; a
+  // test that needs it sets it here.
+  combos: {
+    enabled: process.env.NODE_ENV !== 'test' && process.env.PRODUCT_COMBOS_ENABLED === 'true',
+  },
+
   // The prepaid balance and the pay-per-order plan (billing/walletService).
   // Off unless exactly "true"; off charges no order fee, offers no plan with
   // a fee and takes no top-up, as before it existed. Under NODE_ENV=test it
@@ -524,6 +533,15 @@ const env = {
   loyalty: {
     requirePlanFeature: process.env.NODE_ENV !== 'test' && process.env.LOYALTY_REQUIRE_PLAN_FEATURE === 'true',
     guard: process.env.NODE_ENV !== 'test' && process.env.LOYALTY_GUARD_ENABLED === 'true',
+  },
+
+  // GROWTH_REQUIRE_PLAN_FEATURE=true: reviews, the About page's gallery,
+  // combos and the coupons' advanced controls need the plan's key of the
+  // same name — refused only while PLAN_FEATURE_ENFORCEMENT is on too
+  // (billing/growthFeatures.js). Off (the default): as before. Under
+  // NODE_ENV=test it starts off; a test sets it.
+  growth: {
+    requirePlanFeature: process.env.NODE_ENV !== 'test' && process.env.GROWTH_REQUIRE_PLAN_FEATURE === 'true',
   },
 
   // Account settings (auth/accountService). Changing the phone number by an

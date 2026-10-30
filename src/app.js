@@ -224,6 +224,8 @@ v1.use('/workspaces/:workspaceId/ai', whenAiEnabled(require('./modules/ai/aiRout
 v1.use('/workspaces/:workspaceId/wa-bot', whenAiEnabled(require('./modules/whatsapp/bot/botService').router));
 v1.use('/workspaces/:workspaceId/media', mediaRoutes);
 v1.use('/workspaces/:workspaceId/reviews', reviewRoutes);
+// Combos: different products sold together at one price (modules/combos, PRODUCT_COMBOS_ENABLED).
+v1.use('/workspaces/:workspaceId/combos', require('./modules/combos/comboRoutes').staff);
 v1.use('/workspaces/:workspaceId/fraud', fraudRoutes);
 v1.use('/workspaces/:workspaceId/support', supportRoutes);
 v1.use('/workspaces/:workspaceId/billing', workspaceBillingRoutes);

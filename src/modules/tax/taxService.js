@@ -76,7 +76,8 @@ async function taxableLines(lines, discountAmount, discount, transaction) {
   const eligible = discount
     ? await discountService.eligibleProducts(discount, lines.filter((l) => !l.freeGift).map((l) => l.productId), transaction)
     : null;
-  const covers = (l) => !l.freeGift && (!eligible || eligible.has(l.productId));
+  // The coupon's own line rules too (excluded products, offers, sale items: discounts/discountRules.js).
+  const covers = (l) => (discount ? require('../discounts/discountRules').lineCovered(discount, eligible, l) : !l.freeGift);
   let indexes = lines.map((l, i) => i).filter((i) => covers(lines[i]) && totals[i] > 0);
   // A discount larger than its covered lines (or one whose lines are gone) is spread over the whole order.
   if (indexes.reduce((sum, i) => sum + totals[i], 0) < amount) indexes = lines.map((l, i) => i).filter((i) => totals[i] > 0);

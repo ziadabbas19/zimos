@@ -131,7 +131,7 @@ function allocate(discount, amounts) {
  * shipping, for the order's `discountsSnapshot`.
  */
 async function applyBundleTiers(workspaceId, lines, transaction) {
-  const eligible = lines.filter((line) => line.productId && !line.offerId && !line.isOrderBump && !line.isUpsell);
+  const eligible = lines.filter((line) => line.productId && !line.offerId && !line.isOrderBump && !line.isUpsell && !line.comboKey);
   if (eligible.length === 0) return [];
   const bundles = await bundlesForProducts(
     workspaceId,
@@ -208,6 +208,8 @@ async function applyToCartTotals(workspaceId, cart, totals) {
   const lines = totals.items.map((item, index) => ({
     productId: rows[index] && rows[index].variant ? rows[index].variant.productId : null,
     offerId: item.offerId,
+    // A combo's line is priced by the combo (modules/combos), never by a quantity bundle.
+    comboKey: item.comboId || null,
     isOrderBump: item.isOrderBump,
     quantity: item.quantity,
     unitPriceAmount: Number(item.currentUnitPrice),

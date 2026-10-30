@@ -6,6 +6,8 @@ const db = require('../../db/models');
 const { AppError, ValidationError } = require('../../core/errors/AppError');
 const { recordAudit } = require('../audit/auditService');
 const discountService = require('./discountService');
+const rules = require('./discountRules');
+const { controls } = require('./discountValidation');
 
 /*
  * What SPEC §10.5–10.6 adds on top of the discounts module:
@@ -52,6 +54,8 @@ const schemas = {
       // One use per code is what a personal code usually means.
       usageLimit: Joi.number().integer().min(1).default(1),
       perCustomerLimit: Joi.number().integer().min(1).optional(),
+      // The same controls as one coupon (discountValidation.controls).
+      ...controls(),
     }),
   },
   orderRules: Joi.object({ minOrderAmount: Joi.number().integer().min(0).max(100000000000).allow(null).required() }),
@@ -110,9 +114,10 @@ async function bulkGenerate(workspaceId, data, req) {
  * Whether an automatic discount's own conditions hold for this order. Returns
  * the products it covers (null = the whole order), or false.
  */
-async function automaticApplies(discount, { subtotal, productIds, customerId, funnelId }, now, transaction) {
+async function automaticApplies(discount, { subtotal, productIds, lines = null, customerId, funnelId, who = null }, now, transaction) {
   if (discount.startsAt && discount.startsAt > now) return false;
   if (discount.endsAt && discount.endsAt < now) return false;
+  if (!rules.scheduleOpen(discount.schedule, now)) return false;
   if (discount.minimumSubtotal && subtotal < Number(discount.minimumSubtotal)) return false;
   // Limited to some products or collections: one of them must be in the order.
   const eligible = await discountService.eligibleProducts(discount, productIds, transaction);
@@ -120,9 +125,15 @@ async function automaticApplies(discount, { subtotal, productIds, customerId, fu
   if (discount.funnelRestrictions.length && (!funnelId || !discount.funnelRestrictions.includes(funnelId))) return false;
   if (discount.customerRestrictions.length && (!customerId || !discount.customerRestrictions.includes(customerId))) return false;
   if (discount.usageLimit !== null && discount.usageCount >= discount.usageLimit) return false;
-  if (discount.perCustomerLimit !== null && customerId) {
-    const used = await db.DiscountRedemption.count({ where: { discountId: discount.id, customerId }, transaction });
-    if (used >= discount.perCustomerLimit) return false;
+  // A for-whom rule needs the shopper: an unknown one (the quote) is not given it.
+  const forWhom = discount.audience !== 'any' || (discount.customerPhones || []).length > 0 || (discount.vipTierIds || []).length > 0;
+  if (forWhom && !customerId && !(who && who.phoneNormalized)) return false;
+  try {
+    rules.assertLines(discount, eligible, lines);
+    await rules.assertCustomer(discount, { customerId, ...(who || {}) }, { transaction });
+  } catch (err) {
+    if (err instanceof AppError && err.statusCode === 422) return false;
+    throw err;
   }
   return eligible;
 }
@@ -173,7 +184,7 @@ async function assertMinimumOrder(workspaceId, subtotal, transaction) {
 
 /** For the shipping quote: the automatic discount these items would get and where they stand against the minimum. */
 async function quoteExtras(workspaceId, { subtotal, productIds, lines = null }) {
-  const auto = await bestAutomatic(workspaceId, { subtotal, productIds, lines, customerId: null, funnelId: null });
+  const auto = await bestAutomatic(workspaceId, { subtotal, productIds, lines, customerId: null, funnelId: null, who: null });
   const minimum = minOrderAmount(await workspaceSettings(workspaceId));
   return {
     automaticDiscount: auto ? { amount: auto.amount, type: auto.discount.type, value: Number(auto.discount.value) } : null,
@@ -211,7 +222,10 @@ async function saveOrderRules(workspaceId, data, req) {
 /**
  * What `code` would take off these items — the storefront's preview. Never
  * throws for a bad code: `valid: false` with the reason's code, so the page
- * can say why in the shopper's language.
+ * can say why in the shopper's language. The for-whom rules (first order,
+ * returning customers, the phone list, the per-customer limit) are not
+ * previewed: they would tell anyone whether a phone ever ordered from the
+ * store. The checkout, behind its bot guard, checks them and says why.
  */
 async function previewCode(workspaceId, code, items, visitorId = null, funnelId = null) {
   const { priceLine } = require('../orders/orderService');
@@ -231,11 +245,22 @@ async function previewCode(workspaceId, code, items, visitorId = null, funnelId 
       funnelId,
     });
     // A free-shipping code takes nothing off the items: the order ships free.
-    return { valid: true, code: discount.code, type: discount.type, amount, freeShipping: discount.type === 'free_shipping', subtotal, reason: null };
+    return {
+      valid: true,
+      code: discount.code,
+      type: discount.type,
+      amount,
+      freeShipping: discount.type === 'free_shipping',
+      // It comes off the delivery fee too (the checkout knows the fee, the preview does not).
+      appliesToShipping: Boolean(discount.appliesToShipping),
+      subtotal,
+      reason: null,
+    };
   } catch (err) {
-    // DISCOUNT_QUANTITY_NOT_MET says how many more units a buy-X-get-Y code needs.
+    // DISCOUNT_QUANTITY_NOT_MET / _MIN_QUANTITY_NOT_MET / _MINIMUM_NOT_MET say how much more is needed.
     if (err instanceof AppError && err.statusCode === 422) {
-      return { valid: false, code, type: null, amount: 0, freeShipping: false, subtotal, reason: err.code, ...(err.code === 'DISCOUNT_QUANTITY_NOT_MET' ? { details: err.details } : {}) };
+      const withDetails = ['DISCOUNT_QUANTITY_NOT_MET', 'DISCOUNT_MIN_QUANTITY_NOT_MET', 'DISCOUNT_MINIMUM_NOT_MET', 'DISCOUNT_NOT_ACTIVE_NOW'];
+      return { valid: false, code, type: null, amount: 0, freeShipping: false, subtotal, reason: err.code, ...(withDetails.includes(err.code) ? { details: err.details } : {}) };
     }
     throw err;
   }

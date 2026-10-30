@@ -138,10 +138,13 @@ async function priceLine(workspaceId, line, transaction, { forSale = true } = {}
   // A countdown offer that has ended sells at the full price (catalog/productPage.js).
   // A product A/B test's price for this shopper, pinned by the server (catalog/productTests.js).
   const testPrice = require('../catalog/productTests').testPriceOf(line);
-  const listUnit = testPrice !== undefined ? testPrice : effectiveVariantPrice(variant, variant.product).priceAmount;
+  const effective = effectiveVariantPrice(variant, variant.product);
+  const listUnit = testPrice !== undefined ? testPrice : effective.priceAmount;
   const unitPriceAmount = fieldsDelta ? Number(listUnit) + fieldsDelta : listUnit;
   const lineTotal = unitPriceAmount * quantity;
   return {
+    // Sold below its list (compare-at) price: a coupon may leave such lines out (discounts/discountRules.js).
+    onSale: effective.compareAtAmount !== null && effective.compareAtAmount !== undefined && Number(effective.compareAtAmount) > Number(listUnit),
     productId: variant.productId,
     productName: variant.product.name,
     variantId: variant.id,
@@ -418,6 +421,9 @@ async function createOrder(workspaceId, payload, req, options = {}) {
         throw bumpFailure(err);
       });
       line.isOrderBump = isOrderBump;
+      // A line of a combo (combos/comboPricing.expandItems): priced by the combo below.
+      const combo = require('../combos/comboPricing').comboOf(item);
+      if (combo) Object.assign(line, { comboKey: combo.key, comboId: combo.comboId, comboName: combo.name, combo });
       // The shopper's answers to the product's custom fields, checked against
       // its current definition (catalog/customFields.js). Required fields are
       // enforced for the storefront checkout (customFields.enforceRequired);
@@ -458,9 +464,12 @@ async function createOrder(workspaceId, payload, req, options = {}) {
     // A funnel with a currency of its own takes orders in it only (funnels/funnelCurrency.js).
     await require('../funnels/funnelCurrency').assertOrderCurrency(workspaceId, funnelId, pricedLines[0] && pricedLines[0].currency, transaction);
 
+    // Combos (modules/combos): their lines' share of each combo's saving, first; quantity
+    // bundles never cover those lines.
+    const comboSnapshots = require('../combos/comboPricing').applyComboPricing(pricedLines);
     // Quantity bundles (modules/bundles): lowers the totals of the lines they
     // cover, before anything else looks at the subtotal.
-    const bundleSnapshots = await applyBundleTiers(workspaceId, pricedLines, transaction);
+    const bundleSnapshots = [...comboSnapshots, ...(await applyBundleTiers(workspaceId, pricedLines, transaction))];
 
     const subtotal = add(...pricedLines.map((l) => l.lineTotalAmount));
     const productIds = pricedLines.map((l) => l.productId);
@@ -472,6 +481,9 @@ async function createOrder(workspaceId, payload, req, options = {}) {
     let discountAmount = 0;
     let discountsSnapshot = [];
     let discountRecord = null;
+    // The shopper, for a coupon's for-whom rules: first order, the phone list, the per-customer limit (discountRules).
+    const who = { phoneNormalized: customer.phoneNormalized, email: contact.email || null, deviceId };
+    const discountRules = require('../discounts/discountRules');
     if (discountCode) {
       const evaluation = await discountService.evaluate(workspaceId, discountCode, {
         subtotal,
@@ -480,20 +492,33 @@ async function createOrder(workspaceId, payload, req, options = {}) {
         lines: pricedLines,
         customerId: customer.id,
         funnelId,
+        who,
         transaction,
       });
       discountAmount = evaluation.amount;
       discountRecord = evaluation.discount;
-      discountsSnapshot = [{ code: discountCode, type: evaluation.discount.type, amount: discountAmount }];
+      // `rules`: what the code was when the order was placed, so a later change to it never reprices this order.
+      discountsSnapshot = [
+        { code: discountCode, discountId: evaluation.discount.id, type: evaluation.discount.type, amount: discountAmount, rules: discountRules.frozenRules(evaluation.discount) },
+      ];
     }
     const couponExtras = require('../discounts/couponExtras');
     if (!discountCode) {
       // No code typed: the store's best automatic discount, when one applies.
-      const automatic = await couponExtras.bestAutomatic(workspaceId, { subtotal, productIds, lines: pricedLines, customerId: customer.id, funnelId }, transaction);
+      const automatic = await couponExtras.bestAutomatic(workspaceId, { subtotal, productIds, lines: pricedLines, customerId: customer.id, funnelId, who }, transaction);
       if (automatic) {
         discountAmount = automatic.amount;
         discountRecord = automatic.discount;
-        discountsSnapshot = [{ code: null, automatic: true, discountId: automatic.discount.id, type: automatic.discount.type, amount: discountAmount }];
+        discountsSnapshot = [
+          {
+            code: null,
+            automatic: true,
+            discountId: automatic.discount.id,
+            type: automatic.discount.type,
+            amount: discountAmount,
+            rules: discountRules.frozenRules(automatic.discount),
+          },
+        ];
       }
     }
     // A free-shipping code: every line ships free, and the order keeps it when a
@@ -549,6 +574,14 @@ async function createOrder(workspaceId, payload, req, options = {}) {
       shippingAmount,
       transaction,
     });
+
+    // A coupon that applies to shipping too takes its share of the delivery fee; the order's
+    // discount holds both parts, its snapshot the fee's part (kept when the order is repriced).
+    const shippingDiscount = discountRules.shippingPart(discountRecord, discountAmount, shippingAmount);
+    if (shippingDiscount > 0) {
+      discountsSnapshot = discountsSnapshot.map((d) => (d && d.kind !== 'bundle' && d.discountId === discountRecord.id ? { ...d, shippingAmount: shippingDiscount } : d));
+      discountAmount += shippingDiscount;
+    }
 
     const totalAmount = subtotal - discountAmount + shippingAmount + taxAmount;
 
@@ -641,6 +674,9 @@ async function createOrder(workspaceId, payload, req, options = {}) {
             customizations: line.customizations || null,
             optionsSnapshot: line.optionsSnapshot || null,
             isOrderBump: line.isOrderBump,
+            comboId: line.comboId || null,
+            comboKey: line.comboKey || null,
+            comboNameSnapshot: line.comboName || null,
           },
           { transaction }
         )
@@ -828,14 +864,15 @@ async function addLineToOpenOrder(workspaceId, order, lineInput, { isUpsell = fa
   let discountsSnapshot = order.discountsSnapshot || [];
   let placed = null;
   const redemption = await db.DiscountRedemption.findOne({ where: { orderId: order.id }, transaction });
+  const discountRules = require('../discounts/discountRules');
   if (redemption) {
-    const discount = await db.Discount.findByPk(redemption.discountId, { transaction });
+    // The code as the order was placed with it (its snapshot's rules), not as it stands now.
+    const discount = discountRules.asPlaced(await db.Discount.findByPk(redemption.discountId, { transaction }), discountsSnapshot);
     placed = discount;
     if (discount) {
       // A product- or collection-limited code still covers only its lines.
       discountAmount = await discountService.amountForLines(discount, lines, transaction);
       discountsSnapshot = discountsSnapshot.map((d) => (d.code === discount.code ? { ...d, amount: discountAmount } : d));
-      await redemption.update({ amountAllocated: discountAmount }, { transaction });
     }
   } else {
     placed = await placedDiscount(order, transaction);
@@ -863,6 +900,11 @@ async function addLineToOpenOrder(workspaceId, order, lineInput, { isUpsell = fa
     shippingAmount,
     transaction,
   });
+  // The delivery-fee part of the order's coupon stays what it was (never above the new fee).
+  if (redemption && placed) {
+    discountAmount += discountRules.placedShippingPart(discountsSnapshot, shippingAmount);
+    await redemption.update({ amountAllocated: discountAmount }, { transaction });
+  }
   const totalAmount = subtotal - discountAmount + shippingAmount + taxAmount;
 
   const item = await db.OrderItem.create(

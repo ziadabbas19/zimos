@@ -74,6 +74,10 @@ async function apply(workspaceId, orderId, requested, req, transaction) {
   }
 
   const existing = await db.OrderItem.findAll({ where: { orderId: order.id }, order: [['createdAt', 'ASC'], ['id', 'ASC']], transaction });
+  // A combo's lines share its price; editing them one by one would break it (modules/combos).
+  if (existing.some((item) => item.comboKey)) {
+    throw new AppError('ORDER_HAS_COMBO', "An order with a combo cannot have its items edited; cancel it and place it again", 409);
+  }
   const before = totalsOf(order);
   const beforeItems = existing.map((i) => ({ name: i.productNameSnapshot, quantity: i.quantity }));
   const existingByKey = new Map();
@@ -183,14 +187,15 @@ async function apply(workspaceId, orderId, requested, req, transaction) {
   let discountsSnapshot = [...keptBundles, ...bundleSnapshots, ...(order.discountsSnapshot || []).filter((d) => !d || d.kind !== 'bundle')];
   let placed = null;
   const redemption = await db.DiscountRedemption.findOne({ where: { orderId: order.id }, transaction });
+  const discountRules = require('../discounts/discountRules');
   if (redemption) {
-    const discount = await db.Discount.findByPk(redemption.discountId, { transaction });
+    // The code as the order was placed with it (its snapshot's rules), not as it stands now.
+    const discount = discountRules.asPlaced(await db.Discount.findByPk(redemption.discountId, { transaction }), discountsSnapshot);
     placed = discount;
     if (discount) {
       // A product- or collection-limited code still covers only its lines.
       discountAmount = await discountService.amountForLines(discount, lines, transaction);
       discountsSnapshot = discountsSnapshot.map((d) => (d.code === discount.code ? { ...d, amount: discountAmount } : d));
-      await redemption.update({ amountAllocated: discountAmount }, { transaction });
     }
   } else {
     placed = await orderService.placedDiscount(order, transaction);
@@ -225,6 +230,11 @@ async function apply(workspaceId, orderId, requested, req, transaction) {
     shippingAmount,
     transaction,
   });
+  // The delivery-fee part of the order's coupon stays what it was (never above the new fee).
+  if (redemption && placed) {
+    discountAmount += discountRules.placedShippingPart(discountsSnapshot, shippingAmount);
+    await redemption.update({ amountAllocated: discountAmount }, { transaction });
+  }
   const totalAmount = subtotal - discountAmount + shippingAmount + taxAmount;
 
   // ---- write the lines

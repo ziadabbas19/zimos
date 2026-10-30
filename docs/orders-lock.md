@@ -191,6 +191,9 @@ Merchant answers (hidden, `contactLocked: true` and `lockReason`):
 - WhatsApp inbox customer panel: the name and e-mail (the number is the
   conversation's own);
 - RFM `GET /rfm/customers`: the name;
+- reviews `GET /reviews`: the reviewer's name, phone and e-mail when their
+  customer comes hidden (`contactLocked: true`); the stars, text and order
+  state still show;
 - the team's new-order notification (bell, e-mail, WhatsApp alert): the
   customer is not named.
 

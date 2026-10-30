@@ -28,13 +28,19 @@ function requirePlanFeature(key) {
   return asyncHandler(async (req, res, next) => {
     if (!env.planFeatures.enforcement) return next();
     if (await entitlements.hasFeature(req.tenant.workspaceId, key)) return next();
-    throw new AppError(
-      'PLAN_FEATURE_REQUIRED',
-      `Your plan doesn't include ${definition.label.en}. Upgrade your plan to use it.`,
-      403,
-      { feature: key, label: { ...definition.label } }
-    );
+    throw planFeatureRequired(key);
   });
+}
+
+/** The refusal for a store that lacks `key`, for a check made outside a route's middleware. */
+function planFeatureRequired(key) {
+  const definition = featureDefinition(key);
+  return new AppError(
+    'PLAN_FEATURE_REQUIRED',
+    `Your plan doesn't include ${definition.label.en}. Upgrade your plan to use it.`,
+    403,
+    { feature: key, label: { ...definition.label } }
+  );
 }
 
 /**
@@ -47,7 +53,13 @@ function requirePlanFeature(key) {
  */
 async function planFeaturesFor(workspaceId) {
   const features = (await entitlements.effectiveFeatures(workspaceId)).filter(isAvailableFeature);
-  return { features, enforced: env.planFeatures.enforcement };
+  return {
+    features,
+    enforced: env.planFeatures.enforcement,
+    // reviews, about_gallery, combos, advanced_coupons are refused only while
+    // GROWTH_REQUIRE_PLAN_FEATURE is on as well (billing/growthFeatures.js).
+    growthEnforced: env.planFeatures.enforcement && env.growth.requirePlanFeature,
+  };
 }
 
-module.exports = { requirePlanFeature, planFeaturesFor };
+module.exports = { requirePlanFeature, planFeatureRequired, planFeaturesFor };

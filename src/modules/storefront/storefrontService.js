@@ -66,8 +66,9 @@ async function getProductBySlugOrId(workspaceId, idOrSlug) {
   });
   if (!product) throw new NotFoundError('Product');
 
-  // Approved reviews with author, photos and the verified-buyer flag.
-  const { rating, reviews } = await require('../reviews/manualReviews').publicReviews(workspaceId, product.id);
+  // The stars (published reviews from delivered purchases only) and the published reviews,
+  // with first name, photos and the verified-buyer flag (reviews/reviewService.js).
+  const { rating, reviews, externalReviews } = await reviewService.publicProductReviews(workspaceId, product.id);
   const publicProduct = toPublicProduct(product);
   // The product's quantity bundle, every tier priced for every variant (null when it has none).
   const bundlePricing = require('../bundles/bundlePricing');
@@ -89,6 +90,10 @@ async function getProductBySlugOrId(workspaceId, idOrSlug) {
     purchaseLimits: require('../catalog/purchaseLimits').limitsOf(product),
     rating,
     reviews,
+    // Reviews the merchant brought from other sites, shown apart with their source (never in `rating`).
+    externalReviews,
+    // The combos this page offers ([] while PRODUCT_COMBOS_ENABLED is off, modules/combos).
+    combos: await require('../combos/comboService').forProduct(workspaceId, product.id),
   };
 }
 
@@ -150,9 +155,20 @@ async function getStorefront(workspaceId) {
     orderBump: await presentStoreBump(w),
     // The store as an installable app for its shoppers, or null (storeApp.js).
     storeApp: require('./storeApp').publicStoreApp(w),
+    // The store's own stars (published store reviews from delivered purchases,
+    // reviews/reviewRating.js) and whether shoppers may send reviews now
+    // (REVIEWS_PUBLIC_SUBMISSION_ENABLED): the storefront shows its forms only then.
+    // Neither while the plan lacks `reviews` (billing/growthFeatures.js).
+    reviews: await storeReviewsState(w.id),
     // The browser ad-pixel IDs; the rest of settings stays private.
     ...(await publicTracking(w.id)),
   };
+}
+
+async function storeReviewsState(workspaceId) {
+  const reviewRating = require('../reviews/reviewRating');
+  if (await require('../billing/growthFeatures').locked(workspaceId, 'reviews')) return { open: false, storeRating: reviewRating.emptyRating() };
+  return { open: require('../../config/env').reviews.publicSubmissionEnabled, storeRating: await reviewRating.storeRating(workspaceId) };
 }
 
 // The browser pixels (tracking_pixels table, marketing/trackingPixelService):

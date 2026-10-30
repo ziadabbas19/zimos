@@ -257,6 +257,80 @@ device (`push/pushDigest.js`). Off: nothing of it, and the bell is as before.
   the payment. A lost send is caught by `push.flush_overdue` every 5 minutes.
 - **Migration 728** `push_digests` and `push_sent_keys`.
 
+### Reviews: from anyone, published by the merchant — `/reviews`, `/store/:ws/...`
+- **Rule:** anyone may send stars (1–5, required) with a name, text and up to
+  4 photos (`POST /store/:ws/products/:productId/reviews`,
+  `POST /store/:ws/store-reviews`; closed unless
+  `REVIEWS_PUBLIC_SUBMISSION_ENABLED`). Every review waits (`pending`); the
+  stars a shopper sees count only published reviews linked to a delivered
+  order of the store (`reviews/reviewRating.js`). One review per phone and per
+  device for the same product, or for the store (409 `ALREADY_REVIEWED`).
+- **Linking:** `orderToken` (the order's signed token, now in the review
+  request message's `{{review_link}}` as `?review=`) links that order;
+  otherwise the phone's customer's best order (delivered first).
+- **Staff (products.manage):** `GET /reviews` (+ `kind`, `source`,
+  `productId`, `limit`, `offset`; each row with `purchase.state`
+  delivered|ordered|cancelled|returned|none, `counted`, the customer's
+  contact for customers.view only, masked by the orders lock), `GET
+  /reviews/summary` (counts by status), `PATCH /reviews/:id` `{ action:
+  approve | approve_stars | hide | reject }`, `DELETE /reviews/:id` (any
+  review), `POST /reviews` (hand-added or `externalSource` → from another
+  site), `PATCH /reviews/:id/content` (merchant-added only).
+- **Public:** `GET /store/:ws/store-reviews` (`rating`, `reviews`,
+  `externalReviews`), `GET /store/:ws/review-photos/:uploadId` (only while a
+  published review shows it), `store.reviews = { open, storeRating }` on
+  `GET /store/:ws`, `externalReviews` on the public product.
+- **Notification:** `review.new` (bell, push text).
+- **Migrations 729** (kind, show_text, phone, device, IP, photo uploads) and
+  **731** (external source, label, link, date).
+
+### Coupon controls — `/discounts`
+- **Migration 730:** `audience` (any|new|existing), `customer_phones`,
+  `vip_tier_ids`, `schedule` (Cairo days and minutes), `max_discount_amount`,
+  `min_quantity`, `excluded_product_ids`, `applies_to_shipping`,
+  `applies_to_discounted`, `combines_with_offers`, `strict_customer_limit`.
+  Every default is the old behaviour.
+- **Checked on the server only** (`discounts/discountRules.js`), codes and
+  automatic discounts alike, with one refusal code per reason (see
+  `COUPON_REFUSALS` in the api-client). The per-customer limit and the
+  first-order rule are checked again under the coupon's row lock in
+  `redeem`. An order keeps the coupon's rules in its `discountsSnapshot`
+  (`rules`, plus `shippingAmount` for the delivery-fee part), so editing a
+  coupon never reprices an old order.
+- **Report:** `GET /discounts/:id/report` and `/discounts/:id/report.csv`.
+- One coupon per order: a typed code replaces the automatic discount (as
+  before); `stackable` is still unused.
+
+### Combos — `/combos` (PRODUCT_COMBOS_ENABLED, off by default)
+- **Migration 733:** `product_combos`, `product_combo_items`; `cart_items.combo_id/combo_selection`;
+  `order_items.combo_id/combo_key/combo_name_snapshot`.
+- **Staff** (products.view / products.manage): `GET|POST /combos`, `POST /combos/preview`,
+  `GET|PATCH|DELETE /combos/:id` (DELETE archives). Pricing `fixed_price | percent_off | amount_off`.
+- **Storefront:** `product.combos` on the public product, `GET /store/:ws/combos?productId=`,
+  a cart line `{ comboId, comboSelection }`, a Buy Now `item` the same way.
+- **Order:** one ordinary line per product sharing `combo_key`; the saving spread over their
+  `line_discount_amount` and listed as `{ kind: 'combo' }` in `discountsSnapshot`. Editing the
+  items of an order holding a combo answers 409 `ORDER_HAS_COMBO`.
+
+### Story gallery page element — `story_gallery`
+Up to 24 `{ src, title, description }` from the media library on any page
+(the About page); plain text only; `title`/`description` are translated by
+the page content translations.
+
+### Plan features: reviews, about_gallery, combos, advanced_coupons (`GROWTH_REQUIRE_PLAN_FEATURE`, off)
+Four catalogue keys the console turns on per plan (`combos` is offered only
+while `PRODUCT_COMBOS_ENABLED` is on). Refused only while
+`GROWTH_REQUIRE_PLAN_FEATURE` and `PLAN_FEATURE_ENFORCEMENT` are both on, for
+a store whose plan and overrides lack the key (`billing/growthFeatures.js`):
+`/reviews` and `/combos` answer 403 `PLAN_FEATURE_REQUIRED`; the storefront
+shows no reviews, stars, review form or combos, and a review or a checkout
+naming a combo gets 404; a page can't gain or change a `story_gallery` (403)
+and the live pages leave it out; a coupon can't be created or changed with any
+coupon control off its default (403), and `/discounts/:id/report` refuses.
+Nothing stored is deleted. `GET /plan-features` adds `growthEnforced`. Add the
+keys to the plans before turning the switch on: a key no plan lists is locked
+for every store.
+
 ## Changes to existing files
 
 Kept as small as possible — nothing was restyled or refactored.
@@ -271,6 +345,8 @@ Kept as small as possible — nothing was restyled or refactored.
 | `src/modules/workspaces/workspaceService.js`, `workspaceValidation.js` | `tracking_pixels` in workspace settings |
 | `src/modules/media/mediaService.js`, `mediaController.js` | GLB 3D models accepted (15MB ceiling, stored as uploaded) for the `product_3d` page element |
 | `src/modules/catalog/catalogValidation.js`, `db/models/ProductVariant.js` | `lowStockThreshold` on variants |
+| `src/modules/orders/orderService.js`, `orderItemsEdit.js`, `tax/taxService.js` | coupon rules: the shopper for for-whom rules, `onSale` on priced lines, frozen rules and the delivery-fee part in the snapshot |
+| `src/modules/automations/automationContext.js` | `{{review_link}}` carries the order's signed token (`?review=`) |
 
 ## Dropped in favour of upstream's own implementation
 

@@ -5,6 +5,7 @@ const { workspaceRef } = require('../../core/utils/workspaceSlug');
 const { customizationsInputSchema } = require('../catalog/customFields');
 const { formFieldsBodySchema } = require('./checkoutForm');
 const { optionsInputSchema } = require('../catalog/menuOptions');
+const { comboSelectionSchema } = require('../combos/comboValidation');
 
 // Units of one line a shopper may order at once: no store sells more in one
 // checkout, and one order asking for a product's whole stock holds it until
@@ -81,13 +82,17 @@ module.exports = {
       // "Buy Now" — a single item straight to checkout, no cart. Ignored when
       // an X-Cart-Token header is present (the cart wins).
       item: Joi.object({
-        variantId: uuid.required(),
+        // Not needed for a combo: its components name their own variants.
+        variantId: uuid.when('comboId', { is: Joi.exist(), then: Joi.optional(), otherwise: Joi.required() }),
         offerId: uuid.optional(),
         quantity: Joi.number().integer().min(1).max(MAX_LINE_QUANTITY).default(1),
         // Answers to the product's custom fields (see cartValidation.addItem).
         customizations: customizationsInputSchema.optional(),
         // Menu options picked (catalog/menuOptions.js); priced by the server only.
         options: optionsInputSchema.optional(),
+        // A whole combo (modules/combos, PRODUCT_COMBOS_ENABLED) and the variants the shopper picked in it.
+        comboId: uuid.optional(),
+        comboSelection: comboSelectionSchema.optional(),
       }).optional(),
       // More "Buy Now" lines beside `item`: a quantity bundle with a variant
       // chosen per unit (one red, one blue). Priced by the server like `item`.

@@ -126,6 +126,9 @@ const checkout = asyncHandler(async (req, res) => {
       quantity: line.quantity || 1,
       customizations: line.customizations,
       options: line.options,
+      // A whole combo (modules/combos): its components replace it just below.
+      comboId: line.comboId,
+      comboSelection: line.comboSelection,
     }));
   } else {
     throw new AppError(
@@ -134,6 +137,12 @@ const checkout = asyncHandler(async (req, res) => {
       400
     );
   }
+  // A combo becomes one line per component, priced by the combo in the order (combos/comboPricing.js).
+  // Not in a funnel's checkout: a funnel sells its own steps' products.
+  if (items.some((line) => line.comboId) && orderBody.funnelId) {
+    throw new AppError('COMBO_NOT_IN_FUNNEL', 'A combo cannot be bought in a funnel checkout', 422);
+  }
+  items = await require('../combos/comboPricing').expandItems(workspaceId, items);
   // A funnel's checkout prices the funnel's way (shipping, coupons, payment methods): the
   // funnel must be a published one of this store that sells these lines (funnels/funnelCheckout.js).
   await require('../funnels/funnelCheckout').assertSells(workspaceId, orderBody.funnelId, items);

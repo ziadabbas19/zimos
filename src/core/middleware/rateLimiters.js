@@ -476,6 +476,8 @@ const CHECKOUT_OTP_PER_MINUTE = 10;
 const checkoutOtpLimiter = createIpMinuteLimiter('checkout-otp', CHECKOUT_OTP_PER_MINUTE, { skip });
 // A shopper's question on a product (modules/productQuestions): it lands in the merchant's inbox.
 const productQuestionLimiter = createIpMinuteLimiter('store-product-question', 5, { skip });
+// A shopper's product or store review (modules/reviews): it waits in the merchant's list.
+const reviewLimiter = createIpMinuteLimiter('store-review', 5, { skip });
 // A gift card balance check (modules/giftCards): a code guessed is money.
 const giftCardCheckLimiter = createIpMinuteLimiter('store-gift-card-check', 10, { skip });
 
@@ -724,6 +726,7 @@ module.exports = {
   CHECKOUT_OTP_PER_MINUTE,
   checkoutOtpLimiter,
   productQuestionLimiter,
+  reviewLimiter,
   giftCardCheckLimiter,
   usernameCheckLimiter,
   createUsernameCheckLimiter,

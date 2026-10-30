@@ -3,7 +3,7 @@ const { Router } = require('express');
 const validate = require('../../core/middleware/validate');
 const { resolvePublicWorkspace, refuseDraftOrders } = require('../../core/middleware/publicWorkspace');
 const { idempotent } = require('../../core/middleware/idempotency');
-const { trackingLimiter, suggestLimiter, uploadLimiter, manualProofLimiter, checkoutOtpLimiter } = require('../../core/middleware/rateLimiters');
+const { trackingLimiter, suggestLimiter, uploadLimiter, manualProofLimiter, checkoutOtpLimiter, reviewLimiter } = require('../../core/middleware/rateLimiters');
 const customerUploadController = require('../customerUploads/customerUploadController');
 const { collectOptionFilters } = require('./optionFilters');
 const controller = require('./storefrontController');
@@ -49,7 +49,15 @@ router.get('/products', collectOptionFilters, validate(schemas.listProducts), co
 router.get('/products/suggest', suggestLimiter, validate(schemas.suggest), controller.suggestProducts);
 router.get('/products/:idOrSlug', validate(schemas.getProduct), controller.getProduct);
 // Closed unless REVIEWS_PUBLIC_SUBMISSION_ENABLED (reviewController.submissionGate).
-router.post('/products/:productId/reviews', reviewController.submissionGate, validate(reviewSchemas.submit), reviewController.submit);
+// A few a minute per address before anything is read; reviewService caps an hour too.
+router.post('/products/:productId/reviews', reviewController.submissionGate, reviewLimiter, validate(reviewSchemas.submit), reviewController.submit);
+// Reviews of the whole store: the published ones with the store's stars, and sending one (same gate).
+router.get('/store-reviews', validate(reviewSchemas.storeList), reviewController.storeReviews);
+router.post('/store-reviews', reviewController.submissionGate, reviewLimiter, validate(reviewSchemas.submitStore), reviewController.submitStore);
+// A shopper's photo on a published review (private storage, served while the review shows it).
+router.get('/review-photos/:uploadId', validate(reviewSchemas.photo), reviewController.photo);
+// The combos a product's page shows (modules/combos, PRODUCT_COMBOS_ENABLED).
+router.use(require('../combos/comboRoutes').store);
 // A product page's A/B test: which variant this visitor sees (catalog/productTests.js).
 router.use(require('../catalog/productTests').publicRouter);
 router.get('/collections', validate(schemas.workspaceParam), controller.listCollections);

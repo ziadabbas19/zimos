@@ -116,17 +116,18 @@ describe('public review submission (REVIEWS_PUBLIC_SUBMISSION_ENABLED)', () => {
     expect(await db.Review.count()).toBe(0);
   });
 
-  it('open: works as before, and reading reviews never depended on the flag', async () => {
+  it('open: anyone may send (each waits for the merchant), and reading reviews never depended on the flag', async () => {
     const s = await deliveredPurchase();
     env.reviews.publicSubmissionEnabled = true;
-    expect((await submit(s.workspace.id, s.product.id, { phone: '01000007777', rating: 5 })).status).toBe(403);
+    // A phone with no purchase is taken too; it never counts in the stars (reviews.test.js).
+    expect((await submit(s.workspace.id, s.product.id, { phone: '01000007777', rating: 5 })).status).toBe(201);
     const ok = await submit(s.workspace.id, s.product.id, { phone: PHONE, rating: 5 });
     expect(ok.status).toBe(201);
 
     env.reviews.publicSubmissionEnabled = false;
     const list = await request(app).get(`/api/v1/workspaces/${s.workspace.id}/reviews`).set(bearer(s.auth.accessToken));
     expect(list.status).toBe(200);
-    expect(list.body.reviews).toHaveLength(1);
+    expect(list.body.reviews).toHaveLength(2);
   });
 });
 
