@@ -177,6 +177,53 @@ describe('console store list', () => {
     expect(byId[branded.id].storeUrl).toBe('https://www.sara-example.com');
   });
 
+  it('gives every store its platform subdomain too, and its own domain with its state', async () => {
+    const admin = await makePlatformUser('admin');
+    const owner = await registerAndActivate();
+    const plain = await createWorkspace(owner.accessToken, 'Nada Plain');
+    const connected = await createWorkspace(owner.accessToken, 'Nada Connected');
+    const pending = await createWorkspace(owner.accessToken, 'Nada Pending');
+    await primaryDomain(connected.id, 'www.nada-example.com');
+    await primaryDomain(pending.id, 'shop.nada-example.com', {
+      status: 'pending_verification',
+      sslStatus: 'none',
+      isPrimary: false,
+      verifiedAt: null,
+    });
+    const subdomain = (w) => `https://${w.slug}.${env.platformRootDomain}`;
+
+    const res = await listWorkspaces(admin.H);
+    expect(res.status).toBe(200);
+    const byId = Object.fromEntries(res.body.workspaces.map((w) => [w.id, w]));
+
+    expect(byId[plain.id]).toMatchObject({
+      slug: plain.slug,
+      storeUrl: subdomain(plain),
+      platformUrl: subdomain(plain),
+      customDomain: null,
+      customDomainCount: 0,
+    });
+    expect(byId[connected.id]).toMatchObject({
+      storeUrl: 'https://www.nada-example.com',
+      platformUrl: subdomain(connected),
+      customDomainCount: 1,
+    });
+    expect(byId[connected.id].customDomain).toEqual({
+      hostname: 'www.nada-example.com',
+      status: 'active',
+      sslStatus: 'issued',
+      primary: true,
+      suspended: false,
+      state: 'connected',
+    });
+    expect(byId[pending.id]).toMatchObject({
+      storeUrl: subdomain(pending),
+      platformUrl: subdomain(pending),
+      customDomain: { hostname: 'shop.nada-example.com', status: 'pending_verification', sslStatus: 'none', primary: false, state: 'pending' },
+      customDomainCount: 1,
+    });
+  });
+
   it('looks the links up in one query, not one per store', async () => {
     const admin = await makePlatformUser('admin');
     const owner = await registerAndActivate();

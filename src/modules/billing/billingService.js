@@ -14,6 +14,7 @@ const goLive = require('./goLiveService');
 const entitlements = require('./entitlementsService');
 const onlineBilling = require('./onlineBillingService');
 const primaryHost = require('../domains/primaryHost');
+const storeDomains = require('../domains/storeDomains');
 
 const { availableFeatureKeys, isAvailableFeature } = require('./featureCatalog');
 
@@ -392,6 +393,8 @@ async function listWorkspacesOverview() {
   const countMap = Object.fromEntries(counts.map((c) => [c.workspaceId, Number(c.cnt)]));
   // The link that opens each store, every primary domain in one query.
   const origins = await primaryHost.storeOriginsOf(workspaces);
+  // Each store's own domain and its state, every domain in one query.
+  const domains = await storeDomains.customDomainsOf(workspaces.map((w) => w.id));
 
   const now = new Date();
   return workspaces.map((w) => {
@@ -408,6 +411,12 @@ async function listWorkspacesOverview() {
       createdAt: w.createdAt,
       // The primary domain when it can be served, else the platform subdomain (domains/primaryHost).
       storeUrl: origins.get(w.id) || null,
+      // The platform subdomain, whatever domain the store has.
+      platformUrl: primaryHost.platformOrigin(w) || null,
+      // The store's own domain (its primary one, else the healthiest, else the
+      // newest) with its state, and how many it has (domains/storeDomains).
+      customDomain: domains.has(w.id) ? domains.get(w.id).domain : null,
+      customDomainCount: domains.has(w.id) ? domains.get(w.id).count : 0,
       // Billing overview, flattened onto the same row.
       plan: sub && sub.plan ? sub.plan.name : sub && sub.planId ? sub.planId : '—',
       planId: sub ? sub.planId : null,
