@@ -243,4 +243,42 @@ describe('GET /analytics/summary traffic', () => {
     expect(res.status).toBe(200);
     expect(res.body.summary.traffic.sessions).toBe(0);
   });
+
+  it("files a session under its first event (the id breaking a tie in time), and counts each step once a session", async () => {
+    const ctx = await setup();
+    const at = (iso) => new Date(iso);
+    const row = (over) => ({ workspaceId: ctx.workspace.id, visitorId: 'visitor-a', eventName: 'page_view', ...over });
+    await db.AnalyticsEvent.bulkCreate([
+      // Session A: two events at its very start; the smaller id is the first.
+      row({ id: '00000000-0000-4000-8000-0000000000a2', sessionId: 'sess-a', source: 'google', metadata: { device: 'desktop', path: '/x' }, createdAt: at('2026-10-20T10:00:00.000Z') }),
+      row({ id: '00000000-0000-4000-8000-0000000000a1', sessionId: 'sess-a', source: 'tiktok', medium: 'social', metadata: { device: 'mobile', path: '/' }, createdAt: at('2026-10-20T10:00:00.000Z') }),
+      row({ id: '00000000-0000-4000-8000-0000000000a0', sessionId: 'sess-a', eventName: 'add_to_cart', source: 'facebook', metadata: { device: 'tablet' }, createdAt: at('2026-10-20T10:05:00.000Z') }),
+      row({ id: '00000000-0000-4000-8000-0000000000a3', sessionId: 'sess-a', eventName: 'add_to_cart', createdAt: at('2026-10-20T10:06:00.000Z') }),
+      // Session B (no session id: the visitor is the session), from a device the summary does not name.
+      row({ id: '00000000-0000-4000-8000-0000000000b1', visitorId: 'visitor-b', source: '', metadata: { device: 'tv', path: '/' }, createdAt: at('2026-10-21T09:00:00.000Z') }),
+      row({ id: '00000000-0000-4000-8000-0000000000b2', visitorId: 'visitor-b', eventName: 'begin_checkout', createdAt: at('2026-10-21T09:01:00.000Z') }),
+      // Session C, the same visitor as A.
+      row({ id: '00000000-0000-4000-8000-0000000000c1', sessionId: 'sess-c', source: 'google', metadata: { device: 'mobile', path: '/x' }, createdAt: at('2026-10-22T12:00:00.000Z') }),
+    ]);
+
+    const res = await ctx.summary({ from: '2026-10-15T00:00:00.000Z', to: '2026-10-25T00:00:00.000Z' });
+    expect(res.status).toBe(200);
+    const { traffic, series } = res.body.summary;
+    expect(traffic).toMatchObject({ sessions: 3, visitors: 2, pageViews: 4, addToCart: 1, checkouts: 1, purchases: 0 });
+    expect(traffic.byDevice).toEqual([
+      { device: 'mobile', sessions: 2 },
+      { device: 'unknown', sessions: 1 },
+    ]);
+    expect(traffic.bySource).toEqual([
+      { source: 'direct', medium: null, sessions: 1, orders: 0 },
+      { source: 'google', medium: null, sessions: 1, orders: 0 },
+      { source: 'tiktok', medium: 'social', sessions: 1, orders: 0 },
+    ]);
+    expect(traffic.topPages).toEqual([
+      { path: '/', views: 2 },
+      { path: '/x', views: 2 },
+    ]);
+    const sessionsOn = (date) => series.find((d) => d.date === date)?.sessions;
+    expect([sessionsOn('2026-10-20'), sessionsOn('2026-10-21'), sessionsOn('2026-10-22')]).toEqual([1, 1, 1]);
+  });
 });
