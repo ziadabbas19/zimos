@@ -1,6 +1,6 @@
 'use strict';
 
-// Combos (modules/combos, migration 732, PRODUCT_COMBOS_ENABLED): different
+// Combos (modules/combos, migration 733, PRODUCT_COMBOS_ENABLED): different
 // products at one price. Priced by the server only; one cart line; in the
 // order one ordinary line per component sharing the combo's key, with the
 // saving spread over them; stock taken from each; refused when a component
@@ -175,6 +175,19 @@ describe('combos', () => {
     expect(res.status).toBe(201);
     expect(Number(res.body.order.subtotalAmount)).toBe(5000);
     expect(await linesOf(res.body.order.id)).toHaveLength(2);
+  });
+
+  it('the shipping quote prices a combo as its products at the combo price, from the cart or from the items', async () => {
+    const ctx = await store();
+    const made = await combo(ctx);
+    const cart = await request(app).post(`/api/v1/store/${ctx.workspace.id}/cart`).send({});
+    await request(app).post(`/api/v1/store/${ctx.workspace.id}/cart/items`).set('X-Cart-Token', cart.body.guestToken).send({ comboId: made.id, quantity: 2 }).expect(201);
+    const fromCart = await request(app).post(`/api/v1/store/${ctx.workspace.id}/shipping-quote`).set('X-Cart-Token', cart.body.guestToken).send({ country: 'EG' });
+    expect(fromCart.status).toBe(200);
+    expect(fromCart.body.quote.subtotal).toBe(5000);
+    const fromItems = await request(app).post(`/api/v1/store/${ctx.workspace.id}/shipping-quote`).send({ country: 'EG', items: [{ comboId: made.id, quantity: 1 }] });
+    expect(fromItems.status).toBe(200);
+    expect(fromItems.body.quote.subtotal).toBe(2500);
   });
 
   it('a coupon comes off a combo by default, and never when it leaves offers out', async () => {

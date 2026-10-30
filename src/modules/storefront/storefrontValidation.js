@@ -68,9 +68,13 @@ module.exports = {
       items: Joi.array()
         .items(
           Joi.object({
-            variantId: uuid.required(),
+            // Not needed for a combo: its products name their own variants.
+            variantId: uuid.when('comboId', { is: Joi.exist(), then: Joi.optional(), otherwise: Joi.required() }),
             offerId: uuid.optional(),
             quantity: Joi.number().integer().min(1).max(1000).default(1),
+            // A whole combo (modules/combos) and the variants picked in it, as the cart line holds it.
+            comboId: uuid.optional(),
+            comboSelection: require('../combos/comboValidation').comboSelectionSchema.optional(),
             // The product form's custom-field answers: a priced field changes the subtotal.
             customizations: require('../catalog/customFields').customizationsInputSchema.optional(),
             // Menu options picked: their prices count in the quoted subtotal.

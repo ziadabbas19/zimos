@@ -28,7 +28,15 @@ const { DESTINATION_INDEPENDENT, RULES, settingsPriceShipping } = require('./shi
  */
 async function quote(workspaceId, { country, region, items, funnelId = null }) {
   const lines = [];
-  for (const item of items) lines.push(await priceLine(workspaceId, item));
+  // A combo (modules/combos) weighs, ships and costs what its products do, at the combo's price.
+  const combos = require('../combos/comboPricing');
+  for (const item of await combos.expandItems(workspaceId, items)) {
+    const line = await priceLine(workspaceId, item);
+    const combo = combos.comboOf(item);
+    if (combo) Object.assign(line, { comboKey: combo.key, combo });
+    lines.push(line);
+  }
+  combos.applyComboPricing(lines);
   // The same bundle pricing the order will get, so the quote's subtotal is the real one.
   const bundles = await require('../bundles/bundlePricing').applyBundleTiers(workspaceId, lines);
 
