@@ -1,7 +1,7 @@
 'use strict';
 
 module.exports = (sequelize, DataTypes) => {
-  // Different products sold together at one price (migration 732, modules/combos).
+  // Different products sold together at one price (migration 733, modules/combos).
   const ProductCombo = sequelize.define(
     'ProductCombo',
     {

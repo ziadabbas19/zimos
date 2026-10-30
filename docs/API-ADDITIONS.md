@@ -302,7 +302,7 @@ device (`push/pushDigest.js`). Off: nothing of it, and the bell is as before.
   before); `stackable` is still unused.
 
 ### Combos — `/combos` (PRODUCT_COMBOS_ENABLED, off by default)
-- **Migration 732:** `product_combos`, `product_combo_items`; `cart_items.combo_id/combo_selection`;
+- **Migration 733:** `product_combos`, `product_combo_items`; `cart_items.combo_id/combo_selection`;
   `order_items.combo_id/combo_key/combo_name_snapshot`.
 - **Staff** (products.view / products.manage): `GET|POST /combos`, `POST /combos/preview`,
   `GET|PATCH|DELETE /combos/:id` (DELETE archives). Pricing `fixed_price | percent_off | amount_off`.

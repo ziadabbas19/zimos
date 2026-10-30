@@ -19,7 +19,7 @@ module.exports = (sequelize, DataTypes) => {
       customizations: { type: DataTypes.JSONB, allowNull: true },
       // Menu options picked on this line, [{ groupId, choiceIds }] (migration 218, catalog/menuOptions.js).
       selectedOptions: { type: DataTypes.JSONB, allowNull: true, field: 'selected_options' },
-      // A whole combo on one line (migration 732, modules/combos): [{ itemId, variantId }] for the
+      // A whole combo on one line (migration 733, modules/combos): [{ itemId, variantId }] for the
       // components whose variant the shopper picks; variantId is then the first component's.
       comboId: { type: DataTypes.UUID, allowNull: true, field: 'combo_id' },
       comboSelection: { type: DataTypes.JSONB, allowNull: true, field: 'combo_selection' },

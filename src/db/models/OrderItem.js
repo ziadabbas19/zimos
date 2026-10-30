@@ -27,7 +27,7 @@ module.exports = (sequelize, DataTypes) => {
       lineTotalAmount: { type: DataTypes.BIGINT, allowNull: false, field: 'line_total_amount' },
       isOrderBump: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false, field: 'is_order_bump' },
       isUpsell: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false, field: 'is_upsell' },
-      // A line of a combo (migration 732, modules/combos): the lines of one combo bought once share combo_key.
+      // A line of a combo (migration 733, modules/combos): the lines of one combo bought once share combo_key.
       comboId: { type: DataTypes.UUID, allowNull: true, field: 'combo_id' },
       comboKey: { type: DataTypes.STRING(40), allowNull: true, field: 'combo_key' },
       comboNameSnapshot: { type: DataTypes.STRING(200), allowNull: true, field: 'combo_name_snapshot' },

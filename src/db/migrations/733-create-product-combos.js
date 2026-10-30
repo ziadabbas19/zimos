@@ -96,7 +96,7 @@ module.exports = {
     );
     if (present) {
       const [[{ lines }]] = await queryInterface.sequelize.query('SELECT COUNT(*)::int AS lines FROM order_items WHERE combo_key IS NOT NULL');
-      if (lines > 0) throw new Error(`732 down: ${lines} order line(s) belong to a combo; the code before this migration cannot show them as one.`);
+      if (lines > 0) throw new Error(`733 down: ${lines} order line(s) belong to a combo; the code before this migration cannot show them as one.`);
     }
     await qi.removeColumn('order_items', 'combo_name_snapshot');
     await qi.removeColumn('order_items', 'combo_key');
