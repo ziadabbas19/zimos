@@ -1277,13 +1277,17 @@ async function orderPipeline(workspaceId, { q, from, to, ...filters } = {}) {
   // latest shipments hash-joined beat a lookup per order (orderStage).
   const fromClause = q || from || to ? ORDERS_WITH_STAGE_FROM : STORE_ORDERS_WITH_STAGE_FROM;
 
-  const rows = await db.sequelize.query(
-    `SELECT ${STAGE_SQL} AS stage, COUNT(*)::int AS count
-       FROM ${fromClause}
-      WHERE ${conditions.join(' AND ')}
-      GROUP BY 1`,
-    { bind, type: QueryTypes.SELECT }
-  );
+  // The risk tabs' counts need nothing from the stage counts: both at once.
+  const [rows, risk] = await Promise.all([
+    db.sequelize.query(
+      `SELECT ${STAGE_SQL} AS stage, COUNT(*)::int AS count
+         FROM ${fromClause}
+        WHERE ${conditions.join(' AND ')}
+        GROUP BY 1`,
+      { bind, type: QueryTypes.SELECT }
+    ),
+    riskCounts(workspaceId, { q, from, to, ...filters }, lockCtx),
+  ]);
 
   const stages = Object.fromEntries(STAGES.map((key) => [key, 0]));
   let total = 0;
@@ -1291,7 +1295,7 @@ async function orderPipeline(workspaceId, { q, from, to, ...filters } = {}) {
     stages[row.stage] = row.count;
     total += row.count;
   }
-  return { stages, total, risk: await riskCounts(workspaceId, { q, from, to, ...filters }, lockCtx) };
+  return { stages, total, risk };
 }
 
 /** The risk tabs' counts: every other filter applies, the risk tab itself does not. */
