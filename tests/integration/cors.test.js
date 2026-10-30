@@ -2,6 +2,7 @@
 
 const { app, request, setupWorkspaceWithProduct } = require('../helpers/factories');
 const env = require('../../src/config/env');
+const db = require('../../src/db/models');
 const { isStorefrontApiPath } = require('../../src/core/middleware/cors');
 
 const RANDOM_ORIGIN = 'https://random-store.example';
@@ -153,6 +154,36 @@ describe('CORS', () => {
       expect(res.status).toBe(204);
       expect(res.headers['access-control-allow-origin']).toBe(ALLOWED_ORIGIN);
       expect(res.headers['access-control-allow-credentials']).toBe('true');
+    });
+
+    it('lets the browser keep a dashboard preflight for two hours', async () => {
+      const res = await preflight(`/api/v1/workspaces/${workspace.id}/orders`, ALLOWED_ORIGIN, {
+        method: 'GET',
+        headers: 'authorization,content-type',
+      });
+
+      expect(res.status).toBe(204);
+      expect(res.headers['access-control-max-age']).toBe('7200');
+    });
+
+    it('answers a dashboard preflight before any session or database read', async () => {
+      const findUser = jest.spyOn(db.User, 'findByPk');
+      const findMembership = jest.spyOn(db.Membership, 'findOne');
+      const query = jest.spyOn(db.sequelize, 'query');
+      try {
+        const res = await preflight(`/api/v1/workspaces/${workspace.id}/bootstrap`, ALLOWED_ORIGIN, {
+          method: 'GET',
+          headers: 'authorization,content-type',
+        });
+        expect(res.status).toBe(204);
+        expect(findUser).not.toHaveBeenCalled();
+        expect(findMembership).not.toHaveBeenCalled();
+        expect(query).not.toHaveBeenCalled();
+      } finally {
+        findUser.mockRestore();
+        findMembership.mockRestore();
+        query.mockRestore();
+      }
     });
 
     it('keeps a path that only starts with "store" on the allowlist', async () => {

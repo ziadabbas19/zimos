@@ -55,6 +55,27 @@ function resolveDb(envOverrides) {
   return JSON.parse(out.slice(out.lastIndexOf('@@') + 2));
 }
 
+function resolveHttp(envOverrides) {
+  const script = "process.stdout.write('\\n@@' + JSON.stringify(require('./src/config/env').http))";
+  const out = execFileSync(process.execPath, ['-e', script], {
+    cwd: path.resolve(__dirname, '../..'),
+    env: { ...process.env, DATABASE_URL: '', DB_PASSWORD: 'p', JWT_ACCESS_SECRET: crypto.randomBytes(32).toString('hex'), NODE_ENV: 'development', ...envOverrides },
+  }).toString();
+  return JSON.parse(out.slice(out.lastIndexOf('@@') + 2));
+}
+
+describe('env.http', () => {
+  it('keeps an idle keep-alive connection 65 s, above the proxy in front', () => {
+    expect(resolveHttp({}).keepAliveTimeoutMs).toBe(65000);
+  });
+
+  it('takes HTTP_KEEP_ALIVE_TIMEOUT_MS within 5 s to 10 min, and ignores anything else', () => {
+    expect(resolveHttp({ HTTP_KEEP_ALIVE_TIMEOUT_MS: '75000' }).keepAliveTimeoutMs).toBe(75000);
+    expect(resolveHttp({ HTTP_KEEP_ALIVE_TIMEOUT_MS: '100' }).keepAliveTimeoutMs).toBe(65000);
+    expect(resolveHttp({ HTTP_KEEP_ALIVE_TIMEOUT_MS: 'long' }).keepAliveTimeoutMs).toBe(65000);
+  });
+});
+
 describe('env.db resolution', () => {
   it('uses DATABASE_URL when set (non-test env)', () => {
     const db = resolveDb({
@@ -81,6 +102,12 @@ describe('env.db resolution', () => {
       DB_PASSWORD: 'localp',
     });
     expect(db).toMatchObject({ host: 'db.example.com', port: 6000, name: 'localdb', user: 'localu', url: null });
+  });
+
+  it('keeps an idle pooled connection 10 s unless DB_POOL_IDLE_MS says otherwise', () => {
+    expect(resolveDb({ NODE_ENV: 'development', DB_PASSWORD: 'p' }).poolIdleMs).toBe(10000);
+    expect(resolveDb({ NODE_ENV: 'development', DB_PASSWORD: 'p', DB_POOL_IDLE_MS: '30000' }).poolIdleMs).toBe(30000);
+    expect(resolveDb({ NODE_ENV: 'development', DB_PASSWORD: 'p', DB_POOL_IDLE_MS: 'soon' }).poolIdleMs).toBe(10000);
   });
 
   it('ignores DATABASE_URL under NODE_ENV=test and keeps the test database', () => {

@@ -287,9 +287,16 @@ describe('derived order stage', () => {
     const order = await placeOrder(auth.accessToken, workspace.id, variant.id);
     await recordConfirmation(auth.accessToken, workspace.id, order.id, 'confirmed');
 
+    // The tab counts (store-wide, the store's shipments read in one pass) say the same.
+    const countedIn = async () => {
+      const { body } = await pipeline(auth.accessToken, workspace.id);
+      return Object.keys(body.stages).filter((stage) => body.stages[stage] > 0);
+    };
+
     const first = await createShipment(auth.accessToken, workspace.id, order.id);
     await setShipmentStatus(auth.accessToken, workspace.id, order.id, first.id, 'failed');
     expect((await getOrder(auth.accessToken, workspace.id, order.id)).body.order.stage).toBe('delivery_failed');
+    expect(await countedIn()).toEqual(['delivery_failed']);
 
     // A re-send: the newer parcel is where the order is now. POST /shipments
     // now refuses a second shipment while one is failed (one active shipment
@@ -308,10 +315,12 @@ describe('derived order stage', () => {
     );
     await setShipmentStatus(auth.accessToken, workspace.id, order.id, second.id, 'out_for_delivery');
     expect((await getOrder(auth.accessToken, workspace.id, order.id)).body.order.stage).toBe('out_for_delivery');
+    expect(await countedIn()).toEqual(['out_for_delivery']);
 
     // Cancelling that parcel leaves the failed one as the latest that counts.
     await setShipmentStatus(auth.accessToken, workspace.id, order.id, second.id, 'cancelled');
     expect((await getOrder(auth.accessToken, workspace.id, order.id)).body.order.stage).toBe('delivery_failed');
+    expect(await countedIn()).toEqual(['delivery_failed']);
   });
 
   it('does not park prepaid orders in New: an unpaid card order awaits payment, a paid one is ready to ship', async () => {
@@ -358,6 +367,27 @@ describe('stage filter and pipeline counts', () => {
     }
     expect(counts.body.stages.pending_confirmation).toBe(2);
     expect(extraNew.id).toBeDefined();
+  });
+
+  it('counts the same store-wide as narrowed to dates that hold every order, and never counts another store', async () => {
+    const { auth, workspace, variant } = await setupWorkspaceWithProduct({ stock: 100 });
+    await buildEveryStage(auth, workspace, variant);
+    // Another store with shipments of its own.
+    const other = await setupWorkspaceWithProduct({ stock: 100 });
+    await buildEveryStage(other.auth, other.workspace, other.variant);
+
+    const all = await pipeline(auth.accessToken, workspace.id);
+    const day = 24 * 60 * 60 * 1000;
+    const from = new Date(Date.now() - day).toISOString();
+    const to = new Date(Date.now() + day).toISOString();
+    const dated = await pipeline(auth.accessToken, workspace.id, `?from=${from}&to=${to}`);
+    expect(all.status).toBe(200);
+    expect(dated.status).toBe(200);
+    // One order in every stage: the other store's orders and shipments count nowhere.
+    expect(all.body.stages).toEqual(Object.fromEntries(STAGES.map((stage) => [stage, 1])));
+    expect(all.body.total).toBe(STAGES.length);
+    expect(dated.body.stages).toEqual(all.body.stages);
+    expect(dated.body.total).toBe(all.body.total);
   });
 
   it('zero-fills stages with no orders', async () => {

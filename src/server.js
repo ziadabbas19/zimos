@@ -64,6 +64,13 @@ async function start() {
   const server = app.listen(env.port, () => {
     logger.info(`Zimos backend listening on port ${env.port}`, { env: env.nodeEnv });
   });
+  // Idle keep-alive connections stay open longer than the proxy in front keeps
+  // them (Node's default is 5 s), so the proxy never sends a request down a
+  // connection Node is closing at that moment (a stray 502). headersTimeout
+  // must be above keepAliveTimeout or Node can drop a request whose headers
+  // arrive late on a reused connection.
+  server.keepAliveTimeout = env.http.keepAliveTimeoutMs;
+  server.headersTimeout = env.http.keepAliveTimeoutMs + 1000;
 
   // Live updates over Socket.IO on this same server: only with REALTIME_ENABLED=true.
   realtime.attach(server, app);

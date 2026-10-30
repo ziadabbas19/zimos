@@ -77,6 +77,25 @@ const LATEST_SHIPMENT_JOIN = latestShipmentJoin();
 const ORDERS_WITH_STAGE_FROM = `orders o${LATEST_SHIPMENT_JOIN}`;
 
 /**
+ * The same `ls.status`, for a query over most of one store's orders (the
+ * stage counts as the orders screen opens): the latest shipment of every
+ * order found in one pass over the store's shipments and hash-joined, where
+ * the LATERAL above looks it up once per order (half the time on 60,000
+ * orders). Needs `$workspaceId` bound; a shipment belongs to its order's
+ * store (shipmentLifecycle.insertShipment is given the order's store, and
+ * the orders search reads shipments by store the same way). For a query that
+ * keeps few orders the LATERAL is cheaper.
+ */
+const STORE_ORDERS_WITH_STAGE_FROM = `orders o
+    LEFT JOIN (
+      SELECT DISTINCT ON (s.order_id) s.order_id, s.status
+        FROM shipments s
+       WHERE s.workspace_id = $workspaceId
+         AND s.status <> 'cancelled'
+       ORDER BY s.order_id, s.created_at DESC, s.id DESC
+    ) ls ON ls.order_id = o.id`;
+
+/**
  * Money has actually moved on the order, or it is COD (collected on delivery,
  * so it stands as a sale from the moment it is placed). Once paid, a refund
  * does not undo this: the order was a sale that was later refunded.
@@ -137,4 +156,13 @@ const STAGE_SQL = `CASE
       ELSE 'ready_to_ship'
     END`;
 
-module.exports = { STAGES, STAGE_SQL, LATEST_SHIPMENT_JOIN, latestShipmentJoin, ORDERS_WITH_STAGE_FROM, unpaidPrepaidSql, countsAsSaleSql };
+module.exports = {
+  STAGES,
+  STAGE_SQL,
+  LATEST_SHIPMENT_JOIN,
+  latestShipmentJoin,
+  ORDERS_WITH_STAGE_FROM,
+  STORE_ORDERS_WITH_STAGE_FROM,
+  unpaidPrepaidSql,
+  countsAsSaleSql,
+};

@@ -3,6 +3,7 @@
 const path = require('path');
 const express = require('express');
 const helmet = require('helmet');
+const compression = require('compression');
 const cookieParser = require('cookie-parser');
 const swaggerUi = require('swagger-ui-express');
 const env = require('./config/env');
@@ -94,6 +95,17 @@ app.use(helmet());
 // Any origin for the public /api/v1/store API, the CORS_ORIGINS allowlist
 // everywhere else (see core/middleware/cors.js).
 app.use(corsPolicy);
+// Responses of 1 KB and more go out compressed when the client asks: brotli
+// (quality 4, cheap enough per request), else gzip. The live streams (SSE)
+// stay as they are: a compressor would hold their events back.
+app.use(
+  compression({
+    filter: (req, res) => {
+      if (String(res.getHeader('Content-Type') || '').startsWith('text/event-stream')) return false;
+      return compression.filter(req, res);
+    },
+  })
+);
 // Storefront analytics beacons get their own, much smaller, body limit. Mounted
 // before the API-wide parser below, which then skips the already-read body.
 app.use(`/api/${env.apiVersion}/store/:workspaceId/events`, eventsPublicRoutes.eventsBodyParser);

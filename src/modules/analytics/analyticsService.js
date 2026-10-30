@@ -9,13 +9,34 @@ const MAX_RANGE_DAYS = 366;
 
 const toNumber = (v) => (v === null || v === undefined ? 0 : Number(v));
 
+// One formatter per time zone: building one costs ~0.1ms, and the summary
+// names the day of every order in its range (10,000 orders, a second). Kept
+// small: a zone name is case-insensitive, so the spellings of one are many.
+const dayFormats = new Map();
+const MAX_DAY_FORMATS = 64;
+
+function dayFormat(timeZone) {
+  if (dayFormats.has(timeZone)) return dayFormats.get(timeZone);
+  let format = null;
+  try {
+    format = new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' });
+  } catch {
+    // An unknown zone: the UTC day below, as before.
+  }
+  if (dayFormats.size >= MAX_DAY_FORMATS) dayFormats.clear();
+  dayFormats.set(timeZone, format);
+  return format;
+}
+
 /** YYYY-MM-DD in the workspace's timezone, so "today" matches the merchant's day. */
 function dayKey(date, timeZone) {
   try {
-    return new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(date);
+    const format = dayFormat(timeZone);
+    if (format) return format.format(date);
   } catch {
-    return date.toISOString().slice(0, 10);
+    // Falls through to the UTC day.
   }
+  return date.toISOString().slice(0, 10);
 }
 
 function resolveRange({ from, to } = {}) {
@@ -49,66 +70,81 @@ function validTimeZone(tz) {
  *
  * Aggregated in Postgres rather than in Node: a year of a busy store's events
  * is millions of rows, which must never be loaded into the API process.
+ *
+ * One statement that reads the range's events once. The sessions are grouped
+ * by hashing, not counted with count(distinct), which sorts every event once
+ * per count; a session's first event is looked for only among the events at
+ * its start. (Five statements, each reading and sorting the events again,
+ * took twice as long on 30 days of a busy store.)
  */
 async function getTraffic(workspaceId, { start, end, timeZone, series }) {
-  const run = (sql) =>
-    db.sequelize.query(sql, {
-      replacements: { workspaceId, start, end, tz: validTimeZone(timeZone), devices: DEVICES },
-      type: db.Sequelize.QueryTypes.SELECT,
-    });
-  // Every event in range, with the key that groups it into a session.
-  const EVENTS = `
-    select coalesce(e.session_id, e.visitor_id) as sid, e.visitor_id, e.event_name, e.source, e.medium,
-           e.order_id, e.metadata, e.created_at, e.id
-    from analytics_events e
-    where e.workspace_id = :workspaceId and e.created_at >= :start and e.created_at < :end`;
-  // One row per session: what its first event says about it.
-  const FIRSTS = `
-    select distinct on (sid) sid,
-           case when metadata->>'device' in (:devices) then metadata->>'device' else 'unknown' end as device,
-           coalesce(nullif(source, ''), 'direct') as source,
-           nullif(medium, '') as medium,
-           to_char(created_at at time zone :tz, 'YYYY-MM-DD') as day
-    from ev
-    order by sid, created_at, id`;
-
-  const [[totals], byDevice, bySource, topPages, byDay] = await Promise.all([
-    run(`
-      with ev as (${EVENTS})
+  const [answer] = await db.sequelize.query(
+    `
+    with ev as materialized (
+      -- Every event in range, with the key that groups it into a session
+      -- (never null: visitor_id is required).
+      select coalesce(e.session_id, e.visitor_id) as sid, e.visitor_id, e.event_name, e.source, e.medium,
+             e.order_id, e.metadata->>'device' as device, e.metadata->>'path' as path, e.created_at, e.id
+      from analytics_events e
+      where e.workspace_id = :workspaceId and e.created_at >= :start and e.created_at < :end),
+    sessions as materialized (
+      select sid, min(created_at) as started_at,
+             bool_or(event_name = 'add_to_cart') as carted,
+             bool_or(event_name = 'begin_checkout') as checked_out
+      from ev
+      group by sid),
+    firsts as materialized (
+      -- One row per session: what its first event (by time, then id) says about it.
+      select distinct on (ev.sid) ev.sid,
+             case when ev.device in (:devices) then ev.device else 'unknown' end as device,
+             coalesce(nullif(ev.source, ''), 'direct') as source,
+             nullif(ev.medium, '') as medium,
+             to_char(ev.created_at at time zone :tz, 'YYYY-MM-DD') as day
+      from sessions s
+      join ev on ev.sid = s.sid and ev.created_at = s.started_at
+      order by ev.sid, ev.id),
+    counts as (
       select
-        count(distinct sid) as sessions,
-        count(distinct visitor_id) as visitors,
         count(*) filter (where event_name = 'page_view') as page_views,
         count(*) filter (where event_name = 'view_content') as product_views,
-        count(distinct sid) filter (where event_name = 'add_to_cart') as add_to_cart,
-        count(distinct sid) filter (where event_name = 'begin_checkout') as checkouts,
-        count(distinct order_id) filter (where event_name = 'purchase' and order_id is not null) as purchase_orders,
         count(*) filter (where event_name = 'purchase' and order_id is null) as purchases_without_order
-      from ev`),
-    run(`
-      with ev as (${EVENTS}), firsts as (${FIRSTS})
-      select device, count(*) as sessions from firsts group by device order by sessions desc, device`),
-    run(`
-      with ev as (${EVENTS}), firsts as (${FIRSTS})
-      select f.source, f.medium, count(distinct f.sid) as sessions,
-             count(distinct p.order_id) as orders
-      from firsts f
-      left join ev p on p.sid = f.sid and p.event_name = 'purchase' and p.order_id is not null
-      group by f.source, f.medium
-      order by sessions desc, orders desc, f.source
-      limit 10`),
-    run(`
-      with ev as (${EVENTS})
-      select metadata->>'path' as path, count(*) as views
-      from ev
-      where event_name = 'page_view' and coalesce(metadata->>'path', '') <> ''
-      group by 1
-      order by views desc, path
-      limit 10`),
-    run(`
-      with ev as (${EVENTS}), firsts as (${FIRSTS})
-      select day, count(*) as sessions from firsts group by day`),
-  ]);
+      from ev)
+    select
+      (select row_to_json(t) from (
+        select
+          (select count(*) from sessions) as sessions,
+          (select count(*) from (select visitor_id from ev group by visitor_id) v) as visitors,
+          c.page_views,
+          c.product_views,
+          (select count(*) from sessions where carted) as add_to_cart,
+          (select count(*) from sessions where checked_out) as checkouts,
+          (select count(*) from (
+            select order_id from ev where event_name = 'purchase' and order_id is not null group by order_id) o) as purchase_orders,
+          c.purchases_without_order
+        from counts c) t) as totals,
+      (select coalesce(json_agg(d order by d.sessions desc, d.device), '[]'::json) from (
+        select device, count(*) as sessions from firsts group by device) d) as by_device,
+      (select coalesce(json_agg(s order by s.sessions desc, s.orders desc, s.source), '[]'::json) from (
+        select f.source, f.medium, count(distinct f.sid) as sessions, count(distinct p.order_id) as orders
+        from firsts f
+        left join ev p on p.sid = f.sid and p.event_name = 'purchase' and p.order_id is not null
+        group by f.source, f.medium
+        order by sessions desc, orders desc, f.source
+        limit 10) s) as by_source,
+      (select coalesce(json_agg(p order by p.views desc, p.path), '[]'::json) from (
+        select path, count(*) as views from ev
+        where event_name = 'page_view' and coalesce(path, '') <> ''
+        group by 1
+        order by views desc, path
+        limit 10) p) as top_pages,
+      (select coalesce(json_agg(y), '[]'::json) from (
+        select day, count(*) as sessions from firsts group by day) y) as by_day`,
+    {
+      replacements: { workspaceId, start, end, tz: validTimeZone(timeZone), devices: DEVICES },
+      type: db.Sequelize.QueryTypes.SELECT,
+    }
+  );
+  const { totals, by_device: byDevice, by_source: bySource, top_pages: topPages, by_day: byDay } = answer;
 
   for (const row of byDay) {
     const day = series.get(row.day);
