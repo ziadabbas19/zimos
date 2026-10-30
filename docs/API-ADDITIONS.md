@@ -174,6 +174,7 @@ attribute lists).
 | GET | `/admin/users/:userId` | adds `phoneVerified` (from `phone_verified_at`) and `location` — `{ country, governorate, source: 'signup_visit', seenAt }` or null: the country and governorate on the marketing-site visits of the session the account signed up from (`site_visits`, Cloudflare's headers via `ANALYTICS_GEO_HEADERS`, the IP's region, approximate; the governorate only on visits recorded with `SITE_TRAFFIC_DETAILS_ENABLED`). No city is stored anywhere; nothing new is tracked |
 | GET | `/admin/users/:userId`, `/admin/users` | each store in `workspaces` adds `createdAt` and `storeUrl` |
 | GET | `/admin/workspaces` | each row adds `storeUrl`; `owner` (id, name, email) was already there |
+| GET | `/admin/workspaces` | each row also adds `platformUrl`, `customDomain` and `customDomainCount` (below) |
 
 `storeUrl` is the store's canonical address (`domains/primaryHost.js`): its
 primary domain when verified, certificate issued and not suspended, else
@@ -181,6 +182,20 @@ primary domain when verified, certificate issued and not suspended, else
 response in one query (`storeOriginsOf`), so the number of queries does not
 grow with the number of stores. `/admin/workspaces` is still one unpaginated
 list, as before.
+
+So the console can show both addresses of a store, each `/admin/workspaces` row
+also has (`domains/storeDomains.js`, one more query for all the stores):
+
+- `platformUrl` — always `https://<slug>.<PLATFORM_ROOT_DOMAIN>`, whatever
+  domain the store has.
+- `customDomain` — null without one, else `{ hostname, status, sslStatus,
+  primary, suspended, state }` for the store's primary domain, else its
+  healthiest, else its newest. `state` is `connected` (verified, certificate
+  issued, not suspended: the same rule as `storeUrl`, without needing
+  primary), `problem` (verification failed, certificate `failed` or `moved`,
+  or suspended) or `pending` (anything else). No verification token or
+  provider reference.
+- `customDomainCount` — how many domains the store has, in any state.
 
 ### Device notifications (Web Push) — `/me/push` (`PUSH_ENABLED` + VAPID)
 The signed-in account's own browsers, in no store (`authenticate` only). On
