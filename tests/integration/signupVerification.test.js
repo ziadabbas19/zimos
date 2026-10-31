@@ -275,14 +275,18 @@ describe('sign-up with a code', () => {
   });
 
   it('caps codes from one IP in an hour, before an account is even made', async () => {
+    // The client's address comes from X-Forwarded-For (`trust proxy` = 1), so it
+    // is the same on every host: the socket's own address is 127.0.0.1 on an
+    // IPv4-only one and ::ffff:127.0.0.1 on a dual-stack one.
+    const ip = '203.0.113.7';
     const rows = [];
     for (let i = 0; i < codes.LIMITS.ipPerHour; i += 1) {
-      rows.push({ userId: null, channel: 'email', target: `x${i}@example.com`, codeHash: 'x', expiresAt: new Date(), requestIp: '::ffff:127.0.0.1' });
+      rows.push({ userId: null, channel: 'email', target: `x${i}@example.com`, codeHash: 'x', expiresAt: new Date(), requestIp: ip });
     }
     const owner = await existingAccount();
     await db.VerificationCode.bulkCreate(rows.map((r) => ({ ...r, userId: owner.userId })));
     const before = await db.User.count();
-    const res = await register();
+    const res = await register().set('X-Forwarded-For', ip);
     expect(res.status).toBe(429);
     expect(res.body.error.code).toBe('VERIFICATION_LIMIT_REACHED');
     expect(await db.User.count()).toBe(before);
