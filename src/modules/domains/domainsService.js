@@ -150,9 +150,12 @@ async function deleteDomain(workspaceId, domainId, req) {
   // (migration 214); removing it at the provider now clears that row.
   await domain.destroy();
   await require('./domainSettings').revokeCertificate(domain);
-  // It may have been the store's canonical address (primaryHost.js).
+  // It may have been the store's canonical address (primaryHost.js), and its
+  // pages may be kept at the edge under it (storefront/cloudflarePurge.js).
   require('./primaryHost').forget(workspaceId);
-  require('../storefront/storefrontCache').invalidate(workspaceId);
+  require('../storefront/storefrontCache').invalidate(workspaceId, {
+    previousHosts: USABLE.includes(before.status) ? [before.hostname] : [],
+  });
 
   await recordAudit({
     workspaceId,

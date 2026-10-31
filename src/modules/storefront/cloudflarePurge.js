@@ -4,6 +4,7 @@ const db = require('../../db/models');
 const env = require('../../config/env');
 const logger = require('../../core/utils/logger');
 const { SLUG_PATTERN, SLUG_MAX, RESERVED_SLUGS } = require('../../core/utils/workspaceSlug');
+const domainRules = require('../domains/domainRules');
 
 /**
  * Purge-on-publish for the store pages Cloudflare keeps. The storefront
@@ -20,8 +21,16 @@ const { SLUG_PATTERN, SLUG_MAX, RESERVED_SLUGS } = require('../../core/utils/wor
  * any other store. Cloudflare purges by hostname on every plan since April
  * 2025. Nothing here sends purge_everything, a prefix, a tag or a list of
  * URLs, and a host that is not a store's own subdomain (www, api, app, admin,
- * media, customers… — PLATFORM_LABELS) is never sent. Merchant domains are
- * not kept at the edge, so they are not purged.
+ * media, customers… — PLATFORM_LABELS) is never sent.
+ *
+ * Merchant domains (CLOUDFLARE_PURGE_CUSTOM_DOMAINS, off unless exactly
+ * "true"): the custom-domains Worker keeps a store's pages under its primary
+ * domain's own URLs (zimos-frontend worker/custom-domains-worker.js). With
+ * the switch on, the purge also names the store's verified domains (primary
+ * or not, suspended or not: the primary one now, and one that was a moment
+ * ago) and any domain it just removed (`previousHosts`), each a merchant's
+ * own hostname (customHost): never the platform domain or a host under it,
+ * never the CNAME target. Off, nothing about domains is read or sent.
  *
  * Fire and forget: purgeStore() returns at once and never throws, and nothing
  * it does can fail or slow the merchant's request. Per store, the changes
@@ -63,7 +72,11 @@ const ZONE_ID = /^[0-9a-f]{32}$/i;
 // store's slug; the others are the zone's own hosts (docs/edge-cache's rule).
 const PLATFORM_LABELS = new Set([...RESERVED_SLUGS, 'media', 'customers', 'fallback']);
 
+// A domain the storefront serves (domains/domainSettings.js): only these hold kept pages.
+const SERVED = ['verified', 'active'];
+
 const enabled = () => env.cloudflarePurge.enabled === true;
+const customDomainsEnabled = () => env.cloudflarePurge.customDomains === true;
 
 function configured() {
   const { apiToken, zoneId } = env.cloudflarePurge;
@@ -86,6 +99,28 @@ function storeHost(slug) {
   if (PLATFORM_LABELS.has(label)) return null;
   const host = `${label}.${root}`;
   if (host === env.customDomains.cnameTarget) return null;
+  return host;
+}
+
+/**
+ * A merchant's own domain as stored on its row (`www.merchant-shop.com`), or
+ * null when it is not one: whatever a merchant could not connect
+ * (domainRules.checkHostname: an IP, an apex, a malformed name, our zones and
+ * the hosting provider's), anything not already in its stored form, the
+ * platform domain or any host under it, and the CNAME target.
+ */
+function customHost(hostname) {
+  const root = platformRoot();
+  const stored = String(hostname || '').trim().toLowerCase().replace(/\.$/, '');
+  if (!root.includes('.') || !stored) return null;
+  let host;
+  try {
+    host = domainRules.checkHostname(stored);
+  } catch {
+    return null;
+  }
+  if (host !== stored) return null;
+  if (host === root || host.endsWith(`.${root}`) || host === env.customDomains.cnameTarget) return null;
   return host;
 }
 
@@ -115,7 +150,7 @@ const sleep = (ms) =>
   });
 
 // ─── state ───────────────────────────────────────────────────────────────────
-const due = new Map(); // workspaceId → { firstAt, timer, slugs: Set of earlier slugs }
+const due = new Map(); // workspaceId → { firstAt, timer, slugs: Set of earlier slugs, hosts: Set of removed domains }
 const queue = new Set(); // hosts waiting for a request, oldest first
 let tokens = BUCKET_SIZE;
 let refilledAt = Date.now();
@@ -237,7 +272,19 @@ function enqueue(hosts) {
 
 // ─── per store ───────────────────────────────────────────────────────────────
 
-/** A store's wait is over: its host now (and any address it just left) joins the queue. */
+/** The store's verified domains now, with CLOUDFLARE_PURGE_CUSTOM_DOMAINS; [] otherwise or on a failed read. */
+async function servedDomains(workspaceId) {
+  if (!customDomainsEnabled()) return [];
+  try {
+    const rows = await db.Domain.findAll({ where: { workspaceId, status: SERVED }, attributes: ['hostname'] });
+    return rows.map((row) => row.hostname);
+  } catch (err) {
+    logger.warn("[cloudflare-purge] could not read the store's domains", { workspaceId, error: err.message });
+    return [];
+  }
+}
+
+/** A store's wait is over: its host now (and any address it just left, and its own domains) joins the queue. */
 async function flushStore(workspaceId) {
   const entry = due.get(workspaceId);
   due.delete(workspaceId);
@@ -248,7 +295,8 @@ async function flushStore(workspaceId) {
   } catch (err) {
     logger.warn("[cloudflare-purge] could not read the store's address", { workspaceId, error: err.message });
   }
-  const hosts = [...new Set([...slugs].map(storeHost).filter(Boolean))];
+  const domains = customDomainsEnabled() ? [...(entry ? entry.hosts : []), ...(await servedDomains(workspaceId))] : [];
+  const hosts = [...new Set([...[...slugs].map(storeHost), ...domains.map(customHost)].filter(Boolean))];
   if (hosts.length === 0) return;
   enqueue(hosts);
   await pump();
@@ -258,8 +306,10 @@ async function flushStore(workspaceId) {
  * Drops the store's pages at the edge, soon: after DEBOUNCE_MS without
  * another change to it, at most MAX_WAIT_MS after the first. `previousSlug`:
  * the address the store just left, purged with its current one.
+ * `previousHosts`: domains the store was served on and just removed, purged
+ * with its current ones (CLOUDFLARE_PURGE_CUSTOM_DOMAINS only).
  */
-function purgeStore(workspaceId, { previousSlug = null } = {}) {
+function purgeStore(workspaceId, { previousSlug = null, previousHosts = [] } = {}) {
   try {
     if (!enabled() || !workspaceId) return;
     if (!configured()) {
@@ -272,10 +322,11 @@ function purgeStore(workspaceId, { previousSlug = null } = {}) {
     const now = Date.now();
     let entry = due.get(workspaceId);
     if (!entry) {
-      entry = { firstAt: now, timer: null, slugs: new Set() };
+      entry = { firstAt: now, timer: null, slugs: new Set(), hosts: new Set() };
       due.set(workspaceId, entry);
     }
     if (previousSlug) entry.slugs.add(previousSlug);
+    if (customDomainsEnabled()) for (const hostname of previousHosts || []) if (hostname) entry.hosts.add(hostname);
     clearTimeout(entry.timer);
     const wait = Math.max(0, Math.min(DEBOUNCE_MS, entry.firstAt + MAX_WAIT_MS - now));
     entry.timer = setTimeout(() => {
@@ -302,6 +353,7 @@ function _reset() {
 module.exports = {
   purgeStore,
   storeHost,
+  customHost,
   enabled,
   _reset,
   API,

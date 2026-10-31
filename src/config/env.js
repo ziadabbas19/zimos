@@ -1193,8 +1193,13 @@ const env = {
   // and the zone are CLOUDFLARE_API_TOKEN and CLOUDFLARE_ZONE_ID, the ones the
   // custom domains use: the token then needs Zone > Cache Purge: Purge as well.
   // Never logged. Under NODE_ENV=test it starts off and empty; a test sets them.
+  // customDomains (CLOUDFLARE_PURGE_CUSTOM_DOMAINS, off unless exactly "true",
+  // and only with enabled): the store's own domains are purged with it too —
+  // the ones the custom-domains Worker keeps at the edge
+  // (STOREFRONT_EDGE_CACHE_CUSTOM_DOMAINS on the storefront).
   cloudflarePurge: {
     enabled: process.env.NODE_ENV !== 'test' && process.env.CLOUDFLARE_PURGE_ENABLED === 'true',
+    customDomains: process.env.NODE_ENV !== 'test' && process.env.CLOUDFLARE_PURGE_CUSTOM_DOMAINS === 'true',
     apiToken: process.env.NODE_ENV === 'test' ? '' : (process.env.CLOUDFLARE_API_TOKEN || '').trim(),
     zoneId: process.env.NODE_ENV === 'test' ? '' : (process.env.CLOUDFLARE_ZONE_ID || '').trim(),
   },

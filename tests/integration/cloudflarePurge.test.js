@@ -294,3 +294,98 @@ describe('writes outside the audit log', () => {
     expect(asked()).toEqual([{ id: issued.workspaceId, previousSlug: null }]);
   });
 });
+
+describe('merchant domains (CLOUDFLARE_PURGE_CUSTOM_DOMAINS), Cloudflare mocked', () => {
+  const served = { verificationToken: 'tok', status: 'active', verifiedAt: new Date(), sslStatus: 'issued', sslProvider: 'cloudflare' };
+
+  /** A store with a website, its slug, its owner's headers, and `hostnames` connected (the first one primary). */
+  async function storeWith(hostnames, fields = served) {
+    const { auth, workspace } = await setupWorkspaceWithProduct();
+    const website = await db.Website.create({ workspaceId: workspace.id, name: 'Site', subdomain: `site-${workspace.id.slice(0, 8)}` });
+    const rows = [];
+    for (const [i, hostname] of hostnames.entries()) {
+      rows.push(await db.Domain.create({ workspaceId: workspace.id, websiteId: website.id, hostname, isPrimary: i === 0, ...fields }));
+    }
+    const slug = (await db.Workspace.findByPk(workspace.id)).slug;
+    return { workspace, slug, rows, H: { Authorization: `Bearer ${auth.accessToken}` }, sub: `${slug}.${env.platformRootDomain}` };
+  }
+
+  beforeEach(() => {
+    env.customDomains.enabled = true;
+  });
+  afterEach(() => {
+    env.customDomains.enabled = false;
+    env.cloudflarePurge.customDomains = false;
+  });
+
+  it("a change purges the store's subdomain and its domain, never another store's", async () => {
+    const a = await storeWith(['www.purge-a.com']);
+    const b = await storeWith(['www.purge-b.com']);
+    turnOn();
+    env.cloudflarePurge.customDomains = true;
+    const fetchMock = mockCloudflare();
+
+    await recordAudit({ workspaceId: a.workspace.id, actorUserId: null, action: 'product.update', entityType: 'Product', entityId: null });
+    expect(await eventually(() => cloudflareCalls(fetchMock).length === 1)).toBe(true);
+    expect(hostsOf(fetchMock)[0].sort()).toEqual([a.sub, 'www.purge-a.com'].sort());
+    expect(hostsOf(fetchMock).flat()).not.toContain('www.purge-b.com');
+    expect(hostsOf(fetchMock).flat()).not.toContain(b.sub);
+  });
+
+  it('removing the domain purges it with the subdomain', async () => {
+    const a = await storeWith(['www.removed-a.com']);
+    turnOn();
+    env.cloudflarePurge.customDomains = true;
+    const fetchMock = mockCloudflare();
+
+    const res = await request(app).delete(`/api/v1/workspaces/${a.workspace.id}/domains/${a.rows[0].id}`).set(a.H);
+    expect(res.status).toBe(200);
+    expect(await db.Domain.count({ where: { workspaceId: a.workspace.id } })).toBe(0);
+    expect(await eventually(() => cloudflareCalls(fetchMock).length === 1)).toBe(true);
+    await sleep(purge.DEBOUNCE_MS + 200);
+    expect(cloudflareCalls(fetchMock)).toHaveLength(1);
+    expect(hostsOf(fetchMock)[0].sort()).toEqual([a.sub, 'www.removed-a.com'].sort());
+  });
+
+  it('a new primary domain: the old one and the new one are purged', async () => {
+    const a = await storeWith(['www.first-a.com', 'shop.first-a.com']);
+    turnOn();
+    env.cloudflarePurge.customDomains = true;
+    const fetchMock = mockCloudflare();
+
+    const res = await request(app).patch(`/api/v1/workspaces/${a.workspace.id}/domains/${a.rows[1].id}`).set(a.H).send({ isPrimary: true });
+    expect(res.status).toBe(200);
+    expect(res.body.domain.isPrimary).toBe(true);
+    expect(await eventually(() => cloudflareCalls(fetchMock).length === 1)).toBe(true);
+    expect(hostsOf(fetchMock)[0].sort()).toEqual([a.sub, 'shop.first-a.com', 'www.first-a.com'].sort());
+  });
+
+  it("a claim still waiting for verification is never purged, even on another store's host", async () => {
+    const owner = await storeWith(['www.claimed.com']);
+    const squatter = await storeWith(['www.claimed.com'], { verificationToken: 'tok', status: 'pending_verification' });
+    turnOn();
+    env.cloudflarePurge.customDomains = true;
+    const fetchMock = mockCloudflare();
+
+    const res = await request(app).delete(`/api/v1/workspaces/${squatter.workspace.id}/domains/${squatter.rows[0].id}`).set(squatter.H);
+    expect(res.status).toBe(200);
+    expect(await eventually(() => cloudflareCalls(fetchMock).length === 1)).toBe(true);
+    await sleep(purge.DEBOUNCE_MS + 200);
+    expect(hostsOf(fetchMock)).toEqual([[squatter.sub]]);
+    expect(owner.rows[0].hostname).toBe('www.claimed.com');
+  });
+
+  it('switch off (the default): the subdomain alone, exactly as before, even when a domain is removed', async () => {
+    const a = await storeWith(['www.off-a.com']);
+    turnOn();
+    const fetchMock = mockCloudflare();
+    const findAll = jest.spyOn(db.Domain, 'findAll');
+
+    const res = await request(app).delete(`/api/v1/workspaces/${a.workspace.id}/domains/${a.rows[0].id}`).set(a.H);
+    expect(res.status).toBe(200);
+    expect(await eventually(() => cloudflareCalls(fetchMock).length === 1)).toBe(true);
+    await sleep(purge.DEBOUNCE_MS + 200);
+    expect(hostsOf(fetchMock)).toEqual([[a.sub]]);
+    expect(findAll).not.toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({ status: ['verified', 'active'] }), attributes: ['hostname'] }));
+  });
+});
