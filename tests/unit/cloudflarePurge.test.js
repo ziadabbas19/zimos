@@ -58,6 +58,7 @@ afterEach(() => {
   purge._reset();
   jest.useRealTimers();
   jest.restoreAllMocks();
+  env.cloudflarePurge.customDomains = false;
   env.cloudflarePurge.enabled = false;
   env.cloudflarePurge.apiToken = '';
   env.cloudflarePurge.zoneId = '';
@@ -327,5 +328,165 @@ describe('the token and the zone id stay out of the logs', () => {
     expect(text).toContain(host('acme'));
     expect(text).not.toContain(TOKEN);
     expect(text).not.toContain(ZONE);
+  });
+});
+
+describe("merchant domains (CLOUDFLARE_PURGE_CUSTOM_DOMAINS)", () => {
+  let domains; // workspaceId → hostnames of its verified domains
+
+  beforeEach(() => {
+    domains = new Map();
+    jest.spyOn(db.Domain, 'findAll').mockImplementation(async ({ where }) => (domains.get(where.workspaceId) || []).map((hostname) => ({ hostname })));
+  });
+
+  it('off (the default): exactly as before, the subdomain alone, and no domain is read', async () => {
+    slugs.set('w1', 'acme');
+    domains.set('w1', ['www.acme-shop.com']);
+    purge.purgeStore('w1', { previousHosts: ['www.old-acme.com'] });
+    await jest.advanceTimersByTimeAsync(purge.DEBOUNCE_MS);
+    expect(sentHosts()).toEqual([[host('acme')]]);
+    expect(db.Domain.findAll).not.toHaveBeenCalled();
+    // Off means off whatever the purge itself says, and the purge off sends nothing at all.
+    env.cloudflarePurge.customDomains = true;
+    env.cloudflarePurge.enabled = false;
+    purge.purgeStore('w1');
+    await jest.advanceTimersByTimeAsync(60000);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("on: the store's subdomain and its own domains in one request, after the same wait", async () => {
+    env.cloudflarePurge.customDomains = true;
+    slugs.set('w1', 'acme');
+    domains.set('w1', ['www.acme-shop.com']);
+    for (let i = 0; i < 10; i += 1) purge.purgeStore('w1');
+    await jest.advanceTimersByTimeAsync(purge.DEBOUNCE_MS - 1);
+    expect(fetchMock).not.toHaveBeenCalled();
+    await jest.advanceTimersByTimeAsync(1);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ hosts: [host('acme'), 'www.acme-shop.com'] });
+    // Only this store's domains, and only the ones the storefront serves.
+    expect(db.Domain.findAll).toHaveBeenCalledWith({ where: { workspaceId: 'w1', status: ['verified', 'active'] }, attributes: ['hostname'] });
+  });
+
+  it("one store's change never names another store's domain", async () => {
+    env.cloudflarePurge.customDomains = true;
+    slugs.set('w1', 'acme');
+    slugs.set('w2', 'bolt');
+    domains.set('w1', ['www.acme-shop.com']);
+    domains.set('w2', ['www.bolt-shop.com']);
+    purge.purgeStore('w1');
+    await jest.advanceTimersByTimeAsync(purge.DEBOUNCE_MS);
+    expect(sentHosts().flat().sort()).toEqual([host('acme'), 'www.acme-shop.com']);
+    purge.purgeStore('w2');
+    await jest.advanceTimersByTimeAsync(purge.DEBOUNCE_MS);
+    expect(sentHosts()[1].sort()).toEqual([host('bolt'), 'www.bolt-shop.com']);
+  });
+
+  it('a domain changed or removed: the old one and the new one', async () => {
+    env.cloudflarePurge.customDomains = true;
+    slugs.set('w1', 'acme');
+    // The merchant removed www.old-acme.com and connected www.acme-shop.com.
+    domains.set('w1', ['www.acme-shop.com']);
+    purge.purgeStore('w1', { previousHosts: ['www.old-acme.com'] });
+    purge.purgeStore('w1', { previousHosts: ['www.old-acme.com'] });
+    await jest.advanceTimersByTimeAsync(purge.DEBOUNCE_MS);
+    expect(sentHosts()).toHaveLength(1);
+    expect(sentHosts()[0].sort()).toEqual([host('acme'), 'www.acme-shop.com', 'www.old-acme.com'].sort());
+    // A primary switch keeps both rows: both are read, both are purged.
+    domains.set('w1', ['www.acme-shop.com', 'shop.acme-shop.com']);
+    purge.purgeStore('w1');
+    await jest.advanceTimersByTimeAsync(purge.DEBOUNCE_MS);
+    expect(sentHosts()[1].sort()).toEqual([host('acme'), 'shop.acme-shop.com', 'www.acme-shop.com'].sort());
+  });
+
+  it('never a platform host, the CNAME target, an IP, an apex or anything not in its stored form', async () => {
+    env.cloudflarePurge.customDomains = true;
+    const root = env.platformRootDomain;
+    const refused = [
+      root,
+      `api.${root}`,
+      `app.${root}`,
+      `acme.${root}`,
+      `x.media.${root}`,
+      env.customDomains.cnameTarget,
+      `fallback.${root}`,
+      'zimos.co',
+      'www.zimos.co',
+      'storefront-production.up.railway.app',
+      '203.0.113.7',
+      'acme-shop.com',
+      'www.acme-shop.com:443',
+      'https://www.acme-shop.com/',
+      'www.acme-shop.com/path',
+      'www.acme shop.com',
+      'localhost',
+      'shop.internal',
+      '',
+      null,
+    ];
+    for (const hostname of refused) expect(purge.customHost(hostname)).toBeNull();
+    expect(purge.customHost('www.acme-shop.com')).toBe('www.acme-shop.com');
+    expect(purge.customHost('WWW.Acme-Shop.com.')).toBe('www.acme-shop.com');
+    expect(purge.customHost('shop.example.com.eg')).toBe('shop.example.com.eg');
+    expect(purge.customHost('www.xn--mgbh0fb.xn--wgbh1c')).toBe('www.xn--mgbh0fb.xn--wgbh1c');
+
+    slugs.set('w1', 'acme');
+    domains.set('w1', refused.filter(Boolean));
+    purge.purgeStore('w1', { previousHosts: refused });
+    await jest.advanceTimersByTimeAsync(purge.DEBOUNCE_MS);
+    expect(sentHosts()).toEqual([[host('acme')]]);
+  });
+
+  it('no platform domain: no merchant domain either', () => {
+    const root = env.platformRootDomain;
+    try {
+      env.platformRootDomain = 'localhost';
+      expect(purge.customHost('www.acme-shop.com')).toBeNull();
+    } finally {
+      env.platformRootDomain = root;
+    }
+  });
+
+  it('never the CNAME target, even one outside the platform domain', () => {
+    const target = env.customDomains.cnameTarget;
+    try {
+      env.customDomains.cnameTarget = 'edge.zimos-saas.com';
+      expect(purge.customHost('edge.zimos-saas.com')).toBeNull();
+      expect(purge.customHost('www.acme-shop.com')).toBe('www.acme-shop.com');
+    } finally {
+      env.customDomains.cnameTarget = target;
+    }
+  });
+
+  it('at most 30 hosts a request, under the same bucket, domains included', async () => {
+    env.cloudflarePurge.customDomains = true;
+    for (let i = 0; i < 25; i += 1) {
+      slugs.set(`s${i}`, `shop-${i}`);
+      domains.set(`s${i}`, [`www.shop-${i}.com`]);
+    }
+    // Empty the bucket first so the 25 stores (50 hosts) wait and share requests.
+    for (let i = 0; i < purge.BUCKET_SIZE; i += 1) {
+      slugs.set(`e${i}`, `early-${i}`);
+      purge.purgeStore(`e${i}`);
+    }
+    await jest.advanceTimersByTimeAsync(purge.DEBOUNCE_MS);
+    expect(fetchMock).toHaveBeenCalledTimes(purge.BUCKET_SIZE);
+    for (let i = 0; i < 25; i += 1) purge.purgeStore(`s${i}`);
+    await jest.advanceTimersByTimeAsync(purge.REFILL_MS * 3);
+    const later = sentHosts().slice(purge.BUCKET_SIZE);
+    expect(later.length).toBeGreaterThanOrEqual(2);
+    for (const hosts of later) expect(hosts.length).toBeLessThanOrEqual(purge.MAX_HOSTS_PER_REQUEST);
+    expect(later.flat()).toHaveLength(50);
+    expect(new Set(later.flat()).size).toBe(50);
+  });
+
+  it("the domains can't be read: a warning, and the subdomain is still purged", async () => {
+    env.cloudflarePurge.customDomains = true;
+    db.Domain.findAll.mockRejectedValue(new Error('connection lost'));
+    slugs.set('w1', 'acme');
+    purge.purgeStore('w1');
+    await jest.advanceTimersByTimeAsync(purge.DEBOUNCE_MS);
+    expect(sentHosts()).toEqual([[host('acme')]]);
+    expect(logger.warn).toHaveBeenCalledTimes(1);
   });
 });

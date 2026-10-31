@@ -83,6 +83,9 @@ const STORE_ENTITIES = new Set([
 // yet, a pixel's test event.
 const UNSEEN_ACTIONS = new Set(['product.export', 'review.submit', 'media.upload', 'tracking_pixel.test_event']);
 
+// A domain row's statuses under which the storefront serves the store on it.
+const SERVED_DOMAIN = ['verified', 'active'];
+
 // --- memory backend ----------------------------------------------------------
 const memory = new Map(); // key → { expiresAt, json }
 const generations = new Map(); // workspaceId → n
@@ -141,11 +144,12 @@ async function cached(workspaceId, key, compute) {
 /**
  * Drops every cached entry of the store, here and at the edge (its pages at
  * Cloudflare, cloudflarePurge.js; fire and forget). `previousSlug`: the
- * address the store just left, whose pages go too.
+ * address the store just left, whose pages go too. `previousHosts`: domains
+ * of its own it was served on and just removed (CLOUDFLARE_PURGE_CUSTOM_DOMAINS).
  */
-async function invalidate(workspaceId, { previousSlug = null } = {}) {
+async function invalidate(workspaceId, { previousSlug = null, previousHosts = [] } = {}) {
   if (!workspaceId) return;
-  require('./cloudflarePurge').purgeStore(workspaceId, { previousSlug });
+  require('./cloudflarePurge').purgeStore(workspaceId, { previousSlug, previousHosts });
   if (!enabled) return;
   try {
     await backend().bump(workspaceId);
@@ -160,7 +164,10 @@ function onAudit({ workspaceId, action, entityType, before, after, transaction }
   // A new address (workspace.update): the pages kept under the old one go too.
   const previousSlug =
     entityType === 'Workspace' && before && after && before.slug && after.slug && before.slug !== after.slug ? before.slug : null;
-  const drop = () => invalidate(workspaceId, { previousSlug });
+  // A domain the store was served on, removed (domain.delete): its pages go too.
+  const previousHosts =
+    entityType === 'Domain' && before && before.hostname && SERVED_DOMAIN.includes(before.status) ? [before.hostname] : [];
+  const drop = () => invalidate(workspaceId, { previousSlug, previousHosts });
   if (transaction && typeof transaction.afterCommit === 'function') transaction.afterCommit(drop);
   else drop();
 }
