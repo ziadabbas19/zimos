@@ -6,7 +6,13 @@ const mockRole = { findOne: jest.fn(), create: jest.fn() };
 const mockTx = { LOCK: { UPDATE: 'UPDATE' } };
 jest.mock('../../src/db/models', () => ({
   Sequelize: { Op: {} },
-  sequelize: { transaction: (work) => work(mockTx) },
+  sequelize: {
+    transaction: (work) => work(mockTx),
+    // The pending-invite lookup's lower(invited_email) clause (workspaces/inviteAcceptance).
+    where: (...args) => ({ where: args }),
+    fn: (...args) => ({ fn: args }),
+    col: (name) => ({ col: name }),
+  },
   Membership: mockMembership,
   Role: mockRole,
   User: { findOne: jest.fn().mockResolvedValue(null) },
