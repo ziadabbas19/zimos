@@ -23,6 +23,8 @@ const CERTIFICATE_DEADLINE_MS = 72 * 60 * 60 * 1000;
 const USABLE = ['verified', 'active'];
 const enabled = () => env.customDomains.enabled === true;
 
+// The store's canonical host may have changed: its subdomain may now send
+// shoppers on to the domain, or stop. invalidate() drops its pages at the edge too.
 function forgetStore(workspaceId) {
   require('./primaryHost').forget(workspaceId);
   require('../storefront/storefrontCache').invalidate(workspaceId);
@@ -60,6 +62,7 @@ async function pollPendingCertificates(now = Date.now()) {
     // A first request the provider kept refusing ('none', its attempts recorded by
     // refreshCertificate) runs out the same way, with the provider's last answer.
     const since = domain.sslRequestedAt ? new Date(domain.sslRequestedAt).getTime() : null;
+    const was = `${domain.status}/${domain.sslStatus}`;
     if (since !== null && now - since > CERTIFICATE_DEADLINE_MS) {
       const neverRequested = domain.sslStatus === 'none' && domain.sslDetail;
       await domain.update({
@@ -72,7 +75,10 @@ async function pollPendingCertificates(now = Date.now()) {
     } else {
       await refreshCertificate(domain);
     }
-    forgetStore(domain.workspaceId);
+    // Only a domain whose state moved changes how the store is served: a
+    // still-pending one, asked every 5 minutes, leaves the store's caches be
+    // (its pages at Cloudflare included).
+    if (`${domain.status}/${domain.sslStatus}` !== was) forgetStore(domain.workspaceId);
   });
 }
 

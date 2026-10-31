@@ -125,6 +125,8 @@ staff.patch(
 staff.delete('/:questionId', requirePermission(PERMISSIONS.PRODUCTS_MANAGE), validate({ params: one }), asyncHandler(async (req, res) => {
   const n = await db.ProductQuestion.destroy({ where: { id: req.params.questionId, workspaceId: req.tenant.workspaceId } });
   if (!n) throw new NotFoundError('Question');
+  // Not audited: an answered question leaves the product page (storefrontCache.js, the edge included).
+  require('../storefront/storefrontCache').invalidate(req.tenant.workspaceId);
   res.status(204).end();
 }));
 

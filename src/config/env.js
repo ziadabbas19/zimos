@@ -1184,6 +1184,20 @@ const env = {
       zoneId: process.env.NODE_ENV === 'test' ? '' : (process.env.CLOUDFLARE_ZONE_ID || '').trim(),
     },
   },
+
+  // Purge-on-publish for the store pages Cloudflare keeps
+  // (storefront/cloudflarePurge.js): a change a store's shoppers see drops
+  // that store's pages at the edge at once, by hostname
+  // (<slug>.PLATFORM_ROOT_DOMAIN) and never anything wider. Off unless
+  // CLOUDFLARE_PURGE_ENABLED is exactly "true": off, nothing is sent. The token
+  // and the zone are CLOUDFLARE_API_TOKEN and CLOUDFLARE_ZONE_ID, the ones the
+  // custom domains use: the token then needs Zone > Cache Purge: Purge as well.
+  // Never logged. Under NODE_ENV=test it starts off and empty; a test sets them.
+  cloudflarePurge: {
+    enabled: process.env.NODE_ENV !== 'test' && process.env.CLOUDFLARE_PURGE_ENABLED === 'true',
+    apiToken: process.env.NODE_ENV === 'test' ? '' : (process.env.CLOUDFLARE_API_TOKEN || '').trim(),
+    zoneId: process.env.NODE_ENV === 'test' ? '' : (process.env.CLOUDFLARE_ZONE_ID || '').trim(),
+  },
 };
 
 module.exports = env;

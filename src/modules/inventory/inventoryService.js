@@ -23,6 +23,9 @@ async function lockVariant(variantId, workspaceId, transaction) {
   return variant;
 }
 
+// In stock as the storefront shows it (storefront/publicProduct.js): a boolean, never the count.
+const inStock = (variant) => Boolean(variant.allowOverselling) || variant.stockOnHand - variant.reservedStock > 0;
+
 /**
  * Reserves `quantity` units of a variant (moving them from "available" to
  * "reserved" without touching stockOnHand) — used when an order is created
@@ -40,10 +43,12 @@ async function reserve({ workspaceId, variantId, quantity, referenceType, refere
       );
     }
 
+    const wasInStock = inStock(variant);
     await variant.update(
       { reservedStock: variant.reservedStock + quantity, version: variant.version + 1 },
       { transaction }
     );
+    if (inStock(variant) !== wasInStock) dropStoreCache(workspaceId, transaction);
 
     await db.InventoryMovement.create(
       {
@@ -71,7 +76,9 @@ async function release({ workspaceId, variantId, quantity, referenceType, refere
     const variant = await lockVariant(variantId, workspaceId, transaction);
     const newReserved = Math.max(0, variant.reservedStock - quantity);
 
+    const wasInStock = inStock(variant);
     await variant.update({ reservedStock: newReserved, version: variant.version + 1 }, { transaction });
+    if (inStock(variant) !== wasInStock) dropStoreCache(workspaceId, transaction);
 
     await db.InventoryMovement.create(
       { workspaceId, variantId, type: 'release', quantityDelta: 0, reservedDelta: -quantity, referenceType, referenceId, actorUserId },
@@ -87,6 +94,7 @@ async function release({ workspaceId, variantId, quantity, referenceType, refere
 async function commit({ workspaceId, variantId, quantity, referenceType, referenceId, actorUserId }, externalTransaction) {
   const run = async (transaction) => {
     const variant = await lockVariant(variantId, workspaceId, transaction);
+    const wasInStock = inStock(variant);
     await variant.update(
       {
         stockOnHand: variant.stockOnHand - quantity,
@@ -95,6 +103,7 @@ async function commit({ workspaceId, variantId, quantity, referenceType, referen
       },
       { transaction }
     );
+    if (inStock(variant) !== wasInStock) dropStoreCache(workspaceId, transaction);
 
     await db.InventoryMovement.create(
       { workspaceId, variantId, type: 'commit', quantityDelta: -quantity, reservedDelta: -quantity, referenceType, referenceId, actorUserId },
@@ -107,8 +116,10 @@ async function commit({ workspaceId, variantId, quantity, referenceType, referen
 }
 
 // Stock the merchant adds or corrects shows in the store at once, not after
-// the storefront cache's 60 s (storefront/storefrontCache.js). Order
-// reservations do not drop it.
+// the storefront cache's 60 s (storefront/storefrontCache.js), at Cloudflare
+// too. An order's reservation, release or commit drops it only when the
+// variant goes out of stock or comes back: any other order leaves it be (a
+// busy store would never be cached).
 function dropStoreCache(workspaceId, transaction) {
   transaction.afterCommit(() => require('../storefront/storefrontCache').invalidate(workspaceId));
 }
