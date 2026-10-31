@@ -17,6 +17,7 @@ const { app, request, registerAndActivate, createWorkspace, createProductWithVar
 const db = require('../../src/db/models');
 const env = require('../../src/config/env');
 const { accessFor } = require('../../src/modules/workspaces/workspaceAccessService');
+const { addMonths } = require('../../src/modules/billing/planPricing');
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const BASIC = 29900;
@@ -205,9 +206,9 @@ describe('paying from the first day, by transfer', () => {
     expect(sub.status).toBe('active');
     expect(sub.currentPeriodStart.getTime()).toBe(start.getTime());
     expect(sub.currentPeriodEnd.getTime()).toBe(new Date(invoice.periodEnd).getTime());
-    const expectedEnd = new Date(start);
-    expectedEnd.setUTCMonth(expectedEnd.getUTCMonth() + 1);
-    expect(Math.abs(sub.currentPeriodEnd.getTime() - expectedEnd.getTime())).toBeLessThan(DAY_MS);
+    // One calendar month, held to the last day of a shorter month
+    // (planPricing.addMonths): paid on 31 Oct, it ends on 30 Nov, not 1 Dec.
+    expect(sub.currentPeriodEnd.getTime()).toBe(addMonths(start, 1).getTime());
     // trial_ends_at is left as it was, though the store is no longer on trial.
     expect(sub.trialEndsAt.getTime()).toBe(trialEnd.getTime());
 
