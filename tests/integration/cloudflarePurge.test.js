@@ -201,3 +201,96 @@ describe('end to end, Cloudflare mocked', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });
+
+describe('writes outside the audit log', () => {
+  afterEach(() => {
+    env.storeFeatures.length = 0;
+    env.customDomains.enabled = false;
+    delete process.env.CERTIFICATE_PROVIDER;
+    env.customDomains.cloudflare.apiToken = '';
+    env.customDomains.cloudflare.zoneId = '';
+  });
+
+  it('an order that sells the last unit or gives one back purges; any other order does not', async () => {
+    const { auth, workspace, variant } = await setupWorkspaceWithProduct({ stock: 2 });
+    const inventory = require('../../src/modules/inventory/inventoryService');
+    const move = (quantity) => ({ workspaceId: workspace.id, variantId: variant.id, quantity, referenceType: 'order_pending', referenceId: null, actorUserId: auth.userId });
+    purgeStore.mockClear();
+
+    await inventory.reserve(move(1)); // 2 → 1 left: still in stock
+    expect(purgeStore).not.toHaveBeenCalled();
+    await inventory.reserve(move(1)); // 1 → 0: sold out
+    expect(asked()).toEqual([{ id: workspace.id, previousSlug: null }]);
+
+    purgeStore.mockClear();
+    await inventory.commit(move(1)); // the sale goes through: still 0 left
+    expect(purgeStore).not.toHaveBeenCalled();
+    await inventory.release(move(1)); // a cancelled order gives its unit back
+    expect(asked()).toEqual([{ id: workspace.id, previousSlug: null }]);
+
+    // Stock the merchant adds: always.
+    purgeStore.mockClear();
+    await inventory.restock({ workspaceId: workspace.id, variantId: variant.id, quantity: 5, reason: 'delivery', actorUserId: auth.userId });
+    expect(asked()).toEqual([{ id: workspace.id, previousSlug: null }]);
+  });
+
+  it('a size chart, an answered question and a redirect edited or deleted', async () => {
+    env.storeFeatures.push('size_charts', 'product_questions', 'url_redirects');
+    const { auth, workspace, product } = await setupWorkspaceWithProduct();
+    const H = { Authorization: `Bearer ${auth.accessToken}` };
+    const base = `/api/v1/workspaces/${workspace.id}`;
+    const chart = { name: 'Shirts', unit: 'cm', columns: [{ ar: 'المقاس', en: 'Size' }], rows: [['S'], ['M']], productIds: [product.id], collectionIds: [] };
+    const purgedOnce = async (res, status) => {
+      expect(res.status).toBe(status);
+      expect(asked()).toEqual([{ id: workspace.id, previousSlug: null }]);
+      purgeStore.mockClear();
+    };
+
+    const created = await request(app).post(`${base}/size-charts`).set(H).send(chart);
+    expect(created.status).toBe(201);
+    purgeStore.mockClear();
+    await purgedOnce(await request(app).put(`${base}/size-charts/${created.body.id}`).set(H).send({ ...chart, unit: 'inch' }), 200);
+    await purgedOnce(await request(app).delete(`${base}/size-charts/${created.body.id}`).set(H), 204);
+
+    const question = await db.ProductQuestion.create({ workspaceId: workspace.id, productId: product.id, question: 'Cotton?', answer: 'Yes', status: 'published' });
+    purgeStore.mockClear();
+    await purgedOnce(await request(app).delete(`${base}/product-questions/${question.id}`).set(H), 204);
+
+    const redirect = await request(app).post(`${base}/redirects`).set(H).send({ fromPath: '/old', toPath: '/new' });
+    expect(redirect.status).toBe(201);
+    purgeStore.mockClear();
+    await purgedOnce(await request(app).put(`${base}/redirects/${redirect.body.redirect.id}`).set(H).send({ fromPath: '/old', toPath: '/newer', statusCode: 302 }), 200);
+    await purgedOnce(await request(app).delete(`${base}/redirects/${redirect.body.redirect.id}`).set(H), 204);
+  });
+
+  it("the domains job purges a store whose domain changed state, not one still waiting for its certificate", async () => {
+    env.customDomains.enabled = true;
+    process.env.CERTIFICATE_PROVIDER = 'cloudflare';
+    env.customDomains.cloudflare.apiToken = 'test-only-cloudflare-token';
+    env.customDomains.cloudflare.zoneId = '0123456789abcdef0123456789abcdef';
+    const site = async () => {
+      const { workspace } = await setupWorkspaceWithProduct();
+      const website = await db.Website.create({ workspaceId: workspace.id, name: 'Site', subdomain: `site-${workspace.id.slice(0, 8)}` });
+      return { workspaceId: workspace.id, websiteId: website.id };
+    };
+    const waiting = await site();
+    const issued = await site();
+    const fields = { verificationToken: 'tok', status: 'verified', verifiedAt: new Date(), sslStatus: 'pending', sslProvider: 'cloudflare', sslRequestedAt: new Date() };
+    await db.Domain.create({ ...waiting, hostname: 'www.waiting.com', sslProviderRef: 'aaaaaaaabbbbccccddddeeeeeeeeeeee', ...fields });
+    await db.Domain.create({ ...issued, hostname: 'www.issued.com', sslProviderRef: 'bbbbbbbbccccddddeeeeffffffffffff', ...fields });
+    jest.spyOn(global, 'fetch').mockImplementation(async (url) => ({
+      status: 200,
+      json: async () => ({
+        success: true,
+        result: String(url).includes('bbbbbbbb')
+          ? { id: 'bbbbbbbbccccddddeeeeffffffffffff', status: 'active', ssl: { status: 'active' } }
+          : { id: 'aaaaaaaabbbbccccddddeeeeeeeeeeee', status: 'pending', ssl: { status: 'pending_validation' } },
+      }),
+    }));
+    purgeStore.mockClear();
+
+    const jobs = require('../../src/modules/domains/domainJobs');
+    expect(await jobs.pollPendingCertificates()).toEqual({ checked: 2, failed: 0 });
+    expect(asked()).toEqual([{ id: issued.workspaceId, previousSlug: null }]);
+  });
+});

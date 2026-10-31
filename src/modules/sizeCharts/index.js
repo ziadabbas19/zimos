@@ -81,11 +81,14 @@ staff.put('/:chartId', requirePermission(PERMISSIONS.PRODUCTS_MANAGE), validate(
   if (!c) throw new NotFoundError('Size chart');
   await check(req.tenant.workspaceId, req.body);
   await c.update({ ...req.body, imageUrl: req.body.imageUrl || null });
+  // Not audited: the store's pages are dropped here (storefrontCache.js, the edge included).
+  require('../storefront/storefrontCache').invalidate(c.workspaceId);
   res.json(view(c));
 }));
 staff.delete('/:chartId', requirePermission(PERMISSIONS.PRODUCTS_MANAGE), validate({ params: one }), asyncHandler(async (req, res) => {
   const n = await db.SizeChart.destroy({ where: { id: req.params.chartId, workspaceId: req.tenant.workspaceId } });
   if (!n) throw new NotFoundError('Size chart');
+  require('../storefront/storefrontCache').invalidate(req.tenant.workspaceId);
   res.status(204).end();
 }));
 

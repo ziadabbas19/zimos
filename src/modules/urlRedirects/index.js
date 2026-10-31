@@ -153,11 +153,14 @@ staff.put('/:redirectId', canView, validate({ params: idP, body }), asyncHandler
   if (await db.UrlRedirect.count({ where: { workspaceId, fromPath, id: { [Op.ne]: r.id } } })) throw new ValidationError([{ field: 'fromPath', message: 'This path already redirects' }]);
   await assertNoLoop(workspaceId, fromPath, toPath, r.id);
   await r.update({ fromPath, toPath, statusCode: req.body.statusCode });
+  // Not audited: the store's pages are dropped here (storefrontCache.js, the edge included).
+  require('../storefront/storefrontCache').invalidate(workspaceId);
   res.json({ redirect: view(r) });
 }));
 staff.delete('/:redirectId', canView, validate({ params: idP }), asyncHandler(async (req, res) => {
   const n = await db.UrlRedirect.destroy({ where: { id: req.params.redirectId, workspaceId: req.tenant.workspaceId } });
   if (!n) throw new NotFoundError('Redirect');
+  require('../storefront/storefrontCache').invalidate(req.tenant.workspaceId);
   res.status(204).end();
 }));
 // CSV: from,to[,301|302] per line; a header line is skipped. Existing paths are updated.
