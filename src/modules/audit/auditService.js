@@ -43,8 +43,9 @@ async function recordAudit({
   await require('../platformAdmin/platformNotificationService').onAudit({ workspaceId, actorUserId, action, entityType, entityId, before, after, metadata, transaction });
   // Some are also live updates to the console (realtime/realtimeEvents), only with REALTIME_ENABLED; never throws.
   await require('../realtime/realtimeEvents').onAudit({ workspaceId, action, entityId, transaction });
-  // A change the storefront shows drops the store's 60-second cache once it commits.
-  require('../storefront/storefrontCache').onAudit({ workspaceId, entityType, transaction });
+  // A change the storefront shows drops the store's 60-second cache once it
+  // commits, and its pages at Cloudflare (CLOUDFLARE_PURGE_ENABLED); never throws.
+  require('../storefront/storefrontCache').onAudit({ workspaceId, action, entityType, before, after, transaction });
   return row;
 }
 
