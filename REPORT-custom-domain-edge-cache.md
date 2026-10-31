@@ -25,12 +25,14 @@ Cloudflare للزوار المجهولين، وتتمسح فورًا لما ال
   - **الباك** بيمسح كمان دومينات المتجر نفسه، والدومين اللي لسه اتشال، في نفس الطلب ونفس
     الـ debounce ونفس الحد (30 host).
 - **ثلاث فلاجات، كلها مقفولة افتراضيًا.** أي واحد فيهم لوحده مش بيغيّر حاجة الشوبر بيشوفها،
-  ولو مقفولين السلوك هو هو بالظبط (التستات بتثبت ده).
+  ولو مقفولين السلوك هو هو بالظبط (التستات بتثبت ده). الاستثناء الوحيد هو إصلاح `robots.txt`
+  اللي تحت.
 - **مفيش Cache Rule جديدة.** المطلوب يدويًا في Cloudflare: تنشر الـ Worker الجديد، وتتأكد من الـ
   compatibility date، وتضيف متغير واحد. التفاصيل في قسم 6.
-- **حاجة لقيتها ومش جزء من التغيير ده (لازم تتشيّك):** ملفات زي `robots.txt` على الدومينات
-  الخاصة ممكن تكون **متكاشة النهارده** تحت URL بتاع Railway، ومشتركة بين المتاجر. التفاصيل في
-  قسم 9.1.
+- **إصلاح تسريب `robots.txt` (من غير فلاج):** الملفات اللي كل متجر بيولّدها لنفسه
+  (`/robots.txt` و`/sitemap.xml` و`/manifest.webmanifest`) كانت ممكن تتكاش تحت URL بتاع Railway،
+  ومشتركة بين كل الدومينات الخاصة. دلوقتي الـ Worker بيطلبها دايمًا بـ `cache: "no-store"`. محتاج
+  مسح لمرة واحدة بعد النشر. التفاصيل في قسم 4.4.
 
 ## 1. كود الـ Worker
 
@@ -108,8 +110,8 @@ the Worker's own hostname."*
 3. الـ Cache Rule بتطابق `.zimos.co` بس.
 
 والـ assets اللي ليها امتداد (`/_next/static/*.js`، الصور) ممكن تتكاش تحت URL بتاع Railway،
-وده مفيهوش ضرر لأنها نفس ملفات الـ build لكل المتاجر. **الاستثناء هو `robots.txt`**، وتفاصيله
-في قسم 9.1.
+وده مفيهوش ضرر لأنها نفس ملفات الـ build لكل المتاجر. **الاستثناء كان `robots.txt`**: Cloudflare
+بيكاشه افتراضيًا، وده كان تسريب موجود قبل التغيير ده. اتصلح في قسم 4.4.
 
 ## 3. ليه اقتراح (أ) (Cache Rule) مرفوض
 
@@ -134,6 +136,7 @@ the Worker's own hostname."*
 
 ```
 طلب الزائر
+  ├─ /robots.txt أو /sitemap.xml أو /manifest.webmanifest   → للستورفرونت بـ cache: "no-store" دايمًا (قسم 4.4)
   ├─ مش GET/HEAD، أو /_next/ أو /api/ أو ملف (فيه امتداد)  → زي النهارده بالظبط (من غير أي header)
   ├─ فيه كوكي zimos_* غير zimos_touch، أو RSC / Next-Router-* / Next-Url / Range / Authorization،
   │   أو _rsc / storePreview / paymentsPreview / zimos-view في اللينك
@@ -223,6 +226,40 @@ the Worker's own hostname."*
 - **مفيش طلبات زيادة:** الدومينات بتتبعت في نفس request بتاع الـ subdomain، فالـ rate limit (5
   في الدقيقة على Free) هو هو.
 
+### 4.4 إصلاح `robots.txt` وملفات المتجر (مش مربوط بأي فلاج)
+
+**المشكلة (كانت موجودة قبل التغيير ده):**
+- على الدومين الخاص، الـ Worker بيطلب `https://<ORIGIN_HOST>/robots.txt`. **نفس الـ URL** لكل
+  الدومينات.
+- الستورفرونت بيعمل rewrite لـ `/store/<slug>/robots.txt`، اللي فيه `revalidate = 3600`، فـ Next
+  بيبعت `s-maxage`.
+- توثيق Cloudflare بيقول إنه *"by default … caches a website's robots.txt"*.
+
+يعني `robots.txt` بتاع متجر (وفيه سطر `Sitemap:` بدومينه هو) ممكن كان يظهر على دومين متجر تاني
+لمدة تصل لساعة.
+
+**الإصلاح** في `worker/custom-domains-worker.js`، **دايمًا**، سواء `EDGE_CACHE_ENABLED` شغال أو لأ:
+- الملفات اللي الستورفرونت بيرد عليها لكل متجر في جذر الدومين (`STORE_FILES` في
+  `apps/storefront/src/proxy.ts`: `/robots.txt` و`/sitemap.xml` و`/manifest.webmanifest`) بتتطلب من
+  Railway بـ `cache: "no-store"`. فـ Cloudflare مش بيقرا ولا بيحفظ أي نسخة تحت URL بتاع Railway.
+  - `sitemap.xml` و`manifest.webmanifest` مش مؤكد إنهم في قايمة Cloudflare الافتراضية، بس
+    اتضافوا عشان بيتولدوا لكل متجر، ومفيش تمن.
+- الـ path بيتقارن بعد الـ decode والـ lowercase، فـ `/ROBOTS.TXT` و`/robots%2Etxt` بيتعاملوا نفس
+  المعاملة.
+- **runtime مش بيقبل `cache: "no-store"`:** الـ Worker بيبعت `cf: { cacheTtl: -1 }` بدلها. القيمة
+  السالبة معناها "ماتكاشش". الكلام ده جاي من أمثلة Cloudflare (gists) ومن الـ community، بس
+  ماقدرتش أقرا صفحة الـ reference نفسها.
+- **باقي الطلب زي ما هو:** نفس الـ headers ونفس الرد للزائر. ومفيش أي تغيير لأي ملف تاني:
+  الـ assets بتاعة الـ build تفضل Cloudflare يكاشها.
+
+**عن "Cache-Control: no-store":** الطريقة الموثقة إن Worker يقول لـ Cloudflare "ماتكاشش الطلب ده"
+هي `cache: "no-store"` في الـ `fetch`. وده اللي اتعمل. هيدر `Cache-Control` على الرد للزائر مش
+هيصلح حاجة: Cloudflare بيقرر يحفظ ولا لأ لحظة ما رد Railway بيوصل، وده قبل ما الـ Worker يشوفه. وكمان
+النسخة للزائر مفتاحها دومينه هو، فمفيش فيها تسريب. عشان كده الرد للزائر ما اتغيرش.
+
+**مطلوب لمرة واحدة بعد النشر:** امسح النسخ اللي ممكن تكون اتحفظت قبل كده تحت URL بتاع Railway
+(قسم 6، خطوة 1).
+
 ## 5. الفلاجات
 
 | المكان | المتغير | الافتراضي | لما يبقى `true` |
@@ -232,6 +269,8 @@ the Worker's own hostname."*
 | الباك (Railway) | `CLOUDFLARE_PURGE_CUSTOM_DOMAINS` | `false` | بيمسح دومينات المتجر مع الـ subdomain (محتاج `CLOUDFLARE_PURGE_ENABLED=true`) |
 
 القيمة لازم تبقى `true` بالظبط في التلاتة. `1` أو `TRUE` أو `yes` = مقفول.
+
+إصلاح `robots.txt` (قسم 4.4) **مالوش فلاج**، وبيشتغل أول ما الـ Worker الجديد يتنشر.
 
 **أي فلاج لوحده مش بيغيّر حاجة:**
 - الـ Worker لوحده بيبعت الإشارة، بس الستورفرونت مش بيعمل mark، فمفيش حاجة بتتحفظ. وكل الصفحات
@@ -246,11 +285,24 @@ the Worker's own hostname."*
    - **الـ Worker:** Cloudflare → Workers & Pages → `zimos-custom-domains` → Edit code → الصق
      `worker/custom-domains-worker.js` الجديد كله → **Deploy**. ماتضيفش `EDGE_CACHE_ENABLED`
      لسه.
-   - **اتأكد إن مفيش حاجة اتغيرت:**
+   - **اتأكد إن مفيش حاجة اتغيرت في الصفحات:**
      ```bash
      curl -s -o /dev/null -D - https://www.merchant-shop.com/products/<p> | grep -iE '^HTTP|cache-control|x-zimos-cache'
      ```
      المفروض يطلع 200 و`private, no-cache, no-store…`، **ومفيش** `x-zimos-cache`.
+   - **إصلاح `robots.txt` اشتغل خلاص (قسم 4.4).** امسح مرة واحدة أي نسخة اتحفظت قبل كده تحت
+     URL بتاع Railway. ده بيستخدم نفس الـ token ونفس الـ zone بتوع الـ purge، وحط
+     `storefront-production.up.railway.app` مكان `<ORIGIN_HOST>`:
+     ```bash
+     curl -s -X POST "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/purge_cache" \
+       -H "Authorization: Bearer $CF_TOKEN" -H 'Content-Type: application/json' \
+       --data '{"files":["https://<ORIGIN_HOST>/robots.txt","https://<ORIGIN_HOST>/sitemap.xml","https://<ORIGIN_HOST>/manifest.webmanifest"]}'
+     ```
+     مع `cache: "no-store"`، الـ Worker أصلًا مش بيقرا النسخ القديمة، والمسح هنا احتياط زيادة
+     (وضروري لو الـ runtime قديم وماشي بـ `cacheTtl: -1`). وفيه طريقة أوسع: `{"hosts":["<ORIGIN_HOST>"]}`،
+     بس دي بتمسح كمان كل الـ assets المتكاشة تحت الـ host ده، وده مقبول لمرة واحدة.
+     - **وقبل النشر**، لو حابب تتأكد إن التسريب كان موجود، شغّل التشييك اللي في قسم 7
+       (`robots.txt`) على الـ Worker القديم.
 2. **الـ compatibility date بتاع الـ Worker:** Settings → Runtime → Compatibility date. لازم
    يكون **2024-11-11 أو بعده**، أو يكون فيه compatibility flag اسمه `cache_option_enabled`.
    اسم الـ flag والتاريخ من الـ changelog بتاع `Request.cache`، فيُفضّل تتأكد منهم في الداشبورد.
@@ -323,6 +375,17 @@ h "https://shop.store-a.com$P"   # 307 للأساسي، من غير public
 h "https://<slug-A>.zimos.co$P"  # 307 للدومين الخاص لو الـ redirect شغال، ولو مش شغال يمشي على الـ Cache Rule زي الأول
 ```
 
+**`robots.txt` وملفات المتجر (من غير أي فلاج):**
+```bash
+for H in "$A" "$B"; do
+  echo "== $H"
+  curl -s "https://$H/robots.txt" | grep -i sitemap       # لازم يكون الدومين ده نفسه، مش التاني
+  curl -s -o /dev/null -D - "https://$H/robots.txt" | grep -iE 'cf-cache-status|age|x-zimos-cache'   # مش HIT، ومن غير x-zimos-cache
+  curl -s "https://$H/sitemap.xml" | grep -o '<loc>[^<]*' | head -2   # روابط الدومين ده
+done
+```
+اعمل اللوب مرتين ورا بعض. سطر `Sitemap:` لازم يفضل دايمًا دومين نفس الـ host.
+
 **الـ purge:**
 ```bash
 curl -s -o /dev/null -w 'zimos=%header{x-zimos-cache}\n' "https://$A$P"   # HIT
@@ -338,7 +401,7 @@ curl -s -o /dev/null -w 'zimos=%header{x-zimos-cache}\n' "https://$A$P"   # MISS
 **Frontend** (من `zimos-frontend`):
 ```bash
 npm ci
-npm run test:worker                                   # الـ Worker: 14 تست
+npm run test:worker                                   # الـ Worker: 20 تست
 cd apps/storefront
 npm run test:components                               # vitest: 1008 تست (82 ملف)
 npm test                                              # node --test: 172 تست
@@ -358,6 +421,15 @@ npx tsc --noEmit && npx eslint src/proxy.ts src/lib/edgeCache.ts src/lib/edgeHos
   - RSC و`_rsc` والـ previews وRange وAuthorization = BYPASS
   - الـ assets والـ POST زي الأول
   - HEAD
+  - **ملفات المتجر (قسم 4.4):**
+    - الـ test بيقرا `STORE_FILES` من `proxy.ts` نفسه، فلو اتضاف ملف جديد هناك الـ test بيقع لحد
+      ما الـ Worker يغطيه.
+    - كل ملف منهم بـ `cache: "no-store"` والفلاج مقفول وشغال، على دومينين ومعاه query. وباقي
+      الطلب زي ما هو: الـ host والسر والـ IP، من غير إشارة ولا label ولا Cache API.
+    - الكتابات التانية: `/ROBOTS.TXT` و`/robots%2Etxt`.
+    - الملفات التانية زي ما هي: `/_next/static` والصور و`/favicon.ico` و`/robots.txt.bak`
+      و`/blog/robots.txt`.
+    - runtime من غير `cache` = `cf.cacheTtl: -1`.
   - الكاش لو وقع ما يوقعش الطلب
   - runtime من غير `no-store` = ولا حاجة بتتحفظ
 - **`src/lib/edgeCache.test.tsx`:**
@@ -405,7 +477,8 @@ NODE_ENV=test DB_NAME_TEST=zimos_cfcd_test DB_PASSWORD=… npx jest --runInBand 
   و`publicCaching` و`storeSuspension` و`auditIntegrity` و`workspaceSlugApi` و`envSecrets`
   و`hostResolverPrivateHost`.
 
-**Mutation checks:** كسرت كل شرط من دول عن قصد، والتستات وقعت في كل مرة:
+**Mutation checks:** كسرت كل شرط من دول عن قصد، والتستات وقعت في كل مرة (ومعاهم إصلاح ملفات
+المتجر: 4 تستات وقعت من غيره):
 - الفلاج دايمًا شغال
 - شيل فحص الـ slug
 - شيل فحص الـ primary host
@@ -414,21 +487,14 @@ NODE_ENV=test DB_NAME_TEST=zimos_cfcd_test DB_PASSWORD=… npx jest --runInBand 
 
 ## 9. الحدود المعروفة
 
-1. **⚠️ موجود قبل التغيير ومش جزء منه: `robots.txt` على الدومينات الخاصة.**
-   - الـ Worker بيطلب `https://<ORIGIN_HOST>/robots.txt` لكل الدومينات.
-   - الستورفرونت بيعمل rewrite لـ `/store/<slug>/robots.txt` اللي فيه `revalidate = 3600`، فـ Next
-     بيبعت `s-maxage`.
-   - وتوثيق Cloudflare بيقول إنه *"by default … caches a website's robots.txt"*.
-
-   يعني ممكن **النهارده** `robots.txt` بتاع متجر (وفيه سطر `Sitemap:` بدومينه) يظهر على دومين
-   متجر تاني لمدة تصل لساعة. ماقدرتش أشيّك عليه من الـ sandbox. شيّك كده:
-   ```bash
-   curl -s -D - -o /dev/null https://www.store-a.com/robots.txt | grep -iE 'cf-cache-status|cache-control|age'
-   curl -s https://www.store-b.com/robots.txt | grep -i sitemap   # لازم يبقى دومين B
-   ```
-   لو اتأكد، الحل البسيط إن الـ Worker يبعت `cache: "no-store"` لـ `/robots.txt` و`/sitemap.xml`
-   و`/manifest.webmanifest`. ده **مش متطبق** هنا عشان بيغيّر السلوك والفلاجات مقفولة، ومحتاج
-   قرارك.
+1. **`robots.txt` على الدومينات الخاصة: اتصلح (قسم 4.4).** اللي لسه محتاج تأكيد:
+   - التسريب نفسه ماقدرتش أشوفه من الـ sandbox، ومبني على التوثيق اللي بيقول إن `robots.txt` بيتكاش
+     افتراضيًا.
+   - بديل `cf.cacheTtl: -1` (لـ runtime قديم) جاي من أمثلة ومن الـ community، مش من صفحة الـ reference.
+   - أي ملف جديد بيتولد لكل متجر لازم يتضاف لـ `STORE_FILES` في الـ proxy، والـ test بتاع الـ Worker
+     بيقع لحد ما الـ Worker يغطيه.
+   - Next.js بيكاش الملفات دي جوه الستورفرونت لكل متجر لوحده (`revalidate`)، فطلبها من Railway كل
+     مرة رخيص.
 2. **الـ Cache API بيشتغل لكل data center لوحده، ومش tiered:**
    - كل data center بيتملى لوحده، فالـ hit ratio أقل من الـ subdomain.
    - كل طلب لسه بيشغّل الـ Worker زي النهارده، فعدد طلبات الـ Workers مش بيقل. التوفير في
@@ -454,7 +520,7 @@ NODE_ENV=test DB_NAME_TEST=zimos_cfcd_test DB_PASSWORD=… npx jest --runInBand 
 9. **`X-Zimos-Cache`** بيظهر للزوار (HIT/MISS/BYPASS)، وده للتشخيص بس ومفيهوش أي سر.
 10. **compatibility date:** لو قديم، الميزة بتتقفل لوحدها (قسم 6، خطوة 2).
 11. **ماقدرتش أتأكد** هل `*.up.railway.app` على Cloudflare zone ولا لأ. ومش فارقة للصفحات
-    المحفوظة بسبب `no-store`، بس فارقة في بند 9.1.
+    المحفوظة ولا لملفات المتجر بسبب `no-store`.
 12. **مصادر Cloudflare** جاية من نتايج بحث بتقتبس التوثيق، لأن `developers.cloudflare.com` و
     `blog.cloudflare.com` مقفولين في الـ sandbox. عشان كده خطوات staging في قسم 7 إلزامية قبل
     الإنتاج.
@@ -477,6 +543,8 @@ NODE_ENV=test DB_NAME_TEST=zimos_cfcd_test DB_PASSWORD=… npx jest --runInBand 
    ```
 4. **كود الـ Worker:** Workers & Pages → `zimos-custom-domains` → Deployments → النسخة اللي
    قبلها → Rollback. الكود القديم مش بيعرف الكاش خالص.
+   ⚠️ ده **بيرجّع تسريب `robots.txt`** (قسم 4.4)، لأن الإصلاح مالوش فلاج. عشان كده استخدم خطوة 1
+   الأول، والـ rollback الكامل للكود يبقى آخر حل.
 5. **الباك:** `CLOUDFLARE_PURGE_CUSTOM_DOMAINS=false`، فيرجع يمسح الـ subdomain بس.
 6. **الكود:** revert للـ commits بتاعة قسم 11. الفلاجات المقفولة كفاية من غير revert.
 
@@ -486,10 +554,12 @@ NODE_ENV=test DB_NAME_TEST=zimos_cfcd_test DB_PASSWORD=… npx jest --runInBand 
 - Worker: keep merchant-domain pages under the visitor's own URL (EDGE_CACHE_ENABLED)
 - Storefront: edge-cache merchant domains' public pages (STOREFRONT_EDGE_CACHE_CUSTOM_DOMAINS)
 - Docs: merchant domains at the edge, and this report
+- Worker: never let Cloudflare keep a store's own files under the Railway URL (robots.txt fix)
 
 `zimos` (branch `claude/friendly-meitner-e0kaum`):
 - Purge: merchant domains with the store's subdomain (CLOUDFLARE_PURGE_CUSTOM_DOMAINS)
 - Docs: this report
+- Docs: report — the robots.txt fix
 
 ## المصادر
 
@@ -498,5 +568,7 @@ NODE_ENV=test DB_NAME_TEST=zimos_cfcd_test DB_PASSWORD=… npx jest --runInBand 
 - [Cache using fetch · Cloudflare Workers docs](https://developers.cloudflare.com/workers/examples/cache-using-fetch/) (`cf.cacheKey` Enterprise)
 - [Workers Cache · Cloudflare Workers docs](https://developers.cloudflare.com/workers/cache/)
 - [Default cache behavior · Cloudflare Cache docs](https://developers.cloudflare.com/cache/concepts/default-cache-behavior/) (HTML مش بيتكاش افتراضيًا، و`robots.txt` بيتكاش)
+- [Gist: `cf: { cacheTtl: -1 }` to never cache](https://gist.github.com/shagamemnon/4041f6155ecce15440234d28fa749c32)
+- [Community: negative TTLs in `cacheTtlByStatus` stopped caching](https://community.cloudflare.com/t/worker-cache-is-shorter-than-specified/454997)
 - [Workers: bypass caching for subrequests with Request.cache](https://community.cloudflare.com/t/workers-bypass-caching-for-subrequests-made-from-cloudflare-workers-with-request-cache/897333)
 - [All cache purge methods now available for all plans](https://developers.cloudflare.com/changelog/post/2025-04-01-purge-for-all/)
