@@ -35,6 +35,10 @@ const TYPES = [
   'xs_team',
   'xs_video',
   'xs_posts',
+  'xs_rail',
+  'xs_stack',
+  'xs_journey',
+  'xs_reels',
 ];
 
 const TYPE_SET = new Set(TYPES);

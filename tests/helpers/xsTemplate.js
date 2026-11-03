@@ -9,21 +9,25 @@
  * band's own colours), not a copy of any one template.
  */
 
-/** The 17 band types the templates use, as the frontend names them. */
+/** The 21 band types the templates use, as the frontend names them. */
 const XS_ELEMENT_TYPES = [
   'xs_banners',
   'xs_contact',
   'xs_features',
   'xs_gallery',
   'xs_hero',
+  'xs_journey',
   'xs_minis',
   'xs_newsletter',
   'xs_posts',
   'xs_products',
   'xs_quotes',
+  'xs_rail',
+  'xs_reels',
   'xs_showcase',
   'xs_slider',
   'xs_split',
+  'xs_stack',
   'xs_story',
   'xs_team',
   'xs_title',
@@ -83,6 +87,10 @@ const PROPS = {
   xs_team: { look: '09', items: [{ name: 'Your name', role: 'Founder', image: '/xs/09/team-01.jpg' }] },
   xs_video: { look: '03', heading: '', url: '' },
   xs_posts: { look: '01', items: [{ title: 'Spring looks', date: '2026-03-01', image: '/xs/01/blog-01.jpg', href: '/about' }] },
+  xs_rail: { look: '23', eyebrow: 'New season', heading: 'On the rail', caption: 'Brush along the rail', ctaLabel: 'Shop all', ctaHref: '/products', limit: 10, collectionId: '', hanger: 'none', sidePhotos: true, autoplay: true },
+  xs_journey: { look: '24', heading: 'What do you need now?', ctaLabel: 'View the bundle', saveLabel: 'Save [amount] EGP', items: [{ icon: 'moon', pain: 'First time?', name: 'Getting started', product: 'starter-bundle', also: 'care-bundle', text: 'The basics from day one.', points: 'A cosy spot\nAn easier feed' }] },
+  xs_reels: { look: '24', heading: 'See it for real', items: [{ video: 'https://cdn.example.com/reel.mp4', image: '', product: 'baby-carrier' }] },
+  xs_stack: { look: '23', heading: 'The edits', items: [{ image: '/xs/23/stack-1.jpg', title: 'Linen days', text: 'Light layers for long days.', badge: 'Summer', href: '/products' }] },
 };
 
 /** One band of `type`, its ids named by `key`. */
