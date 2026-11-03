@@ -10,10 +10,14 @@ const { forViewer } = require('../../core/utils/phoneMask');
 const searchService = require('./searchService');
 const setupGuideService = require('./setupGuideService');
 const bootstrapService = require('./bootstrapService');
+const { planFeaturesFor } = require('../billing/planFeatureGate');
+const { AppError } = require('../../core/errors/AppError');
+const homeShortcuts = require('./homeShortcuts');
 
 /**
- * Dashboard-wide helpers (SPEC §18.6): global search, the setup guide and the
- * member's sidebar shortcuts. Mounted at /api/v1/workspaces/:workspaceId.
+ * Dashboard-wide helpers (SPEC §18.6): global search, the setup guide, the
+ * member's sidebar shortcuts and their Home page row. Mounted at
+ * /api/v1/workspaces/:workspaceId.
  *
  * Any active member may call these: search filters each group by the member's
  * own permissions, the guide shows only yes/no facts, and shortcuts belong to
@@ -85,6 +89,88 @@ router.put(
       req,
     });
     res.json({ shortcuts: membership.navShortcuts });
+  })
+);
+
+// The Home page's row (homeShortcuts.js). No route names a member or takes one:
+// req.tenant.membership is the caller's own in this store, so nobody can read
+// or change anyone else's row. The id is checked before the membership lookup,
+// so a malformed one is a 422, as on the bootstrap.
+const homeShortcutsBody = async (tenant) => ({
+  homeShortcuts: homeShortcuts.forMember(tenant, await planFeaturesFor(tenant.workspaceId)),
+});
+
+router.get(
+  '/home-shortcuts',
+  authenticate,
+  validate({ params }),
+  resolveTenant,
+  asyncHandler(async (req, res) => {
+    res.set('Cache-Control', 'private, no-store');
+    res.json(await homeShortcutsBody(req.tenant));
+  })
+);
+
+router.put(
+  '/home-shortcuts',
+  authenticate,
+  validate({
+    params,
+    body: Joi.object({
+      shortcuts: Joi.array()
+        .items(Joi.string().valid(...homeShortcuts.HOME_SHORTCUT_IDS))
+        .max(homeShortcuts.MAX_HOME_SHORTCUTS)
+        .unique()
+        .required(),
+    }),
+  }),
+  resolveTenant,
+  asyncHandler(async (req, res) => {
+    const { membership, workspaceId } = req.tenant;
+    const allowed = homeShortcuts.allowedIds(req.tenant, await planFeaturesFor(workspaceId));
+    const refused = req.body.shortcuts.filter((id) => !allowed.includes(id));
+    if (refused.length > 0) {
+      throw new AppError('HOME_SHORTCUT_NOT_ALLOWED', 'One of these shortcuts is not available to you in this store', 403, { ids: refused });
+    }
+    const before = membership.homeShortcuts;
+    await membership.update({ homeShortcuts: req.body.shortcuts });
+    await recordAudit({
+      workspaceId,
+      actorUserId: req.user.id,
+      action: 'membership.home_shortcuts_set',
+      entityType: 'Membership',
+      entityId: membership.id,
+      before: { shortcuts: before },
+      after: { shortcuts: req.body.shortcuts },
+      req,
+    });
+    res.json(await homeShortcutsBody(req.tenant));
+  })
+);
+
+// Back to the default row: nothing stored, so the member follows it from here on.
+router.delete(
+  '/home-shortcuts',
+  authenticate,
+  validate({ params }),
+  resolveTenant,
+  asyncHandler(async (req, res) => {
+    const { membership, workspaceId } = req.tenant;
+    const before = membership.homeShortcuts;
+    if (before !== null) {
+      await membership.update({ homeShortcuts: null });
+      await recordAudit({
+        workspaceId,
+        actorUserId: req.user.id,
+        action: 'membership.home_shortcuts_reset',
+        entityType: 'Membership',
+        entityId: membership.id,
+        before: { shortcuts: before },
+        after: { shortcuts: null },
+        req,
+      });
+    }
+    res.json(await homeShortcutsBody(req.tenant));
   })
 );
 

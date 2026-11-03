@@ -10,6 +10,7 @@ const { planFeaturesFor } = require('../billing/planFeatureGate');
 const notificationService = require('../notifications/merchantNotificationService');
 const confirmationService = require('../cod/confirmationService');
 const inboxService = require('../whatsapp/inboxService');
+const homeShortcuts = require('./homeShortcuts');
 
 /**
  * GET /workspaces/:workspaceId/bootstrap — what the dashboard's frame reads on
@@ -25,7 +26,8 @@ const inboxService = require('../whatsapp/inboxService');
  *   planFeatures        GET /workspaces/:id/plan-features .planFeatures
  *   notifications       GET /workspaces/:id/notifications/summary
  *   shortcuts           GET /workspaces/:id/shortcuts    .shortcuts
- *   confirmationCounts  GET /workspaces/:id/confirmation-tasks/counts .counts
+ *   homeShortcuts       GET /workspaces/:id/home-shortcuts .homeShortcuts
+ *   confirmationCounts GET /workspaces/:id/confirmation-tasks/counts .counts
  *   inboxUnread         GET /workspaces/:id/inbox/conversations?status=open&unread=true&limit=1
  *
  * The last two are null for a role its own endpoint refuses (that endpoint
@@ -86,6 +88,8 @@ async function bootstrap(req) {
     planFeatures,
     notifications,
     shortcuts: tenant.membership.navShortcuts || [],
+    // Worked out from what is read above: no query of its own.
+    homeShortcuts: homeShortcuts.forMember(tenant, planFeatures),
     confirmationCounts,
     inboxUnread,
   };
