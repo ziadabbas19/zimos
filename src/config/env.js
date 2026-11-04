@@ -1197,6 +1197,14 @@ const env = {
   // and only with enabled): the store's own domains are purged with it too —
   // the ones the custom-domains Worker keeps at the edge
   // (STOREFRONT_EDGE_CACHE_CUSTOM_DOMAINS on the storefront).
+  // How the public store API reads and answers; each off by default, and off
+  // means the code path it always had.
+  //   searchFast (STOREFRONT_SEARCH_FAST_ENABLED, exactly "true"): the listing
+  //     and search queries in storefront/productSearch.js, same answers.
+  storefrontPerf: {
+    searchFast: process.env.STOREFRONT_SEARCH_FAST_ENABLED === 'true',
+  },
+
   cloudflarePurge: {
     enabled: process.env.NODE_ENV !== 'test' && process.env.CLOUDFLARE_PURGE_ENABLED === 'true',
     customDomains: process.env.NODE_ENV !== 'test' && process.env.CLOUDFLARE_PURGE_CUSTOM_DOMAINS === 'true',

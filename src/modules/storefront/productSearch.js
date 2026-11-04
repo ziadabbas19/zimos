@@ -2,6 +2,7 @@
 
 const { QueryTypes } = require('sequelize');
 const db = require('../../db/models');
+const env = require('../../config/env');
 const { NotFoundError } = require('../../core/errors/AppError');
 const { ancestryOf, descendantsOf } = require('../catalog/collectionTree');
 const { loadPublicProducts } = require('./publicProduct');
@@ -43,6 +44,12 @@ const { notHiddenSql } = require('../catalog/productPage');
  * On the first page, "related" adds up to eight products that match nothing
  * but share a collection or a tag with the top matches — or, when nothing
  * matched, the nearest names — never repeating one.
+ *
+ * STOREFRONT_SEARCH_FAST_ENABLED changes how these are read, never what they
+ * answer (tests/integration/storefrontSearchParity.test.js compares the two):
+ * only a description that holds the text is folded (found through migration
+ * 740's index), a pipeline carries only the columns it needs, and the total is
+ * not counted beside the page. Off, the queries are exactly the ones they were.
  */
 
 const TRGM_MIN_CHARS = 3;
@@ -98,12 +105,16 @@ function binder() {
 
 const select = (sql, bind) => db.sequelize.query(sql, { bind, type: QueryTypes.SELECT });
 
+const fast = () => env.storefrontPerf.searchFast === true;
+
 /**
  * Descriptions are searched on their first DESCRIPTION_CHARS characters: the
  * few words that say what a product is sit at the top, and a 20 000-character
  * description folded on every search would cost more than it finds.
  */
 const DESCRIPTION_CHARS = 2000;
+/** Byte for byte what migration 740 indexes: an index on an expression that merely means the same is never used. */
+const FOLDED_DESCRIPTION = `zimos_normalize_search(left(coalesce(p.description, ''), ${DESCRIPTION_CHARS}))`;
 
 /**
  * The scoring pipeline for `q` over the products `where` admits, as a WITH
@@ -117,8 +128,15 @@ const DESCRIPTION_CHARS = 2000;
  *   folded  name (the expression migration 119 indexes), description and
  *           tags, folded once per product; `sim` is the name similarity
  *   scored  the score, from the above
+ *
+ * `lean` (STOREFRONT_SEARCH_FAST_ENABLED): `scored` holds only id, created_at,
+ * score and sim. Descriptions are not folded product by product: one small
+ * stage per text (`d0` the whole search, `d1`... each word) asks migration 740's
+ * index which descriptions hold it, and the score asks those stages. A word of
+ * fewer than TRGM_MIN_CHARS characters has no trigrams to ask the index with, so
+ * a search with one folds each description once, as it always did.
  */
-function scoringPipeline(b, q, workspaceId, where, { description = true } = {}) {
+function scoringPipeline(b, q, workspaceId, where, { description = true, lean = false } = {}) {
   const raw = b.add(q, 'q');
   const escaped = b.add(escapeLike(q), 'qe');
   const folded = `zimos_normalize_search(${raw})`;
@@ -128,6 +146,17 @@ function scoringPipeline(b, q, workspaceId, where, { description = true } = {}) 
   const terms = [...new Set(q.split(' ').filter(Boolean))].slice(0, MAX_TERMS);
   const multi = terms.length > 1;
   const single = !multi && [...q].length >= TRGM_MIN_CHARS;
+
+  // The test "this product's description holds this text", as lean or as it always was.
+  const words = [q, ...(multi ? terms : [])];
+  const askIndex = lean && description && words.every((word) => [...word].length >= TRGM_MIN_CHARS);
+  const descStages = [];
+  const inDescription = (pattern) => {
+    if (!askIndex) return `f.ndesc LIKE ${pattern} ESCAPE '\\'`;
+    const name = `d${descStages.length}`;
+    descStages.push({ name, pattern });
+    return `f.id IN (SELECT id FROM ${name})`;
+  };
 
   const parts = [
     `CASE WHEN f.nname = ${folded} THEN 100
@@ -141,7 +170,7 @@ function scoringPipeline(b, q, workspaceId, where, { description = true } = {}) 
           THEN CASE WHEN EXISTS (SELECT 1 FROM unnest(f.tags) AS st(tag) WHERE zimos_normalize_search(st.tag) = ${folded})
                     THEN 55 ELSE 35 END
           ELSE 0 END`,
-    description ? `CASE WHEN f.ndesc LIKE ${contains} ESCAPE '\\' THEN 20 ELSE 0 END` : '0',
+    description ? `CASE WHEN ${inDescription(contains)} THEN 20 ELSE 0 END` : '0',
   ];
   if (multi) {
     const inName = [];
@@ -155,13 +184,45 @@ function scoringPipeline(b, q, workspaceId, where, { description = true } = {}) 
       inName.push(`f.nname LIKE ${t} ESCAPE '\\'`);
       anywhere.push(
         `(f.nname LIKE ${t} ESCAPE '\\' OR f.ntags LIKE ${t} ESCAPE '\\'${
-          description ? ` OR f.ndesc LIKE ${t} ESCAPE '\\'` : ''
+          description ? ` OR ${inDescription(t)}` : ''
         }${close})`
       );
     }
     parts.push(`CASE WHEN ${inName.join(' AND ')} THEN 50 WHEN ${anywhere.join(' AND ')} THEN 25 ELSE 0 END`);
   } else if (single) {
     parts.push(`CASE WHEN f.sim >= ${TRGM_THRESHOLD} THEN 10 + 30 * f.sim ELSE 0 END`);
+  }
+
+  if (lean) {
+    const descs = descStages
+      .map(({ name, pattern }) => `${name} AS MATERIALIZED (
+      SELECT p.id FROM products p WHERE ${where} AND ${FOLDED_DESCRIPTION} LIKE ${pattern} ESCAPE '\\'
+    ),`)
+      .join('\n    ');
+    return `WITH sku AS MATERIALIZED (
+      SELECT sv.product_id, MAX(CASE WHEN lower(sv.sku) = lower(${raw}) THEN 90 ELSE 45 END) AS score
+        FROM product_variants sv
+       WHERE sv.workspace_id = ${b.add(workspaceId, 'sw')} AND sv.status = 'active'
+         AND lower(sv.sku) LIKE ('%' || lower(${escaped}) || '%') ESCAPE '\\'
+       GROUP BY sv.product_id
+    ),
+    ${descs}
+    folded AS MATERIALIZED (
+      SELECT x.*, ${multi || single ? `word_similarity(${folded}, x.nname)` : '0::real'} AS sim
+        FROM (
+          SELECT p.id, p.created_at, p.tags,
+                 zimos_normalize_search(p.name) AS nname,
+                 ${description && !askIndex ? FOLDED_DESCRIPTION : "''"} AS ndesc,
+                 zimos_normalize_search(array_to_string(p.tags, ' ')) AS ntags
+            FROM products p
+           WHERE ${where}
+          OFFSET 0
+        ) x
+    ),
+    scored AS MATERIALIZED (
+      SELECT f.id, f.created_at, f.sim, GREATEST(${parts.join(',\n')}) AS score
+        FROM folded f LEFT JOIN sku ON sku.product_id = f.id
+    )`;
   }
 
   return `WITH sku AS MATERIALIZED (
@@ -239,7 +300,7 @@ async function matchSearch(filters) {
   const b = binder();
   const where = filterConditions(b, filters, new Set(['search'])).join(' AND ');
   const rows = await select(
-    `${scoringPipeline(b, filters.search, filters.workspaceId, where)}
+    `${scoringPipeline(b, filters.search, filters.workspaceId, where, { lean: fast() })}
      SELECT id, score, sim FROM scored
       WHERE score > 0
       ORDER BY score DESC, sim DESC
@@ -472,8 +533,11 @@ async function searchProducts(workspaceId, query) {
       : 'NULL::int';
   const order = SORT_ORDER[byRelevance ? 'relevance' : sort === 'relevance' ? 'newest' : sort] || SORT_ORDER.newest;
 
-  const rows = await select(
-    `SELECT id, total FROM (
+  // Fast: the window count below reads every row the filters allow before LIMIT
+  // can stop it, so without it the newest-first page comes straight off an index.
+  const lean = fast();
+  const page$ = select(
+    `SELECT ${lean ? 'id' : 'id, total'} FROM (
         SELECT p.id, p.name, p.created_at, p.priority,
                ${byRelevance ? 'm.score' : '0'} AS score,
                ${byRelevance ? 'm.sim' : '0'} AS sim,
@@ -482,8 +546,8 @@ async function searchProducts(workspaceId, query) {
                    ? "(SELECT MIN(mv.price_amount) FROM product_variants mv WHERE mv.product_id = p.id AND mv.status = 'active')"
                    : 'NULL::bigint'
                } AS min_price,
-               ${positionIn} AS coll_pos,
-               COUNT(*) OVER () AS total
+               ${positionIn} AS coll_pos${lean ? '' : `,
+               COUNT(*) OVER () AS total`}
           FROM products p ${relevanceJoin}
          WHERE ${conditions.join(' AND ')}
       ) listed
@@ -563,12 +627,23 @@ async function suggest(workspaceId, rawQuery) {
 
   const b = binder();
   const where = `p.workspace_id = ${b.add(workspaceId, 'ws')} AND p.status = 'active' AND ${notHiddenSql('p')}`;
+  const limit = SUGGEST_LIMIT - collections.length;
   const rows = await select(
-    `${scoringPipeline(b, q, workspaceId, where, { description: false })}
+    fast()
+      ? `${scoringPipeline(b, q, workspaceId, where, { description: false, lean: true })},
+     best AS (
+       SELECT id, score, sim, created_at FROM scored
+        WHERE score > 0
+        ORDER BY score DESC, sim DESC, created_at DESC
+        LIMIT ${limit}
+     )
+     SELECT p.id, p.name, p.slug, p.media, best.score FROM best JOIN products p ON p.id = best.id
+      ORDER BY best.score DESC, best.sim DESC, best.created_at DESC`
+      : `${scoringPipeline(b, q, workspaceId, where, { description: false })}
      SELECT id, name, slug, media, score FROM scored
       WHERE score > 0
       ORDER BY score DESC, sim DESC, created_at DESC
-      LIMIT ${SUGGEST_LIMIT - collections.length}`,
+      LIMIT ${limit}`,
     b.bind
   );
 
