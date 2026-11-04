@@ -4,6 +4,7 @@ const db = require('../../db/models');
 const { ConflictError, NotFoundError } = require('../../core/errors/AppError');
 const { recordAudit } = require('../audit/auditService');
 const access = require('../workspaces/workspaceAccessService');
+const { invalidateAfterCommit } = require('../storefront/storefrontCache');
 
 /**
  * Manual store suspension (workspaces.manage). Unrelated to billing:
@@ -63,6 +64,8 @@ async function suspend(workspaceId, { reason }, req) {
       req,
       transaction,
     });
+    // Its pages go from every cache at once, the edge's included: the store is closed now.
+    invalidateAfterCommit(workspace.id, transaction);
     return suspensionView(workspace, req.user);
   });
 }
@@ -90,6 +93,7 @@ async function reactivate(workspaceId, { reason }, req) {
       req,
       transaction,
     });
+    invalidateAfterCommit(workspace.id, transaction);
     return suspensionView(workspace);
   });
 }

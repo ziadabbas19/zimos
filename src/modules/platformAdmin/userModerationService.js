@@ -164,6 +164,7 @@ async function remove(userId, { reason, stores }, req) {
         req,
         transaction,
       });
+      require('../storefront/storefrontCache').invalidateAfterCommit(workspace.id, transaction);
     }
 
     const before = user.status;

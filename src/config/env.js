@@ -187,6 +187,14 @@ function smsAllowedCallingCodes() {
   return [...new Set(codes)];
 }
 
+/** A whole number within [min, max] from the environment; anything else is the fallback. */
+function wholeNumberInRange(raw, fallback, min, max) {
+  const text = String(raw === undefined ? '' : raw).trim();
+  if (!/^\d+$/.test(text)) return fallback;
+  const n = Number(text);
+  return n >= min && n <= max ? n : fallback;
+}
+
 const env = {
   nodeEnv: process.env.NODE_ENV || 'development',
   isProduction: process.env.NODE_ENV === 'production',
@@ -1201,8 +1209,13 @@ const env = {
   // means the code path it always had.
   //   searchFast (STOREFRONT_SEARCH_FAST_ENABLED, exactly "true"): the listing
   //     and search queries in storefront/productSearch.js, same answers.
+  //   workspaceCacheTtlSeconds (PUBLIC_WORKSPACE_CACHE_TTL_SECONDS, 0 = off, at
+  //     most 300): storefront/publicWorkspaceCache.js. Off under NODE_ENV=test
+  //     unless a test sets it.
   storefrontPerf: {
     searchFast: process.env.STOREFRONT_SEARCH_FAST_ENABLED === 'true',
+    workspaceCacheTtlSeconds:
+      process.env.NODE_ENV === 'test' ? 0 : wholeNumberInRange(process.env.PUBLIC_WORKSPACE_CACHE_TTL_SECONDS, 0, 0, 300),
   },
 
   cloudflarePurge: {

@@ -7,6 +7,7 @@ const { AppError, NotFoundError } = require('../errors/AppError');
 const { isUuid, normalizeSlug } = require('../utils/workspaceSlug');
 const { accessFor, closesStorefront } = require('../../modules/workspaces/workspaceAccessService');
 const { isStorePreviewRequest } = require('../security/storePreview');
+const workspaceCache = require('../../modules/storefront/publicWorkspaceCache');
 
 /**
  * Public storefront scoping (no membership check) — resolves the workspace
@@ -25,6 +26,10 @@ const { isStorePreviewRequest } = require('../security/storePreview');
  * it, not even that it exists, reaches the public. Staff previewing it with
  * an X-Store-Preview token see its pages; `refuseDraftOrders` keeps them from
  * ordering.
+ *
+ * With PUBLIC_WORKSPACE_CACHE_TTL_SECONDS the row and the access picture may
+ * come from storefront/publicWorkspaceCache.js; every check below still runs
+ * on them, per request. Off, the row and the access are read as they always were.
  */
 const resolvePublicWorkspace = asyncHandler(async (req, res, next) => {
   // A public store is addressed either by workspace UUID or by its slug, so
@@ -32,18 +37,33 @@ const resolvePublicWorkspace = asyncHandler(async (req, res, next) => {
   // lower-cased and hostnames are case-insensitive, so the lookup matches
   // however the shopper happened to type it.
   const ref = req.params.workspaceId;
-  const workspace = await db.Workspace.findOne({
-    where: {
-      status: ['active', 'suspended'],
-      ...(isUuid(ref) ? { id: ref } : { slug: normalizeSlug(ref) }),
-    },
-  });
-
-  if (!workspace) {
-    throw new NotFoundError('Workspace');
+  const where = {
+    status: ['active', 'suspended'],
+    ...(isUuid(ref) ? { id: ref } : { slug: normalizeSlug(ref) }),
+  };
+  let workspace;
+  let access;
+  if (workspaceCache.enabled()) {
+    const current = await db.Workspace.findOne({ where, attributes: ['id', 'status', 'updatedAt'], raw: true });
+    if (!current) throw new NotFoundError('Workspace');
+    const kept = workspaceCache.read(ref, current);
+    if (kept) {
+      workspace = db.Workspace.build(kept.row, { isNewRecord: false, raw: true });
+      access = kept.access;
+    } else {
+      workspace = await db.Workspace.findOne({ where });
+      if (!workspace) throw new NotFoundError('Workspace');
+      access = await accessFor(workspace.id, { workspace });
+      workspaceCache.write(ref, workspace, access);
+    }
+  } else {
+    workspace = await db.Workspace.findOne({ where });
+    if (!workspace) {
+      throw new NotFoundError('Workspace');
+    }
+    access = await accessFor(workspace.id, { workspace });
   }
 
-  const access = await accessFor(workspace.id, { workspace });
   if (access.draft) {
     if (!isStorePreviewRequest(req, workspace.id)) throw new NotFoundError('Workspace');
     req.draftPreview = true;

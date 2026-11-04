@@ -149,6 +149,7 @@ async function cached(workspaceId, key, compute) {
  */
 async function invalidate(workspaceId, { previousSlug = null, previousHosts = [] } = {}) {
   if (!workspaceId) return;
+  require('./publicWorkspaceCache').drop(workspaceId);
   require('./cloudflarePurge').purgeStore(workspaceId, { previousSlug, previousHosts });
   if (!enabled) return;
   try {
@@ -156,6 +157,17 @@ async function invalidate(workspaceId, { previousSlug = null, previousHosts = []
   } catch (err) {
     logger.warn(`[storefront-cache] invalidation failed: ${err.message}`);
   }
+}
+
+/**
+ * The store's caches dropped once `transaction` commits, for the writes whose
+ * audit entry names no store (a suspension is a platform-level entry, so
+ * onAudit below does not see it).
+ */
+function invalidateAfterCommit(workspaceId, transaction) {
+  const drop = () => invalidate(workspaceId);
+  if (transaction && typeof transaction.afterCommit === 'function') transaction.afterCommit(drop);
+  else drop();
 }
 
 /** recordAudit's hook: a committed change the storefront shows drops the store's cache. */
@@ -181,4 +193,4 @@ function queryKey(query) {
     .join('&');
 }
 
-module.exports = { cached, invalidate, onAudit, queryKey, TTL_SECONDS, STORE_ENTITIES, UNSEEN_ACTIONS };
+module.exports = { cached, invalidate, invalidateAfterCommit, onAudit, queryKey, TTL_SECONDS, STORE_ENTITIES, UNSEEN_ACTIONS };
