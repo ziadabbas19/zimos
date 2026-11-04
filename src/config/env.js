@@ -687,6 +687,15 @@ const env = {
     jpegQuality: intInRange(process.env.MEDIA_JPEG_QUALITY, 85, 40, 100),
   },
 
+  // How long each request took, in the log and to whoever may read it
+  // (core/middleware/requestTiming.js). Off unless exactly "true". The key is
+  // for a tool's X-Timing-Key; unset, only a signed-in platform user gets the header.
+  requestTiming: {
+    enabled: process.env.REQUEST_TIMING_ENABLED === 'true',
+    logMinMs: intInRange(process.env.REQUEST_TIMING_LOG_MIN_MS, 0, 0, 600000),
+    key: (process.env.REQUEST_TIMING_KEY || '').trim(),
+  },
+
   // Photos shoppers attach to an order through a product's custom fields
   // (POST /store/:workspaceId/uploads). See modules/customerUploads.
   customerUploads: {

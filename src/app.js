@@ -8,6 +8,7 @@ const cookieParser = require('cookie-parser');
 const swaggerUi = require('swagger-ui-express');
 const env = require('./config/env');
 const requestId = require('./core/middleware/requestId');
+const { requestTiming } = require('./core/middleware/requestTiming');
 const { resolveClientIp, clientIp } = require('./core/middleware/clientIp');
 const { corsPolicy } = require('./core/middleware/cors');
 const { generalLimiter, storefrontLimiter, carrierWebhookLimiter, paymentWebhookLimiter, deliveryWebhookLimiter } = require('./core/middleware/rateLimiters');
@@ -89,6 +90,8 @@ app.set('view engine', 'ejs');
 app.set('views', path.join(__dirname, 'views'));
 
 app.use(requestId);
+// Off unless REQUEST_TIMING_ENABLED; first, so it counts everything after it.
+app.use(requestTiming);
 // The client IP, once, before the request log and the rate limits read it.
 app.use(resolveClientIp);
 app.use(helmet());
