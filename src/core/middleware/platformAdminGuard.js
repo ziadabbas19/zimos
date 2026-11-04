@@ -13,14 +13,23 @@ const { hasPlatformPermission } = require('../security/platformPermissions');
  * Every /admin route names the permission it needs; there is deliberately no
  * "any platform user" gate, so a route cannot be left open to agents by
  * forgetting to narrow it.
+ *
+ * Each guard carries what it asks for: tests/integration/adminRoutePermissions
+ * reads it to walk every console route.
  */
-function requirePlatformPermission(permission) {
-  return (req, res, next) => {
-    if (!hasPlatformPermission(req.user, permission)) {
-      return next(new AuthorizationError(`Missing required platform permission: ${permission}`));
+function requireAnyPlatformPermission(permissions) {
+  const guard = (req, res, next) => {
+    if (!permissions.some((permission) => hasPlatformPermission(req.user, permission))) {
+      return next(new AuthorizationError(`Missing required platform permission: ${permissions.join(' or ')}`));
     }
     next();
   };
+  guard.platformPermissions = permissions;
+  return guard;
 }
 
-module.exports = { requirePlatformPermission };
+function requirePlatformPermission(permission) {
+  return requireAnyPlatformPermission([permission]);
+}
+
+module.exports = { requirePlatformPermission, requireAnyPlatformPermission };

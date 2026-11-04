@@ -11,11 +11,15 @@
  *
  * Roles are data (the `platform_roles` table): each one names a default
  * permission set that is copied onto an account when the role is assigned,
- * and a creator can then edit that account's set. So a check is always
- * "does this account hold the key", never "what role is it".
+ * and a creator can then edit that account's set. So a check is "does this
+ * account hold the key", never "what role is it" — with one exception below.
+ * Besides the three seeded roles, the console creates custom ones
+ * (platformAdmin/adminUsersService).
  *
  * '*' means every key, including ones added later, and is reserved for the
- * creator role — the same convention as the workspace Owner's '*'.
+ * creator role — the same convention as the workspace Owner's '*'. A creator
+ * holds everything whatever their row says; on any other role '*' grants
+ * nothing, so a row edited by hand can't turn into a second creator.
  *
  * Adding a key here means a migration that adds it to the `admin` role's
  * default set and to the admins who should have it; creators get it through
@@ -91,10 +95,13 @@ const PLATFORM_ROLES = Object.freeze({
   AGENT: 'agent',
 });
 
+const isBuiltInRole = (key) => Object.values(PLATFORM_ROLES).includes(key);
+
 function hasPlatformPermission(user, permission) {
   if (!user || !user.platformRole) return false;
+  if (user.platformRole === PLATFORM_ROLES.CREATOR) return true;
   const held = Array.isArray(user.platformPermissions) ? user.platformPermissions : [];
-  return held.includes(WILDCARD) || held.includes(permission);
+  return held.includes(permission);
 }
 
 module.exports = {
@@ -103,4 +110,5 @@ module.exports = {
   PLATFORM_ROLES,
   WILDCARD,
   hasPlatformPermission,
+  isBuiltInRole,
 };
