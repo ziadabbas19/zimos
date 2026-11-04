@@ -228,11 +228,10 @@ async function saveOrderRules(workspaceId, data, req) {
  * store. The checkout, behind its bot guard, checks them and says why.
  */
 async function previewCode(workspaceId, code, items, visitorId = null, funnelId = null) {
-  const { priceLine } = require('../orders/orderService');
+  const { priceLines } = require('../orders/orderService');
   const { applyBundleTiers } = require('../bundles/bundlePricing');
-  const lines = [];
   // A product A/B test's price for this visitor (catalog/productTests.js).
-  for (const item of await require('../catalog/productTests').pinPrices(workspaceId, items, visitorId)) lines.push(await priceLine(workspaceId, item));
+  const lines = await priceLines(workspaceId, await require('../catalog/productTests').pinPrices(workspaceId, items, visitorId));
   await applyBundleTiers(workspaceId, lines);
   const subtotal = lines.reduce((sum, line) => sum + Number(line.lineTotalAmount), 0);
   try {

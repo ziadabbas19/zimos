@@ -2,7 +2,7 @@
 
 const db = require('../../db/models');
 const { add } = require('../../core/utils/money');
-const { priceLine } = require('../orders/orderService');
+const { priceLines } = require('../orders/orderService');
 const { calculateShippingAmount } = require('./shippingPricing');
 const { DESTINATION_INDEPENDENT, RULES, settingsPriceShipping } = require('./shippingRules');
 
@@ -27,15 +27,14 @@ const { DESTINATION_INDEPENDENT, RULES, settingsPriceShipping } = require('./shi
  *                        "confirmed on the call" line, as it always has.
  */
 async function quote(workspaceId, { country, region, items, funnelId = null }) {
-  const lines = [];
   // A combo (modules/combos) weighs, ships and costs what its products do, at the combo's price.
   const combos = require('../combos/comboPricing');
-  for (const item of await combos.expandItems(workspaceId, items)) {
-    const line = await priceLine(workspaceId, item);
-    const combo = combos.comboOf(item);
+  const expanded = await combos.expandItems(workspaceId, items);
+  const lines = await priceLines(workspaceId, expanded);
+  lines.forEach((line, i) => {
+    const combo = combos.comboOf(expanded[i]);
     if (combo) Object.assign(line, { comboKey: combo.key, combo });
-    lines.push(line);
-  }
+  });
   combos.applyComboPricing(lines);
   // The same bundle pricing the order will get, so the quote's subtotal is the real one.
   const bundles = await require('../bundles/bundlePricing').applyBundleTiers(workspaceId, lines);

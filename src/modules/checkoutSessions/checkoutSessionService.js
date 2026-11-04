@@ -9,7 +9,7 @@ const { normalizePhone } = require('../../core/utils/phone');
 const { isUuid } = require('../../core/utils/workspaceSlug');
 const logger = require('../../core/utils/logger');
 const { recordAudit } = require('../audit/auditService');
-const { priceLine } = require('../orders/orderService');
+const { priceLines } = require('../orders/orderService');
 const { STATUS_SQL } = require('./checkoutSessionStatus');
 
 // How far back an order reaches to convert sessions by phone alone — the
@@ -44,10 +44,9 @@ async function capture(workspaceId, { contact, items, source = 'store', visitorI
     throw new AppError('CONTACT_REQUIRED', 'A name or a phone number is required', 422);
   }
 
-  const priced = [];
   // A product A/B test's price for this visitor (catalog/productTests.js), as the order will charge it.
   const pinned = await require('../catalog/productTests').pinPrices(workspaceId, items, visitorId);
-  for (const item of pinned) priced.push(await priceLine(workspaceId, item));
+  const priced = await priceLines(workspaceId, pinned);
 
   const snapshot = priced.map((line) => ({
     productId: line.productId,

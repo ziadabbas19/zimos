@@ -46,6 +46,21 @@ const { effectiveVariantPrice } = require('../catalog/productPage');
 const { applyBundleTiers } = require('../bundles/bundlePricing');
 const pixelMatching = require('../marketing/pixelMatching');
 
+const OFFER_LINES_INCLUDE = () => [
+  {
+    model: db.OfferVariant,
+    as: 'lines',
+    include: [
+      {
+        model: db.ProductVariant,
+        as: 'variant',
+        attributes: ['id', 'weightGrams'],
+        include: [{ model: db.Product, as: 'product', attributes: ['productType'] }],
+      },
+    ],
+  },
+];
+
 function generateOrderNumber() {
   const rand = crypto.randomBytes(4).toString('hex').toUpperCase();
   return `ORD-${Date.now().toString(36).toUpperCase()}-${rand}`;
@@ -57,15 +72,19 @@ function generateOrderNumber() {
 // `forSale: false` reads a line an order already holds — its variant, product
 // or offer may have been archived since — for what it weighs and how it ships
 // (recalculateOrder); the caller keeps the prices the order recorded.
-async function priceLine(workspaceId, line, transaction, { forSale = true } = {}) {
+//
+// `read`: what priceLines already read for the whole list, instead of one read per line.
+async function priceLine(workspaceId, line, transaction, { forSale = true, read = null } = {}) {
   const { variantId, offerId, quantity, customizations } = line;
   const active = forSale ? { status: 'active' } : {};
-  const variant = await db.ProductVariant.findOne({
-    where: { id: variantId, workspaceId, ...active },
-    // A draft or archived product isn't for sale, even if its variant row is active.
-    include: [{ model: db.Product, as: 'product', ...(forSale ? { where: { status: 'active' } } : {}) }],
-    transaction,
-  });
+  const variant = read
+    ? read.variants.get(variantId) || null
+    : await db.ProductVariant.findOne({
+        where: { id: variantId, workspaceId, ...active },
+        // A draft or archived product isn't for sale, even if its variant row is active.
+        include: [{ model: db.Product, as: 'product', ...(forSale ? { where: { status: 'active' } } : {}) }],
+        transaction,
+      });
   if (!variant) throw new NotFoundError('ProductVariant');
   // Priced custom fields the shopper filled in add to the unit price (catalog/customFieldPricing.js).
   const customDelta = require('../catalog/customFieldPricing').customFieldsDelta(variant.product.customFields, customizations);
@@ -76,29 +95,23 @@ async function priceLine(workspaceId, line, transaction, { forSale = true } = {}
     ? await require('../catalog/menuOptions').resolveSelection(workspaceId, variant.productId, line.options, {
         enforceRequired: Boolean(line.enforceRequiredOptions),
         transaction,
+        groups: read ? read.groups.get(variant.productId) || [] : undefined,
       })
     : { snapshot: null, deltaPerUnit: 0 };
   const fieldsDelta = customDelta + options.deltaPerUnit;
 
   if (offerId) {
-    const offer = await db.Offer.findOne({
-      where: { id: offerId, workspaceId, productId: variant.productId, ...active },
-      include: [
-        {
-          model: db.OfferVariant,
-          as: 'lines',
-          include: [
-            {
-              model: db.ProductVariant,
-              as: 'variant',
-              attributes: ['id', 'weightGrams'],
-              include: [{ model: db.Product, as: 'product', attributes: ['productType'] }],
-            },
-          ],
-        },
-      ],
-      transaction,
-    });
+    let offer;
+    if (read) {
+      offer = read.offers.get(offerId) || null;
+      if (offer && offer.productId !== variant.productId) offer = null;
+    } else {
+      offer = await db.Offer.findOne({
+        where: { id: offerId, workspaceId, productId: variant.productId, ...active },
+        include: OFFER_LINES_INCLUDE(),
+        transaction,
+      });
+    }
     if (!offer) throw new NotFoundError('Offer');
 
     // A one-line offer taken in another variant of its product (the shopper's choice,
@@ -164,6 +177,36 @@ async function priceLine(workspaceId, line, transaction, { forSale = true } = {}
     weightUnits: [weightUnit(variant, 1)],
     shippingRule: productShippingRule(variant.product, quantity),
   };
+}
+
+/**
+ * Prices a list for sale at once, the way priceLine prices one: the same reads
+ * with the same conditions, one per kind instead of one per line, and the same
+ * answer or the same refusal in the list's order. Reading only: for a quote or
+ * a preview. An order is still priced line by line inside its transaction.
+ */
+async function priceLines(workspaceId, lines) {
+  if (lines.length === 0) return [];
+  const unique = (values) => [...new Set(values.filter(Boolean))];
+  const variants = await db.ProductVariant.findAll({
+    where: { id: unique(lines.map((l) => l.variantId)), workspaceId, status: 'active' },
+    include: [{ model: db.Product, as: 'product', where: { status: 'active' } }],
+  });
+  const offerIds = unique(lines.map((l) => l.offerId));
+  const [offers, groups] = await Promise.all([
+    offerIds.length
+      ? db.Offer.findAll({ where: { id: offerIds, workspaceId, status: 'active' }, include: OFFER_LINES_INCLUDE() })
+      : [],
+    require('../catalog/menuOptions').activeGroupsByProduct(workspaceId, unique(variants.map((v) => v.productId))),
+  ]);
+  const read = {
+    variants: new Map(variants.map((v) => [v.id, v])),
+    offers: new Map(offers.map((o) => [o.id, o])),
+    groups,
+  };
+  const priced = [];
+  for (const line of lines) priced.push(await priceLine(workspaceId, line, undefined, { read }));
+  return priced;
 }
 
 // The product's shipping mode for shippingRules.productShipping: `units` is
@@ -1622,6 +1665,7 @@ module.exports = {
   generateOrderNumber,
   generateTrackingCode,
   priceLine,
+  priceLines,
   couponShipsFree,
   placedDiscount,
   cancelOrder,

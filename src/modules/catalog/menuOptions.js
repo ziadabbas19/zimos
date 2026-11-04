@@ -53,15 +53,35 @@ async function activeGroups(workspaceId, productId, transaction) {
   return groups;
 }
 
+/** activeGroups for several products in one read: product id -> its groups, in the same order. */
+async function activeGroupsByProduct(workspaceId, productIds) {
+  const byProduct = new Map();
+  if (productIds.length === 0) return byProduct;
+  const groups = await db.ProductOptionGroup.findAll({
+    where: { workspaceId, productId: productIds, active: true },
+    include: [{ model: db.ProductOptionChoice, as: 'choices', where: { active: true }, required: false }],
+    order: [
+      ['sortOrder', 'ASC'],
+      ['createdAt', 'ASC'],
+      [{ model: db.ProductOptionChoice, as: 'choices' }, 'sortOrder', 'ASC'],
+    ],
+  });
+  for (const group of groups) {
+    if (!byProduct.has(group.productId)) byProduct.set(group.productId, []);
+    byProduct.get(group.productId).push(group);
+  }
+  return byProduct;
+}
+
 /**
  * Checks a line's picks and prices them. Returns { input, snapshot,
  * deltaPerUnit }: `input` normalized for comparing cart lines, `snapshot`
  * for the order line (null when nothing was picked), `deltaPerUnit` in minor
  * units. 422 OPTIONS_INVALID with what is wrong.
  */
-async function resolveSelection(workspaceId, productId, rawInput, { enforceRequired = false, transaction } = {}) {
+async function resolveSelection(workspaceId, productId, rawInput, { enforceRequired = false, transaction, groups: alreadyRead } = {}) {
   const input = Array.isArray(rawInput) ? rawInput : [];
-  const groups = await activeGroups(workspaceId, productId, transaction);
+  const groups = alreadyRead || (await activeGroups(workspaceId, productId, transaction));
   if (groups.length === 0 && input.length === 0) return { input: null, snapshot: null, deltaPerUnit: 0 };
 
   const byGroup = new Map(groups.map((g) => [g.id, g]));
@@ -281,6 +301,7 @@ module.exports = {
   optionsInputSchema,
   groupsBodySchema,
   resolveSelection,
+  activeGroupsByProduct,
   sameSelection,
   optionsLabel,
   choiceIndex,
