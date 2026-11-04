@@ -23,6 +23,10 @@ module.exports = (sequelize, DataTypes) => {
       inviteAcceptedAt: { type: DataTypes.DATE, allowNull: true, field: 'invite_accepted_at' },
       // Dashboard routes this member pinned in the sidebar (migration 173).
       navShortcuts: { type: DataTypes.JSONB, allowNull: false, defaultValue: [], field: 'nav_shortcuts' },
+      // The Home page's shortcuts row as this member arranged it (migration
+      // 734, dashboard/homeShortcuts.js); null until they do. Theirs alone: the
+      // team list never sends it (toJSON below).
+      homeShortcuts: { type: DataTypes.JSONB, allowNull: true, field: 'home_shortcuts' },
     },
     {
       tableName: 'memberships',
@@ -36,6 +40,7 @@ module.exports = (sequelize, DataTypes) => {
   Membership.prototype.toJSON = function toJSON() {
     const values = { ...this.get() };
     delete values.inviteTokenHash;
+    delete values.homeShortcuts;
     return values;
   };
 
