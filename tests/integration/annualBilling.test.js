@@ -5,7 +5,7 @@
 // annual charge is priced and dated for the full year — referral discount and
 // commission included.
 
-const { app, request, registerAndActivate, createWorkspace, addMemberWithRole, makePlatformUser } = require('../helpers/factories');
+const { app, request, registerAndActivate, createWorkspace, addMemberWithRole, addPlatformKeys, makePlatformUser } = require('../helpers/factories');
 const db = require('../../src/db/models');
 const billingService = require('../../src/modules/billing/billingService');
 const charges = require('../../src/modules/billing/subscriptionChargeService');
@@ -95,6 +95,7 @@ describe('choosing annual billing', () => {
 
   it('prices and dates an annual charge for the full year, with the referral discount and commission on it', async () => {
     const admin = await makePlatformUser('admin');
+    await addPlatformKeys(admin.userId, ['agents.create']);
     const person = await registerAndActivate();
     await request(app)
       .post('/api/v1/admin/agents')

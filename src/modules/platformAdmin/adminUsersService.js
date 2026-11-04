@@ -43,6 +43,8 @@ const {
  *     only hold keys the actor holds themselves. The one exception is the agent
  *     role's own default set, so an admin can create an agent without holding
  *     the agent-only key. A creator holds everything, so a creator passes.
+ *   - agents.create is the one way to the agent role: admins.manage alone can't
+ *     give it, on a new account or by changing another role to it.
  *   - nobody touches an account above them: an account holding a key the actor
  *     doesn't hold can't be changed or revoked by that actor, whatever the
  *     change (core/security/platformPermissions.outOfReach). Suspending and
@@ -156,6 +158,12 @@ function requireCreator(actor, message) {
   }
 }
 
+function requireAgentsCreate(actor) {
+  if (!hasPlatformPermission(actor, PLATFORM_PERMISSIONS.AGENTS_CREATE)) {
+    throw new AuthorizationError(`Missing required platform permission: ${PLATFORM_PERMISSIONS.AGENTS_CREATE}`);
+  }
+}
+
 function requireKnownKeys(keys) {
   const errors = [];
   for (const key of keys) {
@@ -251,7 +259,7 @@ async function lockForRoleChange(userId, req, transaction, { permission = PLATFO
  * holding a different role is refused — changing a role is `updateAdmin`.
  *
  * Runs inside the caller's transaction so agent creation (gated by
- * agents.manage rather than admins.manage, hence `permission`) can add the
+ * agents.create rather than admins.manage, hence `permission`) can add the
  * agent's first referral code atomically with the role.
  *
  * Who may grant is decided on the requester's row as it is under the lock,
@@ -266,6 +274,7 @@ async function grantRoleInTransaction({ email, role: roleKey, permissions }, req
   if (role.key === PLATFORM_ROLES.CREATOR) {
     requireCreator(req.user, 'Only a creator can make someone a creator.');
   }
+  if (role.key === PLATFORM_ROLES.AGENT) requireAgentsCreate(req.user);
 
   const notFound = () =>
     new AppError(
@@ -286,6 +295,7 @@ async function grantRoleInTransaction({ email, role: roleKey, permissions }, req
   if (role.key === PLATFORM_ROLES.CREATOR) {
     requireCreator(requester, 'Only a creator can make someone a creator.');
   }
+  if (role.key === PLATFORM_ROLES.AGENT) requireAgentsCreate(requester);
   // The address moved to another account between the two reads.
   if (String(user.email).toLowerCase() !== email.trim().toLowerCase()) throw notFound();
 
@@ -340,6 +350,7 @@ async function updateAdmin(userId, { role: roleKey, permissions }, req) {
       requireCreator(requester, 'Only a creator can make someone a creator.');
     }
     requireWithinReach(requester, target);
+    if (role.key === PLATFORM_ROLES.AGENT && target.platformRole !== PLATFORM_ROLES.AGENT) requireAgentsCreate(requester);
     const demotesCreator = target.platformRole === PLATFORM_ROLES.CREATOR && role.key !== PLATFORM_ROLES.CREATOR;
     if (demotesCreator && creators.length <= 1) {
       throw new ConflictError('This is the last creator, so their role cannot be changed.', 'LAST_CREATOR');

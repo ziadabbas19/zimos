@@ -210,8 +210,8 @@ describe('nobody gives what they do not hold', () => {
     notHeld(await grant(partial, { email: third.email, role: 'admin', permissions: ['support.view', 'plans.view'] }));
   });
 
-  it('still gives the agent role from someone without its key, and only that key', async () => {
-    const manager = await adminHolding(['admins.view', 'admins.manage']);
+  it('gives the agent role from someone with agents.create but without its key, and only that key', async () => {
+    const manager = await adminHolding(['admins.view', 'admins.manage', 'agents.create']);
     const person = await makeUser();
     const given = await grant(manager, { email: person.email, role: 'agent' });
     expect(given.status).toBe(201);

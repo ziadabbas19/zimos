@@ -5,7 +5,7 @@ const env = require('../../config/env');
 const { AppError, ConflictError, NotFoundError, ValidationError } = require('../../core/errors/AppError');
 const { applyBasisPoints } = require('../../core/utils/money');
 const { recordAudit } = require('../audit/auditService');
-const { PLATFORM_PERMISSIONS, PLATFORM_ROLES, hasPlatformPermission } = require('../../core/security/platformPermissions');
+const { PLATFORM_ROLES, isCreator } = require('../../core/security/platformPermissions');
 const { commissionRateFor, DEFAULT_COMMISSION_RATE_BP } = require('./commissionPolicy');
 const terms = require('./referralTerms');
 
@@ -33,11 +33,11 @@ const terms = require('./referralTerms');
  * changes what stores entering it from then on get: a store that entered it
  * keeps the terms it entered it with (redemptionService).
  *
- * Own codes (migration 742, referrals.view_own): an account can make its own
- * codes and change them, through /my/*, and a creator reviews them
- * (referral_codes.approve). A new one is pending and switched off (active
- * false), so nothing that reads `active` treats it as a code at all. A change
- * to an approved code that touches money (anything but the label) waits in
+ * The review (migration 742, referral_codes.approve): an account can make its
+ * own codes through /my/* (referrals.view_own). A new one is pending and
+ * switched off (active false), so nothing that reads `active` treats it as a
+ * code at all. A change to an approved code that touches money, from anyone but
+ * a creator and from the console or /my/* alike (applyChange), waits in
  * pending_changes: the code stays pending for anyone new, and stores already
  * using it keep what was approved, since nothing prices with a change nobody
  * approved. Rejecting that change leaves the code as it was approved. Codes
@@ -411,35 +411,6 @@ async function columnsFor(code, patch, transaction) {
 /** Never approved yet: no store can be using it. */
 const neverApproved = (code) => code.approvalStatus !== 'approved' && !code.pendingChanges;
 
-/**
- * Changes a code. The first-kind fields (discount_*, commission_rate_bp)
- * stay editable on a code with no terms, as before. With the flag on, the
- * second-kind fields too, `agentId` included (giving an agentless code an
- * agent, or another one: stores already linked keep their agent). Sending
- * `terms` turns a first-kind code into the second kind: from then on (flag
- * on) its schedule prices every store using it, at each store's own payment
- * number; its first-kind discount and rate stay as they were (read-only),
- * and are what prices it again if the flag is turned off. A code never
- * approved can't be switched on here: that is what approving it does.
- */
-async function updateCode(codeId, patch, req) {
-  return db.sequelize.transaction(async (transaction) => {
-    const code = await db.ReferralCode.findByPk(codeId, { transaction, lock: transaction.LOCK.UPDATE });
-    if (!code) throw new NotFoundError('Referral code');
-    const columns = await columnsFor(code, patch, transaction);
-    if (columns.active === true && !code.active && neverApproved(code)) {
-      throw new ConflictError('This code has not been approved yet.', 'REFERRAL_CODE_NOT_APPROVED');
-    }
-
-    const before = auditState(code);
-    await code.update({ ...columns, updatedByUserId: req.user.id }, { transaction });
-    await auditCode('referral_code.update', req, code, before, auditState(code), transaction);
-    return serializeCode(code);
-  });
-}
-
-// ------------------------------------------------------------- own codes
-
 const DATE_COLUMNS = ['startsAt', 'endsAt'];
 const AMOUNT_COLUMNS = ['discountValue', 'minPriceAmount', 'grantValue'];
 const LIST_COLUMNS = ['allowedPlanIds', 'allowedCycles'];
@@ -457,14 +428,83 @@ function sameValue(key, a, b) {
   return JSON.stringify(plain(a)) === JSON.stringify(plain(b));
 }
 
-/** Whoever may approve doesn't wait for their own approval. */
-const approvesOwn = (req) => hasPlatformPermission(req.user, PLATFORM_PERMISSIONS.REFERRAL_CODES_APPROVE);
+/**
+ * The one check on a change to a code, from the console or from /my/*. A
+ * creator's applies as it is. From anyone else, the name, the on/off switch and
+ * who it belongs to apply at once; anything else that really changes is money
+ * (the discount, the commission, the limits, the dates), and
+ *   - on a code never approved, goes on the code, which waits for review again;
+ *   - on an approved one, waits in pending_changes while the code goes on as
+ *     approved, and the code is pending; changing it back clears the wait.
+ */
+async function applyChange(code, patch, req, transaction) {
+  const reviewed = !isCreator(req.user);
+  const effective = reviewed ? { ...code.get(), ...(code.pendingChanges || {}) } : code;
+  const { label, active, agentId, ...money } = await columnsFor(effective, patch, transaction);
+  if (active === true && !code.active && neverApproved(code)) {
+    throw new ConflictError('This code has not been approved yet.', 'REFERRAL_CODE_NOT_APPROVED');
+  }
+
+  const changed = Object.keys(money).filter((key) => !sameValue(key, money[key], effective[key]));
+  const asked = Object.fromEntries(changed.map((key) => [key, money[key]]));
+  const fields = { updatedByUserId: req.user.id };
+  for (const [key, value] of Object.entries({ label, active, agentId })) {
+    if (value !== undefined) fields[key] = value;
+  }
+
+  let action = 'referral_code.update';
+  if (!reviewed) {
+    Object.assign(fields, money);
+  } else if (neverApproved(code)) {
+    Object.assign(fields, asked);
+    if (changed.length) Object.assign(fields, { approvalStatus: 'pending', approvalNote: null });
+  } else if (changed.length) {
+    const waiting = { ...(code.pendingChanges || {}), ...asked };
+    for (const key of Object.keys(waiting)) {
+      if (sameValue(key, waiting[key], code.get(key))) delete waiting[key];
+    }
+    const any = Object.keys(waiting).length > 0;
+    Object.assign(fields, {
+      pendingChanges: any ? waiting : null,
+      approvalStatus: any ? 'pending' : 'approved',
+      approvalNote: null,
+      changesRejected: false,
+    });
+    action = 'referral_code.submit_changes';
+  }
+
+  const before = auditState(code);
+  await code.update(fields, { transaction });
+  await auditCode(action, req, code, before, auditState(code), transaction);
+  return serializeCode(code);
+}
+
+/**
+ * Changes a code. The first-kind fields (discount_*, commission_rate_bp)
+ * stay editable on a code with no terms, as before. With the flag on, the
+ * second-kind fields too, `agentId` included (giving an agentless code an
+ * agent, or another one: stores already linked keep their agent). Sending
+ * `terms` turns a first-kind code into the second kind: from then on (flag
+ * on) its schedule prices every store using it, at each store's own payment
+ * number; its first-kind discount and rate stay as they were (read-only),
+ * and are what prices it again if the flag is turned off. A code never
+ * approved can't be switched on here: that is what approving it does.
+ */
+async function updateCode(codeId, patch, req) {
+  return db.sequelize.transaction(async (transaction) => {
+    const code = await db.ReferralCode.findByPk(codeId, { transaction, lock: transaction.LOCK.UPDATE });
+    if (!code) throw new NotFoundError('Referral code');
+    return applyChange(code, patch, req, transaction);
+  });
+}
+
+// ------------------------------------------------------------- own codes
 
 /** POST /admin/my/referral-codes: the requester's own code, always theirs whatever the body says. */
 async function createOwnCode(body, req) {
   return db.sequelize.transaction(async (transaction) => {
     try {
-      const approvalStatus = approvesOwn(req) ? 'approved' : 'pending';
+      const approvalStatus = isCreator(req.user) ? 'approved' : 'pending';
       return serializeCode(await createCodeInTransaction(req.user.id, body, req, transaction, { own: true, approvalStatus }));
     } catch (err) {
       throw uniqueViolationToConflict(err, body.code);
@@ -472,51 +512,12 @@ async function createOwnCode(body, req) {
   });
 }
 
-/**
- * PATCH /admin/my/referral-codes/:codeId. Someone else's code answers as if it
- * didn't exist. The label is the code's own business and applies at once.
- * Anything else that really changes:
- *   - on a code never approved, goes on the code, which waits for review again;
- *   - on an approved one, waits in pending_changes while the code goes on as
- *     approved, and the code is pending; changing it back clears the wait.
- */
+/** PATCH /admin/my/referral-codes/:codeId. Someone else's code answers as if it didn't exist. */
 async function updateOwnCode(codeId, patch, req) {
   return db.sequelize.transaction(async (transaction) => {
     const code = await db.ReferralCode.findByPk(codeId, { transaction, lock: transaction.LOCK.UPDATE });
     if (!code || code.agentId !== req.user.id) throw new NotFoundError('Referral code');
-
-    const effective = { ...code.get(), ...(code.pendingChanges || {}) };
-    const { label, ...money } = await columnsFor(effective, patch, transaction);
-    const changed = Object.keys(money).filter((key) => !sameValue(key, money[key], effective[key]));
-    const asked = Object.fromEntries(changed.map((key) => [key, money[key]]));
-
-    const fields = { updatedByUserId: req.user.id };
-    if (label !== undefined) fields.label = label;
-    let action = 'referral_code.update';
-    if (approvesOwn(req)) {
-      Object.assign(fields, asked);
-    } else if (neverApproved(code)) {
-      Object.assign(fields, asked);
-      if (changed.length) Object.assign(fields, { approvalStatus: 'pending', approvalNote: null });
-    } else if (changed.length) {
-      const waiting = { ...(code.pendingChanges || {}), ...asked };
-      for (const key of Object.keys(waiting)) {
-        if (sameValue(key, waiting[key], code.get(key))) delete waiting[key];
-      }
-      const any = Object.keys(waiting).length > 0;
-      Object.assign(fields, {
-        pendingChanges: any ? waiting : null,
-        approvalStatus: any ? 'pending' : 'approved',
-        approvalNote: null,
-        changesRejected: false,
-      });
-      action = 'referral_code.submit_changes';
-    }
-
-    const before = auditState(code);
-    await code.update(fields, { transaction });
-    await auditCode(action, req, code, before, auditState(code), transaction);
-    return serializeCode(code);
+    return applyChange(code, patch, req, transaction);
   });
 }
 

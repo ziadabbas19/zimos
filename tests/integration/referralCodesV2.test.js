@@ -9,7 +9,7 @@
 // working as before. Charges are paid through the signed billing webhook, as
 // in agentReferrals.test.js.
 
-const { app, request, registerAndActivate, makePlatformUser, uniqueEmail } = require('../helpers/factories');
+const { app, request, registerAndActivate, addPlatformKeys, makePlatformUser, uniqueEmail } = require('../helpers/factories');
 const db = require('../../src/db/models');
 const env = require('../../src/config/env');
 const billingService = require('../../src/modules/billing/billingService');
@@ -65,6 +65,7 @@ async function makeCode(body) {
 }
 
 async function newAgent() {
+  await addPlatformKeys(admin.userId, ['agents.create']);
   const person = await registerAndActivate({ fullName: 'Agent Person' });
   const res = await request(app).post('/api/v1/admin/agents').set(admin.H).send({ email: person.email });
   if (res.status !== 201) throw new Error(`newAgent failed: ${res.status} ${JSON.stringify(res.body)}`);
@@ -342,9 +343,11 @@ describe('a code of the first kind given a schedule (FREE100)', () => {
     expect([Number((await payNext(early.wid)).amount), Number((await payNext(early.wid)).amount)]).toEqual([0, 0]);
 
     v2(true);
+    // Only a creator's money changes apply at once (agentCodes.test.js has the rest).
+    const creator = await makePlatformUser('creator');
     const converted = await request(app)
       .patch(`/api/v1/admin/referral-codes/${made.body.code.id}`)
-      .set(admin.H)
+      .set(creator.H)
       .send({ terms: both([pct(1, 10000)], [rate(null, 1000)]) });
     expect(converted.status).toBe(200);
     // Its first-kind discount and rate are kept, for the flag turned off again.
@@ -450,9 +453,10 @@ describe('permissions and the audit', () => {
     expect((await request(app).post('/api/v1/admin/referral-codes').set(AH).send({ code: 'MINE1' })).status).toBe(403);
 
     const code = await makeCode({ code: 'AUDITED', audience: 'any' });
-    await request(app).patch(`/api/v1/admin/referral-codes/${code.id}`).set(admin.H).send({ maxUses: 5, agentId: agent.userId });
+    const creator = await makePlatformUser('creator');
+    await request(app).patch(`/api/v1/admin/referral-codes/${code.id}`).set(creator.H).send({ maxUses: 5, agentId: agent.userId });
     const entry = await db.AuditLog.findOne({ where: { action: 'referral_code.update', entityId: code.id } });
-    expect([entry.actorUserId, entry.beforeState.maxUses, entry.afterState.maxUses, entry.beforeState.agentId, entry.afterState.agentId]).toEqual([admin.userId, null, 5, null, agent.userId]);
+    expect([entry.actorUserId, entry.beforeState.maxUses, entry.afterState.maxUses, entry.beforeState.agentId, entry.afterState.agentId]).toEqual([creator.userId, null, 5, null, agent.userId]);
   });
 });
 

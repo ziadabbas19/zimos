@@ -97,13 +97,13 @@ describe('grantRoleInTransaction', () => {
   });
 
   it('asks for the permission of the route it was called from', async () => {
-    // Creating an agent needs agents.manage; admins.manage is not what that route asked for.
-    const req = { user: { id: ACTOR, platformRole: 'admin', platformPermissions: ['agents.manage'], status: 'active' }, headers: {} };
-    lockedRows(row({ id: ACTOR, platformRole: 'admin', platformPermissions: ['agents.manage'] }));
-    expect((await grant({ email: 'new.admin@example.com', role: 'agent' }, req, { permission: 'agents.manage' })).granted).toBe(true);
+    // Creating an agent needs agents.create; admins.manage is not what that route asked for.
+    const req = { user: { id: ACTOR, platformRole: 'admin', platformPermissions: ['agents.create'], status: 'active' }, headers: {} };
+    lockedRows(row({ id: ACTOR, platformRole: 'admin', platformPermissions: ['agents.create'] }));
+    expect((await grant({ email: 'new.admin@example.com', role: 'agent' }, req, { permission: 'agents.create' })).granted).toBe(true);
 
     target.platformRole = null;
-    lockedRows(row({ id: ACTOR, platformRole: 'admin', platformPermissions: ['agents.manage'] }));
+    lockedRows(row({ id: ACTOR, platformRole: 'admin', platformPermissions: ['agents.create'] }));
     await expect(grant({ email: 'new.admin@example.com', role: 'agent' }, req)).rejects.toMatchObject({ statusCode: 403 });
   });
 

@@ -7,7 +7,7 @@
 //   { kind: 'free_months',    months, note }            comp months, no charge
 //   { kind: 'price_override', priceAmount, charges, note } a price for the next N charges
 
-const { app, request, registerAndActivate, makePlatformUser } = require('../helpers/factories');
+const { app, request, registerAndActivate, addPlatformKeys, makePlatformUser } = require('../helpers/factories');
 const db = require('../../src/db/models');
 const env = require('../../src/config/env');
 const billingService = require('../../src/modules/billing/billingService');
@@ -137,6 +137,7 @@ describe('free months', () => {
 describe('a price override', () => {
   it('prices the next N charges, with the referral discount and commission on the overridden price', async () => {
     const admin = await makePlatformUser('admin');
+    await addPlatformKeys(admin.userId, ['agents.create']);
     const person = await registerAndActivate();
     await request(app)
       .post('/api/v1/admin/agents')

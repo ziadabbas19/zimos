@@ -7,7 +7,7 @@
 // subscriptionChargeService.createCharge (the seam a gateway plugs into) and
 // paid through the signed billing webhook, exactly as a gateway would.
 
-const { app, request, registerAndActivate, addMemberWithRole, makePlatformUser } = require('../helpers/factories');
+const { app, request, registerAndActivate, addMemberWithRole, addPlatformKeys, makePlatformUser } = require('../helpers/factories');
 const db = require('../../src/db/models');
 const env = require('../../src/config/env');
 const billingService = require('../../src/modules/billing/billingService');
@@ -43,6 +43,7 @@ function postWebhook(payload) {
 const payInvoice = (invoiceId, extra = {}) => postWebhook({ type: 'invoice.paid', data: { invoiceId, ...extra } });
 
 async function newAgent(admin, firstCode) {
+  await addPlatformKeys(admin.userId, ['agents.create']);
   const person = await registerAndActivate({ fullName: 'Agent Person' });
   const res = await request(app).post('/api/v1/admin/agents').set(admin.H).send({ email: person.email, firstCode });
   if (res.status !== 201) throw new Error(`newAgent failed: ${res.status} ${JSON.stringify(res.body)}`);
@@ -130,7 +131,9 @@ describe('referral codes: creating and editing', () => {
   it('edits and deactivates a code; the code string itself never changes', async () => {
     const admin = await makePlatformUser('admin');
     const agent = await newAgent(admin, { code: 'EDIT1', discountType: 'percentage', discountValue: 2000 });
-    const patch = (body) => request(app).patch(`/api/v1/admin/referral-codes/${agent.code.id}`).set(admin.H).send(body);
+    // Only a creator's money changes apply at once (agentCodes.test.js has the rest).
+    const creator = await makePlatformUser('creator');
+    const patch = (body) => request(app).patch(`/api/v1/admin/referral-codes/${agent.code.id}`).set(creator.H).send(body);
 
     const none = await patch({ discountType: 'none' });
     expect(none.status).toBe(200);
@@ -364,7 +367,7 @@ describe('the code is checked again when the charge is paid', () => {
     const { invoice } = await charges.createCharge(wid);
     expect(Number(invoice.discountAmount)).toBe(2990);
 
-    await setCode(admin, agent.code.id, { discountType: 'none', commissionRateBp: 1000 });
+    await setCode(await makePlatformUser('creator'), agent.code.id, { discountType: 'none', commissionRateBp: 1000 });
     await payInvoice(invoice.id);
 
     const paid = await invoiceOf(invoice.id);
@@ -467,7 +470,8 @@ describe('the commission ledger', () => {
     const { wid } = await newMerchant('RATE10');
     await payInvoice((await charges.createCharge(wid)).invoice.id);
 
-    await request(app).patch(`/api/v1/admin/referral-codes/${agent.code.id}`).set(admin.H).send({ commissionRateBp: 5000 });
+    const creator = await makePlatformUser('creator');
+    await request(app).patch(`/api/v1/admin/referral-codes/${agent.code.id}`).set(creator.H).send({ commissionRateBp: 5000 });
     const [row] = await ledgerFor(wid);
     expect(row.commissionRateBp).toBe(1000);
     expect(Number(row.suggestedCommission)).toBe(2990);

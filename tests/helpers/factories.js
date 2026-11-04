@@ -120,6 +120,12 @@ async function setPlatformRole(userId, roleKey = 'admin') {
   );
 }
 
+/** Adds keys to an account's set, as a creator does by hand: what no role holds by default. */
+async function addPlatformKeys(userId, keys) {
+  const user = await db.User.findByPk(userId);
+  await user.update({ platformPermissions: [...new Set([...user.platformPermissions, ...keys])] });
+}
+
 /** A fresh active account holding `roleKey`, with a ready Authorization header. */
 async function makePlatformUser(roleKey = 'admin', overrides = {}) {
   const auth = await registerAndActivate(overrides);
@@ -131,6 +137,7 @@ module.exports = {
   addMemberWithRole,
   confirmCodOrder,
   setPlatformRole,
+  addPlatformKeys,
   makePlatformUser,
   app,
   request,

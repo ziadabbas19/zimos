@@ -73,9 +73,10 @@ const PLATFORM_PERMISSIONS = Object.freeze({
   AGENTS_VIEW: 'agents.view',
   // Creating/editing/deactivating referral codes.
   AGENTS_MANAGE: 'agents.manage',
-  // Giving an account the agent role. Held through '*' only, like the payment
-  // methods: no migration adds it to the admin role or to any admin, so a
-  // creator grants it by hand.
+  // Giving an account the agent role, from the Agents page or the admin users
+  // list alike: admins.manage alone doesn't. Held through '*' only, like the
+  // payment methods: no migration adds it to the admin role or to any admin, so
+  // a creator grants it by hand.
   AGENTS_CREATE: 'agents.create',
   // Approving or rejecting a code an agent made or changed. Held through '*'
   // only as well.
@@ -106,6 +107,8 @@ const PLATFORM_ROLES = Object.freeze({
 });
 
 const isBuiltInRole = (key) => Object.values(PLATFORM_ROLES).includes(key);
+
+const isCreator = (user) => Boolean(user) && user.platformRole === PLATFORM_ROLES.CREATOR;
 
 function hasPlatformPermission(user, permission) {
   if (!user || !user.platformRole) return false;
@@ -138,5 +141,6 @@ module.exports = {
   WILDCARD,
   hasPlatformPermission,
   isBuiltInRole,
+  isCreator,
   outOfReach,
 };
