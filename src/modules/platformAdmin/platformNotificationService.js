@@ -21,7 +21,8 @@ const { PLATFORM_PERMISSIONS: P, hasPlatformPermission } = require('../../core/s
  * what it is about (TYPE_PERMISSION), so an admin is only told about what
  * they could look at — a support ticket needs support.view, a payment proof
  * payments.record. Types an admin cannot see are left out of their list, their
- * unread count, "mark all read" and their preferences.
+ * unread count, marking read and their preferences. This is the only filter:
+ * the routes open for any console account.
  *
  * Preferences: per type, shown in the console (default on) and by email
  * (default off). No email is sent yet; the email choice is only kept.
@@ -298,23 +299,21 @@ async function unreadCount(user, shown = null) {
 
 /** POST /admin/notifications/read — { ids } or { all: true }, for this admin only. "All" is every unread one they can see. */
 async function markRead(user, { ids, all }) {
-  if (all) {
-    const types = visibleTypes(user);
-    if (types.length) {
-      await db.sequelize.query(
-        `INSERT INTO platform_notification_reads (user_id, notification_id)
-         SELECT :userId, n.id FROM platform_notifications n
-         WHERE n.type IN (:types)
-           AND NOT EXISTS (SELECT 1 FROM platform_notification_reads r WHERE r.user_id = :userId AND r.notification_id = n.id)
-         ON CONFLICT DO NOTHING`,
-        { replacements: { userId: user.id, types } }
-      );
-    }
-  } else if (ids && ids.length) {
+  const types = visibleTypes(user);
+  if (all && types.length) {
     await db.sequelize.query(
       `INSERT INTO platform_notification_reads (user_id, notification_id)
-       SELECT :userId, n.id FROM platform_notifications n WHERE n.id IN (:ids) ON CONFLICT DO NOTHING`,
-      { replacements: { userId: user.id, ids } }
+       SELECT :userId, n.id FROM platform_notifications n
+       WHERE n.type IN (:types)
+         AND NOT EXISTS (SELECT 1 FROM platform_notification_reads r WHERE r.user_id = :userId AND r.notification_id = n.id)
+       ON CONFLICT DO NOTHING`,
+      { replacements: { userId: user.id, types } }
+    );
+  } else if (!all && ids && ids.length && types.length) {
+    await db.sequelize.query(
+      `INSERT INTO platform_notification_reads (user_id, notification_id)
+       SELECT :userId, n.id FROM platform_notifications n WHERE n.id IN (:ids) AND n.type IN (:types) ON CONFLICT DO NOTHING`,
+      { replacements: { userId: user.id, ids, types } }
     );
   }
   return { unread: await unreadCount(user) };

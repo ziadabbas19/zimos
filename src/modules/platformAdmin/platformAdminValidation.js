@@ -199,6 +199,8 @@ const blockBody = Joi.object({
 // looks it up in platform_roles.
 const roleKey = Joi.string().pattern(/^[a-z][a-z0-9_]{1,63}$/);
 const permissionList = Joi.array().items(Joi.string().trim().max(64)).max(64).unique();
+const roleName = Joi.string().trim().min(2).max(100);
+const roleDescription = Joi.string().trim().max(500).allow('', null);
 
 // The discount fields have to agree with each other (a percentage has no
 // currency, 'none' has no value, ...); referralCodeService checks that on
@@ -470,6 +472,19 @@ module.exports = {
     body: Joi.object({ role: roleKey, permissions: permissionList }).min(1),
   },
   revokeAdmin: { params: Joi.object({ userId: uuid.required() }) },
+
+  createRole: {
+    body: Joi.object({
+      name: roleName.required(),
+      description: roleDescription,
+      permissions: permissionList.required(),
+    }),
+  },
+  updateRole: {
+    params: Joi.object({ roleKey: roleKey.required() }),
+    body: Joi.object({ name: roleName, description: roleDescription, permissions: permissionList }).min(1),
+  },
+  deleteRole: { params: Joi.object({ roleKey: roleKey.required() }) },
 
   createAgent: {
     body: Joi.object({

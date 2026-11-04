@@ -291,6 +291,18 @@ const listRoles = asyncHandler(async (req, res) => {
   res.json(await adminUsers.listRoles());
 });
 
+const createRole = asyncHandler(async (req, res) => {
+  res.status(201).json({ role: await adminUsers.createRole(req.body, req) });
+});
+
+const updateRole = asyncHandler(async (req, res) => {
+  res.json({ role: await adminUsers.updateRole(req.params.roleKey, req.body, req) });
+});
+
+const deleteRole = asyncHandler(async (req, res) => {
+  res.json(await adminUsers.deleteRole(req.params.roleKey, req));
+});
+
 const listAdmins = asyncHandler(async (req, res) => {
   res.json({ admins: await adminUsers.listAdmins(req.user.id) });
 });
@@ -330,7 +342,7 @@ const searchUsers = asyncHandler(async (req, res) => {
 });
 
 const getUser = asyncHandler(async (req, res) => {
-  res.json({ user: await userSearch.getUser(req.params.userId) });
+  res.json({ user: await userSearch.getUser(req.params.userId, req.user) });
 });
 
 const suspendUser = asyncHandler(async (req, res) => {
@@ -507,6 +519,9 @@ module.exports = {
   listGateways,
   checkGateway,
   listRoles,
+  createRole,
+  updateRole,
+  deleteRole,
   listAdmins,
   searchUsers,
   getUser,

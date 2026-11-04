@@ -101,7 +101,8 @@ async function useBackupCode(user, code, req) {
  * The platform's reset, for a person who lost every way through the second step.
  * Who may be reset follows the console's other account actions
  * (platformAdmin/userModerationService.lockTarget): never your own account, a
- * creator's only by a creator, another console account only with admins.manage.
+ * creator's only by a creator, another console account only with admins.manage
+ * and holding every key on it.
  */
 async function adminReset(userId, req) {
   const { lockTarget } = require('../platformAdmin/userModerationService');

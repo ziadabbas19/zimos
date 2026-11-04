@@ -145,6 +145,100 @@ describe('console moderation of console accounts', () => {
     expect(onMerchant.status).toBe(200);
   });
 
+  describe('an account above the actor', () => {
+    const manager = async () => {
+      const actor = await makePlatformUser('admin');
+      await db.User.update({ platformPermissions: ['workspaces.view', 'workspaces.manage', 'admins.manage', 'support.view'] }, { where: { id: actor.userId } });
+      return actor;
+    };
+    const holding = async (permissions) => {
+      const account = await makePlatformUser('admin');
+      await db.User.update({ platformPermissions: permissions }, { where: { id: account.userId } });
+      return account;
+    };
+    const notHeld = (res) => {
+      expect(res.status).toBe(403);
+      expect(res.body.error.code).toBe('PERMISSION_NOT_HELD');
+    };
+
+    it('is not suspended, lifted or deleted by them, and stays as it was', async () => {
+      const actor = await manager();
+      const above = await holding(['support.view', 'plans.manage']);
+
+      notHeld(await post(actor, above.userId, 'suspend', { reason: 'Testing', confirm: true }));
+      notHeld(await post(actor, above.userId, 'delete', { confirm: true }));
+      const row = await db.User.findByPk(above.userId);
+      expect(row.status).toBe('active');
+      expect(row.deletedAt).toBeNull();
+      expect(await db.Session.count({ where: { userId: above.userId, revokedAt: null } })).toBeGreaterThan(0);
+
+      // Someone above them was suspended by a creator: not theirs to lift either.
+      const creator = await makePlatformUser('creator');
+      expect((await post(creator, above.userId, 'suspend', { reason: 'Testing', confirm: true })).status).toBe(200);
+      notHeld(await post(actor, above.userId, 'unsuspend', { confirm: true }));
+      expect((await db.User.findByPk(above.userId)).status).toBe('suspended');
+      expect(await db.AuditLog.count({ where: { action: 'user.delete' } })).toBe(0);
+    });
+
+    it('within what they hold, an equal one or an agent, is theirs to act on', async () => {
+      const actor = await manager();
+      for (const account of [await holding(['support.view']), await holding(['workspaces.view', 'workspaces.manage', 'admins.manage', 'support.view']), await makePlatformUser('agent')]) {
+        expect((await post(actor, account.userId, 'suspend', { reason: 'Testing', confirm: true })).status).toBe(200);
+        expect((await post(actor, account.userId, 'unsuspend', { confirm: true })).status).toBe(200);
+        expect((await post(actor, account.userId, 'delete', { confirm: true })).status).toBe(200);
+      }
+    });
+
+    it('is acted on by a creator, with no key on the row', async () => {
+      const creator = await makePlatformUser('creator');
+      await db.User.update({ platformPermissions: [] }, { where: { id: creator.userId } });
+      const above = await holding(['plans.manage', 'risk.manage']);
+      expect((await post(creator, above.userId, 'suspend', { reason: 'Testing', confirm: true })).status).toBe(200);
+      expect((await post(creator, above.userId, 'delete', { confirm: true })).status).toBe(200);
+    });
+
+    it("doesn't change the answer about their own account", async () => {
+      const actor = await manager();
+      const self = await post(actor, actor.userId, 'suspend', { reason: 'Testing', confirm: true });
+      expect(self.status).toBe(409);
+      expect(self.body.error.code).toBe('CANNOT_ACT_ON_SELF');
+    });
+
+    it('shows in the user page whether the viewer may act on the account, with no list of its keys', async () => {
+      const actor = await manager();
+      const creator = await makePlatformUser('creator');
+      const above = await holding(['support.view', 'plans.manage']);
+      const below = await holding(['support.view']);
+      const agent = await makePlatformUser('agent');
+      const merchant = await registerAndActivate();
+      const seen = async (viewer, userId) => {
+        const res = await request(app).get(`/api/v1/admin/users/${userId}`).set(viewer.H);
+        expect(res.status).toBe(200);
+        expect(res.body.user).not.toHaveProperty('platformPermissions');
+        return res.body.user.canActOn;
+      };
+
+      expect(await seen(actor, above.userId)).toBe(false);
+      expect(await seen(actor, creator.userId)).toBe(false);
+      expect(await seen(actor, actor.userId)).toBe(false);
+      expect(await seen(actor, below.userId)).toBe(true);
+      expect(await seen(actor, agent.userId)).toBe(true);
+      expect(await seen(actor, merchant.userId)).toBe(true);
+
+      expect(await seen(creator, above.userId)).toBe(true);
+      expect(await seen(creator, creator.userId)).toBe(false);
+
+      // Without admins.manage: a merchant only.
+      const storesOnly = await holding(['workspaces.view', 'workspaces.manage']);
+      expect(await seen(storesOnly, below.userId)).toBe(false);
+      expect(await seen(storesOnly, merchant.userId)).toBe(true);
+
+      // A creator's account, to another creator.
+      const second = await makePlatformUser('creator');
+      expect(await seen(creator, second.userId)).toBe(true);
+    });
+  });
+
   it('the target id is matched whatever its case', async () => {
     const creator = await makePlatformUser('creator');
     const self = await post(creator, creator.userId.toUpperCase(), 'suspend', { reason: 'Testing', confirm: true });

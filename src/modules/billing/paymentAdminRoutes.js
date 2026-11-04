@@ -3,7 +3,7 @@
 const { Router } = require('express');
 const validate = require('../../core/middleware/validate');
 const { authenticate } = require('../../core/middleware/authenticate');
-const { requirePlatformPermission: can } = require('../../core/middleware/platformAdminGuard');
+const { requirePlatformPermission: can, requireAnyPlatformPermission: canAny } = require('../../core/middleware/platformAdminGuard');
 const { PLATFORM_PERMISSIONS: P } = require('../../core/security/platformPermissions');
 const payments = require('./paymentController');
 const schemas = require('./billingValidation');
@@ -11,13 +11,19 @@ const schemas = require('./billingValidation');
 // Mounted at /api/v1/admin. The ways merchants pay (billing/paymentMethodService)
 // and the transfer proofs waiting for review (billing/paymentProofService).
 // Reading both is for whoever records payments; turning methods on and off
-// and a manual method's number are separate keys, the creator's by default.
+// and a manual method's number are separate keys, the creator's by default,
+// and whoever holds one can read the page it edits.
 // `authenticate` is on each route, not router.use: this router shares the
 // /admin prefix, and every other /admin request passes through it.
 const router = Router();
 const allow = (permission) => [authenticate, can(permission)];
 
-router.get('/payment-methods', ...allow(P.PAYMENTS_RECORD), payments.adminListPaymentMethods);
+router.get(
+  '/payment-methods',
+  authenticate,
+  canAny([P.PAYMENTS_RECORD, P.PAYMENT_METHODS_MANAGE, P.PAYMENT_METHODS_EDIT_NUMBERS]),
+  payments.adminListPaymentMethods
+);
 router.put('/payment-methods/order', ...allow(P.PAYMENT_METHODS_MANAGE), validate(schemas.adminReorderPaymentMethods), payments.adminReorderPaymentMethods);
 router.patch('/payment-methods/:code', ...allow(P.PAYMENT_METHODS_MANAGE), validate(schemas.adminUpdatePaymentMethod), payments.adminUpdatePaymentMethod);
 router.patch(

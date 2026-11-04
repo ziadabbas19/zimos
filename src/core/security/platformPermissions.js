@@ -1,5 +1,7 @@
 'use strict';
 
+const { AppError } = require('../errors/AppError');
+
 /**
  * Canonical list of platform-console permission keys. Every /api/v1/admin
  * route declares exactly one of these (core/middleware/platformAdminGuard.js);
@@ -11,11 +13,15 @@
  *
  * Roles are data (the `platform_roles` table): each one names a default
  * permission set that is copied onto an account when the role is assigned,
- * and a creator can then edit that account's set. So a check is always
- * "does this account hold the key", never "what role is it".
+ * and a creator can then edit that account's set. So a check is "does this
+ * account hold the key", never "what role is it" — with one exception below.
+ * Besides the three seeded roles, the console creates custom ones
+ * (platformAdmin/adminUsersService).
  *
  * '*' means every key, including ones added later, and is reserved for the
- * creator role — the same convention as the workspace Owner's '*'.
+ * creator role — the same convention as the workspace Owner's '*'. A creator
+ * holds everything whatever their row says; on any other role '*' grants
+ * nothing, so a row edited by hand can't turn into a second creator.
  *
  * Adding a key here means a migration that adds it to the `admin` role's
  * default set and to the admins who should have it; creators get it through
@@ -91,10 +97,30 @@ const PLATFORM_ROLES = Object.freeze({
   AGENT: 'agent',
 });
 
+const isBuiltInRole = (key) => Object.values(PLATFORM_ROLES).includes(key);
+
 function hasPlatformPermission(user, permission) {
   if (!user || !user.platformRole) return false;
+  if (user.platformRole === PLATFORM_ROLES.CREATOR) return true;
   const held = Array.isArray(user.platformPermissions) ? user.platformPermissions : [];
-  return held.includes(WILDCARD) || held.includes(permission);
+  return held.includes(permission);
+}
+
+/**
+ * The refusal for acting on an account holding a key the actor doesn't hold, or
+ * null. An agent's own key doesn't count: anyone managing users may give it
+ * without holding it, so they may take it back the same way.
+ */
+function outOfReach(actor, account) {
+  if (!account.platformRole) return null;
+  const held = Array.isArray(account.platformPermissions) ? account.platformPermissions : [];
+  const missing = held.filter(
+    (key) =>
+      !hasPlatformPermission(actor, key) &&
+      !(account.platformRole === PLATFORM_ROLES.AGENT && key === PLATFORM_PERMISSIONS.REFERRALS_VIEW_OWN)
+  );
+  if (missing.length === 0) return null;
+  return new AppError('PERMISSION_NOT_HELD', `This account holds permissions you don't hold yourself (missing: ${missing.join(', ')}).`, 403);
 }
 
 module.exports = {
@@ -103,4 +129,6 @@ module.exports = {
   PLATFORM_ROLES,
   WILDCARD,
   hasPlatformPermission,
+  isBuiltInRole,
+  outOfReach,
 };
