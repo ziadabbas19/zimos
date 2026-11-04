@@ -133,24 +133,15 @@ describe('custom console roles', () => {
     expect(await audits('platform_admin.update')).toHaveLength(2);
   });
 
-  it('keeps a role edit to keys its author holds, and off the role they hold themselves', async () => {
+  it('keeps a role edit off the role its author holds themselves', async () => {
     const creator = await makePlatformUser('creator');
-    const { body } = await createRole(creator, { name: 'Managers', permissions: ['admins.manage', 'support.view', 'plans.view'] });
-    const key = body.role.key;
-
+    const { body } = await createRole(creator, { name: 'Managers', permissions: ['admins.manage', 'support.view'] });
     const member = await makeUser();
-    await grant(creator, { email: member.email, role: key });
-    const own = await editRole(member, key, { permissions: ['admins.manage'] });
+    await grant(creator, { email: member.email, role: body.role.key });
+
+    const own = await editRole(member, body.role.key, { permissions: ['admins.manage'] });
     expect(own.status).toBe(409);
     expect(own.body.error.code).toBe('CANNOT_EDIT_SELF');
-
-    const outsider = await adminHolding(['admins.manage', 'support.view']);
-    // plans.view stays though the author doesn't hold it: keeping a key is not granting it.
-    expect((await editRole(outsider, key, { permissions: ['admins.manage', 'support.view', 'plans.view'] })).status).toBe(200);
-    const refused = await editRole(outsider, key, { permissions: ['admins.manage', 'support.view', 'plans.view', 'risk.view'] });
-    expect(refused.status).toBe(403);
-    expect(refused.body.error.code).toBe('PERMISSION_NOT_HELD');
-    expect((await editRole(outsider, key, { permissions: ['*'] })).status).toBe(422);
   });
 
   it('leaves the seeded roles alone', async () => {
@@ -179,6 +170,110 @@ describe('custom console roles', () => {
     expect((await removeRole(creator, key)).status).toBe(200);
     expect(await db.PlatformRole.findByPk(key)).toBeNull();
     expect(await audits('platform_role.delete')).toHaveLength(1);
+  });
+});
+
+describe('nobody gives what they do not hold', () => {
+  const notHeld = (res) => {
+    expect(res.status).toBe(403);
+    expect(res.body.error.code).toBe('PERMISSION_NOT_HELD');
+  };
+
+  it('refuses the admin role from someone holding only admins.manage, by grant and by role change', async () => {
+    const manager = await adminHolding(['admins.view', 'admins.manage']);
+    const person = await makeUser();
+    notHeld(await grant(manager, { email: person.email, role: 'admin' }));
+    expect((await db.User.findByPk(person.userId)).platformRole).toBeNull();
+
+    const agent = await makePlatformUser('agent');
+    notHeld(await edit(manager, agent.userId, { role: 'admin' }));
+    expect((await db.User.findByPk(agent.userId)).platformRole).toBe('agent');
+    expect(await audits('platform_admin.grant')).toHaveLength(0);
+    expect(await audits('platform_admin.update')).toHaveLength(0);
+  });
+
+  it('gives the admin role from someone holding all of it, or a smaller set of what they hold', async () => {
+    const adminRole = await db.PlatformRole.findByPk('admin');
+    const full = await adminHolding([...adminRole.defaultPermissions, 'admins.manage']);
+    const person = await makeUser();
+    const given = await grant(full, { email: person.email, role: 'admin' });
+    expect(given.status).toBe(201);
+    expect(given.body.admin.permissions).toEqual(adminRole.defaultPermissions);
+
+    const partial = await adminHolding(['admins.manage', 'support.view']);
+    const other = await makeUser();
+    const smaller = await grant(partial, { email: other.email, role: 'admin', permissions: ['support.view'] });
+    expect(smaller.status).toBe(201);
+    expect(smaller.body.admin.permissions).toEqual(['support.view']);
+
+    const third = await makeUser();
+    notHeld(await grant(partial, { email: third.email, role: 'admin', permissions: ['support.view', 'plans.view'] }));
+  });
+
+  it('still gives the agent role from someone without its key, and only that key', async () => {
+    const manager = await adminHolding(['admins.view', 'admins.manage']);
+    const person = await makeUser();
+    const given = await grant(manager, { email: person.email, role: 'agent' });
+    expect(given.status).toBe(201);
+    expect(given.body.admin).toMatchObject({ role: 'agent', permissions: ['referrals.view_own'] });
+    expect((await read(person, '/my/referrals')).status).toBe(200);
+
+    const admin = await makePlatformUser('admin');
+    const moved = await edit(manager, admin.userId, { role: 'agent' });
+    expect(moved.status).toBe(200);
+    expect(moved.body.admin).toMatchObject({ role: 'agent', permissions: ['referrals.view_own'] });
+
+    const third = await makeUser();
+    notHeld(await grant(manager, { email: third.email, role: 'agent', permissions: ['referrals.view_own', 'plans.view'] }));
+  });
+
+  it('lets a creator give anything, with no key on the row', async () => {
+    const creator = await makePlatformUser('creator');
+    await db.User.update({ platformPermissions: [] }, { where: { id: creator.userId } });
+    const person = await makeUser();
+    const given = await grant(creator, { email: person.email, role: 'admin' });
+    expect(given.status).toBe(201);
+    const made = await createRole(creator, { name: 'Everything but', permissions: ['plans.manage', 'risk.manage'] });
+    expect(made.status).toBe(201);
+    expect((await editRole(creator, made.body.role.key, { name: 'Renamed by creator' })).status).toBe(200);
+  });
+
+  it('keeps a custom role with a key the author lacks out of their reach, whatever they mean to do', async () => {
+    const creator = await makePlatformUser('creator');
+    const { body } = await createRole(creator, { name: 'Higher', permissions: ['support.view', 'plans.manage'] });
+    const key = body.role.key;
+    const outsider = await adminHolding(['admins.manage', 'support.view']);
+
+    notHeld(await editRole(outsider, key, { name: 'Renamed' }));
+    notHeld(await editRole(outsider, key, { permissions: ['support.view', 'plans.manage'] }));
+    notHeld(await editRole(outsider, key, { permissions: ['support.view'] }));
+    notHeld(await editRole(outsider, key, { permissions: ['support.view', 'plans.manage', 'risk.view'] }));
+    notHeld(await removeRole(outsider, key));
+    const kept = await db.PlatformRole.findByPk(key);
+    expect(kept.name).toBe('Higher');
+    expect(kept.defaultPermissions).toEqual(['support.view', 'plans.manage']);
+  });
+
+  it('lets the author edit and delete a role within what they hold, and add nothing beyond it', async () => {
+    const creator = await makePlatformUser('creator');
+    const { body } = await createRole(creator, { name: 'Within', permissions: ['support.view'] });
+    const key = body.role.key;
+    const manager = await adminHolding(['admins.manage', 'support.view', 'support.manage']);
+
+    expect((await editRole(manager, key, { name: 'Renamed', permissions: ['support.view', 'support.manage'] })).status).toBe(200);
+    notHeld(await editRole(manager, key, { permissions: ['support.view', 'plans.view'] }));
+    expect((await editRole(manager, key, { permissions: ['*'] })).status).toBe(422);
+    expect((await removeRole(manager, key)).status).toBe(200);
+  });
+
+  it('leaves what an account already holds alone when someone without it edits that account', async () => {
+    const person = await makePlatformUser('admin');
+    await db.User.update({ platformPermissions: ['plans.manage', 'support.view'] }, { where: { id: person.userId } });
+    const manager = await adminHolding(['admins.manage', 'support.view', 'support.manage']);
+
+    const kept = await edit(manager, person.userId, { permissions: ['plans.manage', 'support.view', 'support.manage'] });
+    expect(kept.status).toBe(200);
+    notHeld(await edit(manager, person.userId, { permissions: ['plans.manage', 'support.view', 'support.manage', 'risk.view'] }));
   });
 });
 

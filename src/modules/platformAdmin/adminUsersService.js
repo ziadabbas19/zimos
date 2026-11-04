@@ -38,16 +38,17 @@ const {
  *   - the last creator is never demoted or revoked;
  *   - '*' (every permission) belongs to the creator role only, and a creator
  *     always holds it;
- *   - a set may only hold keys the actor holds themselves, or keys in a seeded
- *     role's own default set (so an admin can create an agent without holding
- *     the agent-only key).
+ *   - nobody gives what they don't hold: a set, or a role's default set, may
+ *     only hold keys the actor holds themselves. The one exception is the agent
+ *     role's own default set, so an admin can create an agent without holding
+ *     the agent-only key. A creator holds everything, so a creator passes.
  *
  * Custom roles (createRole and below) are a name and a default set, and follow
- * the same rules: a role can't hand out what its author doesn't hold, and a
- * custom role is assigned only by someone holding all of it. Changing a role's
- * set changes the accounts holding it: a key added reaches them all, a key
- * removed leaves them all, and whatever else was adjusted per account stays.
- * The seeded roles are fixed: code relies on them and migrations write to them.
+ * the same rule: only someone holding all of a custom role can make it, edit it
+ * or delete it. Changing a role's set changes the accounts holding it: a key
+ * added reaches them all, a key removed leaves them all, and whatever else was
+ * adjusted per account stays. The seeded roles are fixed: code relies on them
+ * and migrations write to them.
  *
  * `authenticate` reloads the user on every request, so a change takes effect
  * on that user's very next call; no token has to expire first.
@@ -185,7 +186,7 @@ function resolvePermissions(role, requested, actor, current = []) {
   const set = [...new Set(requested === undefined ? defaults : requested)];
   if (requested !== undefined) requireKnownKeys(set);
 
-  const exempt = isBuiltInRole(role.key) ? defaults : [];
+  const exempt = role.key === PLATFORM_ROLES.AGENT ? defaults : [];
   requireHeld(set.filter((key) => !exempt.includes(key) && !current.includes(key)), actor);
   return set;
 }
@@ -406,7 +407,9 @@ const roleState = (role) => ({ name: role.name, description: role.description, d
 
 /**
  * Locks a custom role, then the accounts holding it and the requester in id
- * order, and re-checks the requester under that lock, as a role change does.
+ * order, and re-checks the requester under that lock, as a role change does. A
+ * role holding a key the requester doesn't hold is out of their reach whatever
+ * they mean to do to it: renaming, keeping or removing that key, or deleting it.
  */
 async function lockCustomRole(roleKey, req, transaction) {
   const role = await db.PlatformRole.findByPk(roleKey, { transaction, lock: transaction.LOCK.UPDATE });
@@ -425,6 +428,7 @@ async function lockCustomRole(roleKey, req, transaction) {
   if (!requester || requester.status !== 'active' || requester.deletedAt || !hasPlatformPermission(requester, PLATFORM_PERMISSIONS.ADMINS_MANAGE)) {
     throw new AuthorizationError(`Missing required platform permission: ${PLATFORM_PERMISSIONS.ADMINS_MANAGE}`);
   }
+  requireHeld(role.defaultPermissions, requester);
   return { role, requester, holders: rows.filter((u) => u.platformRole === role.key) };
 }
 

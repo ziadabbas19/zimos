@@ -125,7 +125,7 @@ describe('console notifications', () => {
     expect((await request(app).put('/api/v1/admin/notification-prefs').set(a.H).send({ prefs: [{ type: 'nope', enabled: true }] })).status).toBe(422);
   });
 
-  it('needs a console permission', async () => {
+  it('needs a console account', async () => {
     const merchant = await registerAndActivate();
     const H = { Authorization: `Bearer ${merchant.accessToken}` };
     expect((await request(app).get('/api/v1/admin/notifications').set(H)).status).toBe(403);
@@ -196,5 +196,55 @@ describe('console notifications by permission', () => {
     const payments = await consoleUser(['overview.view', 'payments.record', 'subscriptions.view']);
     const forPayments = (await request(app).get('/api/v1/admin/notifications').set(payments.H)).body.notifications.map((n) => n.type).sort();
     expect(forPayments).toEqual(['payment_proof_submitted', 'wallet_fallback']);
+  });
+
+  it('opens for any console account, overview.view or not, and tells each only what its permissions open', async () => {
+    await db.sequelize.query('DELETE FROM platform_notifications');
+    await notifications.notify({ type: 'payment_proof_submitted', title: 'Proof' });
+    await notifications.notify({ type: 'support_ticket', title: 'Ticket' });
+
+    const support = await consoleUser(['support.view']);
+    const list = await request(app).get('/api/v1/admin/notifications').set(support.H);
+    expect(list.status).toBe(200);
+    expect(list.body.notifications.map((n) => n.title)).toEqual(['Ticket']);
+    expect(list.body.unread).toBe(1);
+    expect((await request(app).get('/api/v1/admin/notifications/unread-count').set(support.H)).body.unread).toBe(1);
+    expect((await request(app).get('/api/v1/admin/notifications?type=payment_proof_submitted').set(support.H)).body.notifications).toEqual([]);
+    expect((await request(app).get('/api/v1/admin/notification-prefs').set(support.H)).body.prefs.map((p) => p.type).sort()).toEqual(['suggestion', 'support_ticket']);
+
+    // No keys, and an agent: the bell works and is empty.
+    for (const who of [await consoleUser([]), await makePlatformUser('agent')]) {
+      const empty = await request(app).get('/api/v1/admin/notifications').set(who.H);
+      expect(empty.status).toBe(200);
+      expect(empty.body).toMatchObject({ notifications: [], unread: 0 });
+      expect((await request(app).get('/api/v1/admin/notifications/unread-count').set(who.H)).body.unread).toBe(0);
+      expect((await request(app).get('/api/v1/admin/notification-prefs').set(who.H)).body.prefs).toEqual([]);
+      expect((await request(app).post('/api/v1/admin/notifications/read').set(who.H).send({ all: true })).status).toBe(200);
+    }
+  });
+
+  it('marks read only what the account can see, by id as well as all', async () => {
+    await db.sequelize.query('DELETE FROM platform_notifications');
+    await notifications.notify({ type: 'payment_proof_submitted', title: 'Proof' });
+    await notifications.notify({ type: 'support_ticket', title: 'Ticket' });
+    const [proof] = await rows('payment_proof_submitted');
+    const [ticket] = await rows('support_ticket');
+    const reads = async (userId) => {
+      const found = await db.sequelize.query('SELECT notification_id FROM platform_notification_reads WHERE user_id = :userId', {
+        replacements: { userId },
+        type: QueryTypes.SELECT,
+      });
+      return found.map((r) => r.notification_id);
+    };
+
+    const support = await consoleUser(['support.view']);
+    const res = await request(app).post('/api/v1/admin/notifications/read').set(support.H).send({ ids: [proof.id, ticket.id] });
+    expect(res.status).toBe(200);
+    expect(res.body.unread).toBe(0);
+    expect(await reads(support.userId)).toEqual([ticket.id]);
+
+    const nobody = await consoleUser([]);
+    expect((await request(app).post('/api/v1/admin/notifications/read').set(nobody.H).send({ ids: [proof.id] })).status).toBe(200);
+    expect(await reads(nobody.userId)).toEqual([]);
   });
 });
