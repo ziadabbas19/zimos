@@ -2,8 +2,8 @@
 
 const { Op, QueryTypes } = require('sequelize');
 const db = require('../../db/models');
-const { ConflictError, NotFoundError } = require('../../core/errors/AppError');
-const { PLATFORM_ROLES, PLATFORM_PERMISSIONS } = require('../../core/security/platformPermissions');
+const { AuthorizationError, ConflictError, NotFoundError } = require('../../core/errors/AppError');
+const { PLATFORM_ROLES, PLATFORM_PERMISSIONS, hasPlatformPermission } = require('../../core/security/platformPermissions');
 const adminUsers = require('../platformAdmin/adminUsersService');
 const { DEFAULT_COMMISSION_RATE_BP } = require('./commissionPolicy');
 const referralCodes = require('./referralCodeService');
@@ -16,8 +16,8 @@ const referralCodes = require('./referralCodeService');
  * Per code: merchants referred (subscriptions the code is attached to) and
  * the suggested commission split pending / marked paid, per currency.
  *
- * `getAgent(id, { forAgent: true })` is the agent's own read-only view,
- * reached only through /admin/my/referrals with their own id.
+ * `getAgent(id, { forAgent: true })` is the account's own view, reached only
+ * through /admin/my/referrals with their own id.
  */
 
 const AGENT_ATTRIBUTES = ['id', 'email', 'fullName', 'status', 'platformRole', 'lastLoginAt', 'createdAt'];
@@ -244,23 +244,28 @@ async function getAgent(agentId, { forAgent = false } = {}) {
     agent: agentWithCodes(user, codes, stats, totals),
     merchants: [...(await referredMerchants(codes)), ...(await linkedMerchants(agentId))],
     defaultCommissionRateBp: DEFAULT_COMMISSION_RATE_BP,
+    v2Enabled: referralCodes.v2Enabled(),
   };
 }
 
 /**
  * Gives an existing, active account the agent role and, optionally, its
- * first referral code, atomically. Gated by agents.manage, not admins.manage:
+ * first referral code, atomically. Gated by agents.create, not admins.manage:
  * this path can only ever assign the agent role and the agent's default
- * permission set.
+ * permission set. The first code is live at once, so it takes agents.manage
+ * as any code made from the console does.
  */
 async function createAgent({ email, firstCode }, req) {
+  if (firstCode && !hasPlatformPermission(req.user, PLATFORM_PERMISSIONS.AGENTS_MANAGE)) {
+    throw new AuthorizationError(`Missing required platform permission: ${PLATFORM_PERMISSIONS.AGENTS_MANAGE}`);
+  }
   return db.sequelize.transaction(async (transaction) => {
     const { user, granted } = await adminUsers.grantRoleInTransaction(
       { email, role: PLATFORM_ROLES.AGENT },
       req,
       transaction,
       // What this route asks of the requester, read again under the lock.
-      { permission: PLATFORM_PERMISSIONS.AGENTS_MANAGE }
+      { permission: PLATFORM_PERMISSIONS.AGENTS_CREATE }
     );
     if (!granted) {
       throw new ConflictError('That account is already an agent. Add a code from their page instead.', 'ALREADY_AGENT');

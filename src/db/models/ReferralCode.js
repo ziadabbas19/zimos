@@ -42,6 +42,14 @@ module.exports = (sequelize, DataTypes) => {
       grantType: { type: DataTypes.STRING(20), allowNull: true, field: 'grant_type' },
       grantValue: { type: DataTypes.BIGINT, allowNull: true, field: 'grant_value' },
       updatedByUserId: { type: DataTypes.UUID, allowNull: true, field: 'updated_by_user_id' },
+      // A creator's review of what its owner made or changed (migration 742).
+      approvalStatus: { type: DataTypes.STRING(20), allowNull: false, defaultValue: 'approved', field: 'approval_status' },
+      approvalNote: { type: DataTypes.TEXT, allowNull: true, field: 'approval_note' },
+      changesRejected: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false, field: 'changes_rejected' },
+      // The owner's change to an approved code, as columns: nothing prices with it until it is approved.
+      pendingChanges: { type: DataTypes.JSONB, allowNull: true, field: 'pending_changes' },
+      reviewedByUserId: { type: DataTypes.UUID, allowNull: true, field: 'reviewed_by_user_id' },
+      reviewedAt: { type: DataTypes.DATE, allowNull: true, field: 'reviewed_at' },
     },
     { tableName: 'referral_codes' }
   );

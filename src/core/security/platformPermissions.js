@@ -71,11 +71,19 @@ const PLATFORM_PERMISSIONS = Object.freeze({
   ADMINS_MANAGE: 'admins.manage',
   // Every agent, their codes and the whole commission ledger.
   AGENTS_VIEW: 'agents.view',
-  // Creating agents, and creating/editing/deactivating referral codes.
+  // Creating/editing/deactivating referral codes.
   AGENTS_MANAGE: 'agents.manage',
+  // Giving an account the agent role. Held through '*' only, like the payment
+  // methods: no migration adds it to the admin role or to any admin, so a
+  // creator grants it by hand.
+  AGENTS_CREATE: 'agents.create',
+  // Approving or rejecting a code an agent made or changed. Held through '*'
+  // only as well.
+  REFERRAL_CODES_APPROVE: 'referral_codes.approve',
   // The ledger's one write: flipping a row to marked_paid.
   COMMISSIONS_MARK_PAID: 'commissions.mark_paid',
-  // An agent's own codes, referred merchants and ledger rows, read-only.
+  // An account's own codes, referred merchants and ledger rows, and making or
+  // changing its own codes (which wait for a creator's review), nobody else's.
   REFERRALS_VIEW_OWN: 'referrals.view_own',
   // The platform's public details (modules/platformSettings): reading them, and
   // saving, resetting and reverting them. Held through '*' only, like the
