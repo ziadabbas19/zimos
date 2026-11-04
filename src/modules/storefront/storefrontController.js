@@ -32,11 +32,15 @@ const getStore = asyncHandler(async (req, res) => {
 // Products and collections come back in the shopper's language when the store
 // has it translated (X-Store-Locale; modules/translations) — originals otherwise.
 const i18n = require('../translations/translations');
+const { wantsCards, omitCardFields } = require('./publicProduct');
 const plain = (row) => (row && typeof row.toJSON === 'function' ? row.toJSON() : row);
 const listProducts = asyncHandler(async (req, res) => {
   const ws = req.tenant.workspaceId;
   const result = await cache.cached(ws, `products?${cache.queryKey(req.query)}`, () => service.listProducts(ws, req.query));
-  if (result && Array.isArray(result.products)) await i18n.localizeProducts(req, result.products);
+  if (result && Array.isArray(result.products)) {
+    await i18n.localizeProducts(req, result.products);
+    if (wantsCards(req.query)) result.products.forEach(omitCardFields);
+  }
   res.json(result);
 });
 const getProduct = asyncHandler(async (req, res) => {

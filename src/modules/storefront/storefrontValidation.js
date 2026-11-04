@@ -34,6 +34,8 @@ module.exports = {
       facets: Joi.boolean().optional(),
       limit: Joi.number().integer().min(1).max(100).default(24),
       cursor: uuid.optional(),
+      // `card`: only what a product card draws (storefront/publicProduct.js). Absent: the whole product, as ever.
+      fields: Joi.string().valid('card').optional(),
     }),
   },
   suggest: {

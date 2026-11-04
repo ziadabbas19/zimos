@@ -5,7 +5,7 @@ const db = require('../../db/models');
 const env = require('../../config/env');
 const { NotFoundError } = require('../../core/errors/AppError');
 const { ancestryOf, descendantsOf } = require('../catalog/collectionTree');
-const { loadPublicProducts } = require('./publicProduct');
+const { loadPublicProducts, wantsCards } = require('./publicProduct');
 const { notHiddenSql } = require('../catalog/productPage');
 
 /*
@@ -556,10 +556,23 @@ async function searchProducts(workspaceId, query) {
     b.bind
   );
 
-  const total = rows.length > 0 ? Number(rows[0].total) : filters.search ? 0 : await countOnly(filters);
+  let rows;
+  let total;
+  if (!lean) {
+    rows = await page$;
+    total = rows.length > 0 ? Number(rows[0].total) : filters.search ? 0 : await countOnly(filters);
+  } else if (filters.search) {
+    // The matches were scored under these same filters, so they are the count.
+    rows = await page$;
+    total = rows.length > 0 ? filters.matchedIds.length : 0;
+  } else {
+    [rows, total] = await Promise.all([page$, countOnly(filters)]);
+  }
+  const card = wantsCards(query);
   const products = await loadPublicProducts(
     workspaceId,
-    rows.map((row) => row.id)
+    rows.map((row) => row.id),
+    { card }
   );
 
   const result = {
@@ -589,7 +602,7 @@ async function searchProducts(workspaceId, query) {
     // The top of the list by relevance, whatever order this page is in.
     const topIds = filters.matchedIds.slice(0, RELATED_FROM_TOP);
     const relatedIds = page === 1 ? await relatedFor(filters, topIds) : [];
-    result.related = await loadPublicProducts(workspaceId, relatedIds);
+    result.related = await loadPublicProducts(workspaceId, relatedIds, { card });
   }
   if (query.facets) result.facets = await facetsFor(filters, tree);
   return result;

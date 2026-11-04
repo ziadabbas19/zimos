@@ -11,7 +11,7 @@ const { publicNavPages } = require('../pages/pageFlags');
 const { publicGeneralSettings } = require('./generalSettings');
 const { resolveCatalogSettings } = require('./catalogSettings');
 const { presentStoreBump } = require('../checkout/orderBump');
-const { toPublicProduct, toPublicVariant, publicAttributes, publicInclude } = require('./publicProduct');
+const { toPublicProduct, toPublicVariant, publicAttributes, publicInclude, wantsCards } = require('./publicProduct');
 const productSearch = require('./productSearch');
 const { notHiddenSql } = require('../catalog/productPage');
 
@@ -50,11 +50,12 @@ async function listProducts(workspaceId, query = {}) {
     include.push({ model: db.Collection, as: 'collections', where: { id: collectionId }, attributes: [] });
   }
 
-  const products = await db.Product.findAll({ where, attributes: publicAttributes(), include, order: [['id', 'ASC']], limit: limit + 1 });
+  const card = wantsCards(query);
+  const products = await db.Product.findAll({ where, attributes: publicAttributes({ card }), include, order: [['id', 'ASC']], limit: limit + 1 });
   const hasMore = products.length > limit;
   const page = products.slice(0, limit);
 
-  return { products: page.map(toPublicProduct), nextCursor: hasMore ? page[page.length - 1].id : null };
+  return { products: page.map((row) => toPublicProduct(row, { card })), nextCursor: hasMore ? page[page.length - 1].id : null };
 }
 
 async function getProductBySlugOrId(workspaceId, idOrSlug) {

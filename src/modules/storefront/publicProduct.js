@@ -41,7 +41,29 @@ function toPublicOffer(offer) {
   };
 }
 
-function toPublicProduct(product) {
+/**
+ * What a product card never draws. `?fields=card` on the product list leaves
+ * these out (the columns are not read, so a list of long descriptions costs
+ * neither the database nor the page's HTML); without it a list answers as it
+ * always did. Page settings stay: a card's price depends on them (a countdown).
+ */
+const CARD_OMITS = ['description', 'seo', 'cms'];
+
+/** The list's own query: whether it asked for cards. */
+const wantsCards = (query) => Boolean(query) && query.fields === 'card';
+
+/** Takes those fields off a public product (a translation overlay can put a description back). */
+function omitCardFields(product) {
+  for (const field of CARD_OMITS) delete product[field];
+  return product;
+}
+
+function toPublicProduct(product, { card = false } = {}) {
+  const full = fullPublicProduct(product);
+  return card ? omitCardFields(full) : full;
+}
+
+function fullPublicProduct(product) {
   return {
     id: product.id,
     name: product.name,
@@ -76,7 +98,8 @@ function toPublicProduct(product) {
  * option group with an active choice (catalog/menuOptions.js publicGroups).
  * An EXISTS in the same SELECT, so a list costs no query per product.
  */
-const publicAttributes = () => ({
+const publicAttributes = ({ card = false } = {}) => ({
+  ...(card ? { exclude: CARD_OMITS } : {}),
   include: [
     [
       db.sequelize.literal(
@@ -100,15 +123,18 @@ const publicInclude = () => [
 ];
 
 /** Active products by id, in the order of `ids`, in their public shape. */
-async function loadPublicProducts(workspaceId, ids) {
+async function loadPublicProducts(workspaceId, ids, { card = false } = {}) {
   if (ids.length === 0) return [];
   const rows = await db.Product.findAll({
     where: { id: ids, workspaceId, status: 'active' },
-    attributes: publicAttributes(),
+    attributes: publicAttributes({ card }),
     include: publicInclude(),
   });
   const byId = new Map(rows.map((row) => [row.id, row]));
-  return ids.map((id) => byId.get(id)).filter(Boolean).map(toPublicProduct);
+  return ids
+    .map((id) => byId.get(id))
+    .filter(Boolean)
+    .map((row) => toPublicProduct(row, { card }));
 }
 
-module.exports = { toPublicVariant, toPublicOffer, toPublicProduct, publicAttributes, publicInclude, loadPublicProducts };
+module.exports = { toPublicVariant, toPublicOffer, toPublicProduct, publicAttributes, publicInclude, loadPublicProducts, wantsCards, omitCardFields };
