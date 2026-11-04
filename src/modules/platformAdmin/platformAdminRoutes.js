@@ -18,8 +18,9 @@ router.use(authenticate);
 // The couriers' areas map for every store.
 router.use(require('./carrierMapRoutes'));
 // Turning off a person's two-step sign-in after support checked who they are
-// (auth/twoFactorRecovery.js), while TWO_FACTOR_ENABLED is on.
-router.use('/users/:userId/two-factor', (req, res, next) =>
+// (auth/twoFactorRecovery.js), while TWO_FACTOR_ENABLED is on. The permission
+// is asked first, so the switch's answer goes only to whoever holds it.
+router.use('/users/:userId/two-factor', can(P.SUPPORT_MANAGE), (req, res, next) =>
   require('../../config/env').twoFactor.enabled ? next() : next(new (require('../../core/errors/AppError').AppError)('TWO_FACTOR_UNAVAILABLE', 'Two-step sign-in is not available', 404))
 );
 router.use(require('../auth/twoFactorRecovery').adminRouter);
@@ -169,6 +170,10 @@ router.post('/users/:userId/delete', can(P.WORKSPACES_MANAGE), validate(schemas.
 // creator may assign the creator role or change a creator's account; nobody
 // edits or revokes themselves; the last creator is never removed.
 router.get('/roles', can(P.ADMINS_VIEW), controller.listRoles);
+// Custom roles: a name and a permission set. The three seeded ones are fixed.
+router.post('/roles', can(P.ADMINS_MANAGE), validate(schemas.createRole), controller.createRole);
+router.patch('/roles/:roleKey', can(P.ADMINS_MANAGE), validate(schemas.updateRole), controller.updateRole);
+router.delete('/roles/:roleKey', can(P.ADMINS_MANAGE), validate(schemas.deleteRole), controller.deleteRole);
 router.get('/admins', can(P.ADMINS_VIEW), controller.listAdmins);
 router.post('/admins', can(P.ADMINS_MANAGE), validate(schemas.grantAdmin), controller.grantAdmin);
 router.patch('/admins/:userId', can(P.ADMINS_MANAGE), validate(schemas.updateAdmin), controller.updateAdmin);

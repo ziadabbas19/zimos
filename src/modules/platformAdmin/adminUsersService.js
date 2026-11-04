@@ -1,6 +1,7 @@
 'use strict';
 
-const { Op } = require('sequelize');
+const crypto = require('crypto');
+const { Op, col, fn, where: sqlWhere } = require('sequelize');
 const db = require('../../db/models');
 const {
   AppError,
@@ -17,6 +18,7 @@ const {
   PLATFORM_ROLES,
   WILDCARD,
   hasPlatformPermission,
+  isBuiltInRole,
 } = require('../../core/security/platformPermissions');
 
 /**
@@ -34,10 +36,18 @@ const {
  *   - only a creator assigns the creator role or changes a creator's account;
  *   - nobody edits or revokes their own access (another user has to);
  *   - the last creator is never demoted or revoked;
- *   - '*' (every permission) belongs to the creator role only;
- *   - an explicit set may only hold keys the actor holds themselves, or keys
- *     in the target role's own default set (so an admin can create an agent
- *     without holding the agent-only key).
+ *   - '*' (every permission) belongs to the creator role only, and a creator
+ *     always holds it;
+ *   - a set may only hold keys the actor holds themselves, or keys in a seeded
+ *     role's own default set (so an admin can create an agent without holding
+ *     the agent-only key).
+ *
+ * Custom roles (createRole and below) are a name and a default set, and follow
+ * the same rules: a role can't hand out what its author doesn't hold, and a
+ * custom role is assigned only by someone holding all of it. Changing a role's
+ * set changes the accounts holding it: a key added reaches them all, a key
+ * removed leaves them all, and whatever else was adjusted per account stays.
+ * The seeded roles are fixed: code relies on them and migrations write to them.
  *
  * `authenticate` reloads the user on every request, so a change takes effect
  * on that user's very next call; no token has to expire first.
@@ -80,12 +90,14 @@ function serializeAdmin(user, viewerId, roleNames = new Map()) {
   };
 }
 
-function serializeRole(role) {
+function serializeRole(role, holders = 0) {
   return {
     key: role.key,
     name: role.name,
     description: role.description,
     defaultPermissions: role.defaultPermissions,
+    builtIn: isBuiltInRole(role.key),
+    holders,
   };
 }
 
@@ -95,8 +107,17 @@ async function roleNameMap(transaction) {
 }
 
 async function listRoles() {
-  const roles = await db.PlatformRole.findAll({ order: [['createdAt', 'ASC'], ['key', 'ASC']] });
-  return { roles: roles.map(serializeRole), permissions: ALL_PLATFORM_PERMISSIONS };
+  const [roles, counts] = await Promise.all([
+    db.PlatformRole.findAll({ order: [['createdAt', 'ASC'], ['key', 'ASC']] }),
+    db.User.findAll({
+      attributes: ['platformRole', [fn('COUNT', col('id')), 'holders']],
+      where: { platformRole: { [Op.ne]: null } },
+      group: ['platformRole'],
+      raw: true,
+    }),
+  ]);
+  const holders = new Map(counts.map((row) => [row.platformRole, Number(row.holders)]));
+  return { roles: roles.map((role) => serializeRole(role, holders.get(role.key) || 0)), permissions: ALL_PLATFORM_PERMISSIONS };
 }
 
 async function listAdmins(viewerId) {
@@ -128,32 +149,20 @@ function requireCreator(actor, message) {
   }
 }
 
-/**
- * The set an account ends up with: the role's default unless `requested` is
- * given, deduplicated, and checked against the rules in the header comment.
- * `current` is what the account holds today under this same role: keeping a
- * key it already has is not granting it, so the actor need not hold it.
- */
-function resolvePermissions(role, requested, actor, current = []) {
-  const defaults = role.defaultPermissions || [];
-  if (requested === undefined) return [...new Set(defaults)];
-
-  const set = [...new Set(requested)];
+function requireKnownKeys(keys) {
   const errors = [];
-  for (const key of set) {
+  for (const key of keys) {
     if (key === WILDCARD) {
-      if (role.key !== PLATFORM_ROLES.CREATOR) {
-        errors.push({ field: 'permissions', message: '"*" (every permission) is reserved for the creator role' });
-      }
+      errors.push({ field: 'permissions', message: '"*" (every permission) is reserved for the creator role' });
     } else if (!ALL_PLATFORM_PERMISSIONS.includes(key)) {
       errors.push({ field: 'permissions', message: `Unknown permission "${key}"` });
     }
   }
   if (errors.length) throw new ValidationError(errors, 'Invalid body');
+}
 
-  const notHeld = set.filter(
-    (key) => !defaults.includes(key) && !current.includes(key) && !hasPlatformPermission(actor, key)
-  );
+function requireHeld(keys, actor) {
+  const notHeld = keys.filter((key) => !hasPlatformPermission(actor, key));
   if (notHeld.length) {
     throw new AppError(
       'PERMISSION_NOT_HELD',
@@ -161,6 +170,23 @@ function resolvePermissions(role, requested, actor, current = []) {
       403
     );
   }
+}
+
+/**
+ * The set an account ends up with: the role's default unless `requested` is
+ * given, deduplicated, and checked against the rules in the header comment.
+ * `current` is what the account holds today under this same role: keeping a
+ * key it already has is not granting it, so the actor need not hold it.
+ */
+function resolvePermissions(role, requested, actor, current = []) {
+  if (role.key === PLATFORM_ROLES.CREATOR) return [WILDCARD];
+
+  const defaults = role.defaultPermissions || [];
+  const set = [...new Set(requested === undefined ? defaults : requested)];
+  if (requested !== undefined) requireKnownKeys(set);
+
+  const exempt = isBuiltInRole(role.key) ? defaults : [];
+  requireHeld(set.filter((key) => !exempt.includes(key) && !current.includes(key)), actor);
   return set;
 }
 
@@ -346,8 +372,143 @@ async function revokeAdmin(userId, req) {
   });
 }
 
+// --- Custom roles ------------------------------------------------------------
+
+function roleKeyFor(name) {
+  const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 40);
+  return `${/^[a-z]/.test(slug) ? slug : 'role'}_${crypto.randomBytes(3).toString('hex')}`;
+}
+
+async function requireFreeRoleName(name, transaction, exceptKey) {
+  const taken = await db.PlatformRole.findOne({
+    where: { [Op.and]: [sqlWhere(fn('lower', col('name')), name.toLowerCase()), exceptKey ? { key: { [Op.ne]: exceptKey } } : {}] },
+    attributes: ['key'],
+    transaction,
+  });
+  if (taken) throw new ConflictError('A role with that name already exists.', 'ROLE_NAME_TAKEN');
+}
+
+async function auditRole(action, req, role, before, after, metadata, transaction) {
+  await recordAudit({
+    actorUserId: req.user.id,
+    action,
+    entityType: 'PlatformRole',
+    entityId: role.key,
+    before,
+    after,
+    metadata: { name: role.name, ...metadata },
+    req,
+    transaction,
+  });
+}
+
+const roleState = (role) => ({ name: role.name, description: role.description, defaultPermissions: [...role.defaultPermissions] });
+
+/**
+ * Locks a custom role, then the accounts holding it and the requester in id
+ * order, and re-checks the requester under that lock, as a role change does.
+ */
+async function lockCustomRole(roleKey, req, transaction) {
+  const role = await db.PlatformRole.findByPk(roleKey, { transaction, lock: transaction.LOCK.UPDATE });
+  if (!role) throw new NotFoundError('Role');
+  if (isBuiltInRole(role.key)) {
+    throw new ConflictError('The creator, admin and agent roles are fixed. Create a custom role instead.', 'ROLE_BUILT_IN');
+  }
+  const rows = await db.User.findAll({
+    where: { [Op.or]: [{ platformRole: role.key }, { id: req.user.id }] },
+    attributes: ['id', 'email', 'status', 'deletedAt', 'platformRole', 'platformPermissions'],
+    order: [['id', 'ASC']],
+    transaction,
+    lock: transaction.LOCK.UPDATE,
+  });
+  const requester = rows.find((u) => u.id === req.user.id);
+  if (!requester || requester.status !== 'active' || requester.deletedAt || !hasPlatformPermission(requester, PLATFORM_PERMISSIONS.ADMINS_MANAGE)) {
+    throw new AuthorizationError(`Missing required platform permission: ${PLATFORM_PERMISSIONS.ADMINS_MANAGE}`);
+  }
+  return { role, requester, holders: rows.filter((u) => u.platformRole === role.key) };
+}
+
+async function createRole({ name, description, permissions }, req) {
+  return db.sequelize.transaction(async (transaction) => {
+    const requester = await db.User.findByPk(req.user.id, { transaction, lock: transaction.LOCK.UPDATE });
+    if (!requester || requester.status !== 'active' || requester.deletedAt || !hasPlatformPermission(requester, PLATFORM_PERMISSIONS.ADMINS_MANAGE)) {
+      throw new AuthorizationError(`Missing required platform permission: ${PLATFORM_PERMISSIONS.ADMINS_MANAGE}`);
+    }
+    const set = [...new Set(permissions)];
+    requireKnownKeys(set);
+    requireHeld(set, requester);
+    await requireFreeRoleName(name, transaction);
+
+    const role = await db.PlatformRole.create(
+      { key: roleKeyFor(name), name, description: description || null, defaultPermissions: set },
+      { transaction }
+    );
+    await auditRole('platform_role.create', req, role, null, roleState(role), {}, transaction);
+    return serializeRole(role);
+  });
+}
+
+async function updateRole(roleKey, { name, description, permissions }, req) {
+  return db.sequelize.transaction(async (transaction) => {
+    const { role, requester, holders } = await lockCustomRole(roleKey, req, transaction);
+    if (requester.platformRole === role.key) {
+      throw new ConflictError('You cannot change a role you hold yourself. Ask another admin to do it.', 'CANNOT_EDIT_SELF');
+    }
+    if (name !== undefined) await requireFreeRoleName(name, transaction, role.key);
+
+    const before = roleState(role);
+    const set = permissions === undefined ? before.defaultPermissions : [...new Set(permissions)];
+    const added = set.filter((key) => !before.defaultPermissions.includes(key));
+    const removed = before.defaultPermissions.filter((key) => !set.includes(key));
+    requireKnownKeys(added);
+    requireHeld(added, requester);
+
+    await role.update(
+      {
+        ...(name !== undefined ? { name } : {}),
+        ...(description !== undefined ? { description: description || null } : {}),
+        defaultPermissions: set,
+      },
+      { transaction }
+    );
+
+    let changed = 0;
+    for (const holder of holders) {
+      const held = holder.platformPermissions || [];
+      const next = [...held.filter((key) => !removed.includes(key)), ...added.filter((key) => !held.includes(key))];
+      if (next.length === held.length && next.every((key) => held.includes(key))) continue;
+      const beforeHolder = roleAccessState(holder);
+      await holder.update({ platformPermissions: next }, { transaction });
+      await auditRoleChange('platform_admin.update', req, holder, beforeHolder, roleAccessState(holder), transaction);
+      changed += 1;
+    }
+
+    await auditRole('platform_role.update', req, role, before, roleState(role), { holdersChanged: changed }, transaction);
+    return serializeRole(role, holders.length);
+  });
+}
+
+async function deleteRole(roleKey, req) {
+  return db.sequelize.transaction(async (transaction) => {
+    const { role, holders } = await lockCustomRole(roleKey, req, transaction);
+    if (holders.length > 0) {
+      throw new ConflictError(
+        `${holders.length} account${holders.length === 1 ? ' holds' : 's hold'} this role. Move them to another role first.`,
+        'ROLE_IN_USE'
+      );
+    }
+    const before = roleState(role);
+    await role.destroy({ transaction });
+    await auditRole('platform_role.delete', req, role, before, null, {}, transaction);
+    return { success: true };
+  });
+}
+
 module.exports = {
   listRoles,
+  createRole,
+  updateRole,
+  deleteRole,
   listAdmins,
   grantAdmin,
   grantRoleInTransaction,

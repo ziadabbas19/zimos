@@ -2,9 +2,9 @@
 
 const db = require('../../src/db/models');
 
-// Reference data a migration seeds and no test creates: truncating it would
-// leave every later test without it. Nothing it holds points at other tables,
-// so the CASCADE below never reaches it either.
+// Reference data a migration seeds: truncating it would leave every later test
+// without it. Nothing it holds points at other tables, so the CASCADE below
+// never reaches it either.
 const SEEDED_TABLES = new Set(['platform_roles']);
 
 /**
@@ -21,6 +21,8 @@ async function truncateAll(attempt = 1) {
   if (tables.length === 0) return;
   try {
     await db.sequelize.query(`TRUNCATE TABLE ${tables.join(', ')} RESTART IDENTITY CASCADE;`);
+    // The seeded roles stay; a custom role a test made does not.
+    await db.sequelize.query(`DELETE FROM platform_roles WHERE key NOT IN ('creator', 'admin', 'agent');`);
   } catch (err) {
     // TRUNCATE takes ACCESS EXCLUSIVE on every table; under any concurrent DB
     // access it can lose a lock race (40P01 deadlock_detected / 55P03

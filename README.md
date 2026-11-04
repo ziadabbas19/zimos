@@ -332,9 +332,10 @@ exist as internal state only — every workspace gets a `trialing` Subscription
 on creation, a webhook endpoint maps generic events to status, and mutations
 are subscription-gated, but **no payment gateway is connected** (see
 "Payment gateway integration — NOT YET CONNECTED" below). Platform-console
-access is a role (creator / admin / agent, stored as data in `platform_roles`)
-plus an editable permission set on `User`; every `/admin` route names the
-permission it needs (`src/core/security/platformPermissions.js`). The first
+access is a role (creator / admin / agent or a custom one from the console,
+stored as data in `platform_roles`) plus an editable permission set on `User`;
+every `/admin` route names the permission it needs
+(`src/core/security/platformPermissions.js`). The first
 creator is set out-of-band with `node scripts/set-platform-role.js <email> creator`.
 Agent referral codes attach to a subscription and price every charge through
 `billing/subscriptionChargeService`; since no gateway exists, charges are only
