@@ -685,6 +685,8 @@ const env = {
   media: {
     maxDimension: intInRange(process.env.MEDIA_MAX_DIMENSION, 2000, 256, 10000),
     jpegQuality: intInRange(process.env.MEDIA_JPEG_QUALITY, 85, 40, 100),
+    // Smaller WebP copies beside each uploaded picture (media/thumbnails.js). Only exactly "true".
+    thumbnails: process.env.MEDIA_THUMBNAILS_ENABLED === 'true',
   },
 
   // How long each request took, in the log and to whoever may read it

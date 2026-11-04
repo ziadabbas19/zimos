@@ -8,6 +8,7 @@ const { AppError, NotFoundError } = require('../../core/errors/AppError');
 const { recordAudit } = require('../audit/auditService');
 const { getStorage, UPLOAD_ROOT } = require('./storage');
 const { processMerchantImage } = require('./imageProcessing');
+const thumbnails = require('./thumbnails');
 
 const Op = db.Sequelize.Op;
 
@@ -84,7 +85,17 @@ async function storeImage(workspaceId, file, req) {
           quality: env.media.jpegQuality,
         });
 
-  const filename = `${crypto.randomUUID()}.${sig.ext}`;
+  // Smaller copies beside it, stored first, so a name that says it has them is
+  // never a promise broken. Nothing here fails the upload (media/thumbnails.js).
+  const fileBase = crypto.randomUUID();
+  let filename = `${fileBase}.${sig.ext}`;
+  if (!isModel && !video && thumbnails.enabled()) {
+    const copies = await thumbnails.makeCopies(processed, sig.mime);
+    if (copies.length > 0 && (await thumbnails.storeCopies(getStorage(), workspaceId, fileBase, copies))) {
+      filename = thumbnails.markedName(fileBase, sig.ext);
+    }
+  }
+
   const { url, path } = await getStorage().put({
     workspaceId,
     filename,
@@ -176,13 +187,16 @@ async function deleteMedia(workspaceId, mediaId, req) {
   const before = { url: asset.url, path: asset.path, mimeType: asset.mimeType, size: asset.sizeBytes };
   await asset.destroy();
 
-  try {
-    await getStorage().remove(asset.path);
-  } catch (err) {
-    logger.error(`media delete: stored object "${asset.path}" was not removed: ${err.message}`, {
-      workspaceId,
-      mediaId,
-    });
+  // With its smaller copies, when it has them (media/thumbnails.js).
+  for (const stored of [asset.path, ...thumbnails.copyPaths(asset.path)]) {
+    try {
+      await getStorage().remove(stored);
+    } catch (err) {
+      logger.error(`media delete: stored object "${stored}" was not removed: ${err.message}`, {
+        workspaceId,
+        mediaId,
+      });
+    }
   }
 
   await recordAudit({

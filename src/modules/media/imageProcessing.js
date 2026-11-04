@@ -234,6 +234,7 @@ async function processCustomerImage(buffer) {
 }
 
 module.exports = {
+  loadSharp,
   imageProcessingStatus,
   processMerchantImage,
   processCustomerImage,
