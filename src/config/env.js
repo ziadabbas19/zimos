@@ -187,14 +187,6 @@ function smsAllowedCallingCodes() {
   return [...new Set(codes)];
 }
 
-/** A whole number within [min, max] from the environment; anything else is the fallback. */
-function wholeNumberInRange(raw, fallback, min, max) {
-  const text = String(raw === undefined ? '' : raw).trim();
-  if (!/^\d+$/.test(text)) return fallback;
-  const n = Number(text);
-  return n >= min && n <= max ? n : fallback;
-}
-
 const env = {
   nodeEnv: process.env.NODE_ENV || 'development',
   isProduction: process.env.NODE_ENV === 'production',
@@ -1218,11 +1210,11 @@ const env = {
   storefrontPerf: {
     searchFast: process.env.STOREFRONT_SEARCH_FAST_ENABLED === 'true',
     workspaceCacheTtlSeconds:
-      process.env.NODE_ENV === 'test' ? 0 : wholeNumberInRange(process.env.PUBLIC_WORKSPACE_CACHE_TTL_SECONDS, 0, 0, 300),
+      process.env.NODE_ENV === 'test' ? 0 : intInRange(process.env.PUBLIC_WORKSPACE_CACHE_TTL_SECONDS, 0, 0, 300),
     apiCache: {
       enabled: process.env.STOREFRONT_API_CACHE_ENABLED === 'true',
-      sMaxage: wholeNumberInRange(process.env.STOREFRONT_API_S_MAXAGE, 30, 1, 3600),
-      swr: wholeNumberInRange(process.env.STOREFRONT_API_SWR, 60, 0, 86400),
+      sMaxage: intInRange(process.env.STOREFRONT_API_S_MAXAGE, 30, 1, 3600),
+      swr: intInRange(process.env.STOREFRONT_API_SWR, 60, 0, 86400),
     },
   },
 
