@@ -4,7 +4,7 @@ const { Op } = require('sequelize');
 const db = require('../../db/models');
 const { AppError, AuthorizationError, ConflictError, NotFoundError } = require('../../core/errors/AppError');
 const { recordAudit } = require('../audit/auditService');
-const { PLATFORM_ROLES, PLATFORM_PERMISSIONS, hasPlatformPermission } = require('../../core/security/platformPermissions');
+const { PLATFORM_ROLES, PLATFORM_PERMISSIONS, hasPlatformPermission, outOfReach } = require('../../core/security/platformPermissions');
 
 /**
  * Suspending and deleting an account from the console (workspaces.manage).
@@ -22,9 +22,9 @@ const { PLATFORM_ROLES, PLATFORM_PERMISSIONS, hasPlatformPermission } = require(
  *     those stores are suspended in the same transaction.
  *
  * Nobody acts on themselves; a creator's account needs a creator; another
- * console account needs admins.manage; the last creator is never suspended
- * or deleted. The actor's own permission is read again under the lock. Every write is audited as a
- * platform-level entry.
+ * console account needs admins.manage, and holding every key on it; the last
+ * creator is never suspended or deleted. The actor's own permission is read
+ * again under the lock. Every write is audited as a platform-level entry.
  */
 
 function view(user) {
@@ -35,6 +35,36 @@ function view(user) {
     suspendedReason: user.suspendedReason,
     deletedAt: user.deletedAt,
   };
+}
+
+/**
+ * Why `actor` may not act on `target`, or null. `otherCreators` is how many
+ * active creators there are besides the target; only a creator target asks.
+ */
+function refusalOn(actor, target, otherCreators) {
+  if (target.platformRole === PLATFORM_ROLES.CREATOR) {
+    if (actor.platformRole !== PLATFORM_ROLES.CREATOR) {
+      return new AppError('CREATOR_REQUIRED', "Only a creator can act on a creator's account.", 403);
+    }
+    return otherCreators < 1 ? new ConflictError('This is the last creator.', 'LAST_CREATOR') : null;
+  }
+  if (target.platformRole && !hasPlatformPermission(actor, PLATFORM_PERMISSIONS.ADMINS_MANAGE)) {
+    return new AppError('ADMINS_MANAGE_REQUIRED', 'Only an admin who manages platform users can act on a console account.', 403);
+  }
+  return outOfReach(actor, target);
+}
+
+/**
+ * Whether the console should offer `actor` these actions on `target`: the rules
+ * above, without the lock the actions themselves take.
+ */
+async function canActOn(actor, target) {
+  if (actor.id === target.id) return false;
+  const otherCreators =
+    target.platformRole === PLATFORM_ROLES.CREATOR
+      ? await db.User.count({ where: { platformRole: PLATFORM_ROLES.CREATOR, status: 'active', id: { [Op.ne]: target.id } } })
+      : 0;
+  return refusalOn(actor, target, otherCreators) === null;
 }
 
 /**
@@ -61,15 +91,9 @@ async function lockTarget(rawUserId, req, transaction, { permission = PLATFORM_P
   }
   const target = rows.find((u) => u.id === userId);
   if (!target) throw new NotFoundError('User');
-  if (target.platformRole === PLATFORM_ROLES.CREATOR) {
-    if (actor.platformRole !== PLATFORM_ROLES.CREATOR) {
-      throw new AppError('CREATOR_REQUIRED', "Only a creator can act on a creator's account.", 403);
-    }
-    const others = rows.filter((u) => u.platformRole === PLATFORM_ROLES.CREATOR && u.status === 'active' && u.id !== target.id);
-    if (others.length < 1) throw new ConflictError('This is the last creator.', 'LAST_CREATOR');
-  } else if (target.platformRole && !hasPlatformPermission(actor, PLATFORM_PERMISSIONS.ADMINS_MANAGE)) {
-    throw new AppError('ADMINS_MANAGE_REQUIRED', 'Only an admin who manages platform users can act on a console account.', 403);
-  }
+  const others = rows.filter((u) => u.platformRole === PLATFORM_ROLES.CREATOR && u.status === 'active' && u.id !== target.id);
+  const refusal = refusalOn(actor, target, others.length);
+  if (refusal) throw refusal;
   return target;
 }
 
@@ -198,4 +222,4 @@ async function remove(userId, { reason, stores }, req) {
   });
 }
 
-module.exports = { suspend, unsuspend, remove, lockTarget };
+module.exports = { suspend, unsuspend, remove, lockTarget, canActOn };

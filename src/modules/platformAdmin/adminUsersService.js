@@ -19,6 +19,7 @@ const {
   WILDCARD,
   hasPlatformPermission,
   isBuiltInRole,
+  outOfReach,
 } = require('../../core/security/platformPermissions');
 
 /**
@@ -42,10 +43,15 @@ const {
  *     only hold keys the actor holds themselves. The one exception is the agent
  *     role's own default set, so an admin can create an agent without holding
  *     the agent-only key. A creator holds everything, so a creator passes.
+ *   - nobody touches an account above them: an account holding a key the actor
+ *     doesn't hold can't be changed or revoked by that actor, whatever the
+ *     change (core/security/platformPermissions.outOfReach). Suspending and
+ *     deleting follow the same rule (userModerationService).
  *
  * Custom roles (createRole and below) are a name and a default set, and follow
- * the same rule: only someone holding all of a custom role can make it, edit it
- * or delete it. Changing a role's set changes the accounts holding it: a key
+ * the same rules: only someone holding all of a custom role can make it, edit it
+ * or delete it, and a role with an account above them on it is out of their
+ * reach too, since changing the role would change that account. Changing a role's set changes the accounts holding it: a key
  * added reaches them all, a key removed leaves them all, and whatever else was
  * adjusted per account stays. The seeded roles are fixed: code relies on them
  * and migrations write to them.
@@ -173,13 +179,16 @@ function requireHeld(keys, actor) {
   }
 }
 
+function requireWithinReach(actor, account) {
+  const refusal = outOfReach(actor, account);
+  if (refusal) throw refusal;
+}
+
 /**
  * The set an account ends up with: the role's default unless `requested` is
  * given, deduplicated, and checked against the rules in the header comment.
- * `current` is what the account holds today under this same role: keeping a
- * key it already has is not granting it, so the actor need not hold it.
  */
-function resolvePermissions(role, requested, actor, current = []) {
+function resolvePermissions(role, requested, actor) {
   if (role.key === PLATFORM_ROLES.CREATOR) return [WILDCARD];
 
   const defaults = role.defaultPermissions || [];
@@ -187,7 +196,7 @@ function resolvePermissions(role, requested, actor, current = []) {
   if (requested !== undefined) requireKnownKeys(set);
 
   const exempt = role.key === PLATFORM_ROLES.AGENT ? defaults : [];
-  requireHeld(set.filter((key) => !exempt.includes(key) && !current.includes(key)), actor);
+  requireHeld(set.filter((key) => !exempt.includes(key)), actor);
   return set;
 }
 
@@ -330,6 +339,7 @@ async function updateAdmin(userId, { role: roleKey, permissions }, req) {
     if (role.key === PLATFORM_ROLES.CREATOR) {
       requireCreator(requester, 'Only a creator can make someone a creator.');
     }
+    requireWithinReach(requester, target);
     const demotesCreator = target.platformRole === PLATFORM_ROLES.CREATOR && role.key !== PLATFORM_ROLES.CREATOR;
     if (demotesCreator && creators.length <= 1) {
       throw new ConflictError('This is the last creator, so their role cannot be changed.', 'LAST_CREATOR');
@@ -340,7 +350,7 @@ async function updateAdmin(userId, { role: roleKey, permissions }, req) {
     const roleChanged = role.key !== target.platformRole;
     const nextPermissions =
       permissions !== undefined
-        ? resolvePermissions(role, permissions, requester, roleChanged ? [] : target.platformPermissions)
+        ? resolvePermissions(role, permissions, requester)
         : roleChanged
           ? resolvePermissions(role, undefined, requester)
           : target.platformPermissions;
@@ -365,6 +375,7 @@ async function revokeAdmin(userId, req) {
         throw new ConflictError('This is the last creator, so their access cannot be revoked.', 'LAST_CREATOR');
       }
     }
+    requireWithinReach(requester, target);
 
     const before = roleAccessState(target);
     await target.update({ platformRole: null, platformPermissions: [] }, { transaction });
@@ -408,8 +419,9 @@ const roleState = (role) => ({ name: role.name, description: role.description, d
 /**
  * Locks a custom role, then the accounts holding it and the requester in id
  * order, and re-checks the requester under that lock, as a role change does. A
- * role holding a key the requester doesn't hold is out of their reach whatever
- * they mean to do to it: renaming, keeping or removing that key, or deleting it.
+ * role holding a key the requester doesn't hold, or held by an account above
+ * them, is out of their reach whatever they mean to do to it: renaming it,
+ * keeping or removing a key, or deleting it.
  */
 async function lockCustomRole(roleKey, req, transaction) {
   const role = await db.PlatformRole.findByPk(roleKey, { transaction, lock: transaction.LOCK.UPDATE });
@@ -429,7 +441,9 @@ async function lockCustomRole(roleKey, req, transaction) {
     throw new AuthorizationError(`Missing required platform permission: ${PLATFORM_PERMISSIONS.ADMINS_MANAGE}`);
   }
   requireHeld(role.defaultPermissions, requester);
-  return { role, requester, holders: rows.filter((u) => u.platformRole === role.key) };
+  const holders = rows.filter((u) => u.platformRole === role.key);
+  holders.forEach((holder) => requireWithinReach(requester, holder));
+  return { role, requester, holders };
 }
 
 async function createRole({ name, description, permissions }, req) {

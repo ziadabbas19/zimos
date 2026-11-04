@@ -1,5 +1,7 @@
 'use strict';
 
+const { AppError } = require('../errors/AppError');
+
 /**
  * Canonical list of platform-console permission keys. Every /api/v1/admin
  * route declares exactly one of these (core/middleware/platformAdminGuard.js);
@@ -104,6 +106,23 @@ function hasPlatformPermission(user, permission) {
   return held.includes(permission);
 }
 
+/**
+ * The refusal for acting on an account holding a key the actor doesn't hold, or
+ * null. An agent's own key doesn't count: anyone managing users may give it
+ * without holding it, so they may take it back the same way.
+ */
+function outOfReach(actor, account) {
+  if (!account.platformRole) return null;
+  const held = Array.isArray(account.platformPermissions) ? account.platformPermissions : [];
+  const missing = held.filter(
+    (key) =>
+      !hasPlatformPermission(actor, key) &&
+      !(account.platformRole === PLATFORM_ROLES.AGENT && key === PLATFORM_PERMISSIONS.REFERRALS_VIEW_OWN)
+  );
+  if (missing.length === 0) return null;
+  return new AppError('PERMISSION_NOT_HELD', `This account holds permissions you don't hold yourself (missing: ${missing.join(', ')}).`, 403);
+}
+
 module.exports = {
   PLATFORM_PERMISSIONS,
   ALL_PLATFORM_PERMISSIONS,
@@ -111,4 +130,5 @@ module.exports = {
   WILDCARD,
   hasPlatformPermission,
   isBuiltInRole,
+  outOfReach,
 };

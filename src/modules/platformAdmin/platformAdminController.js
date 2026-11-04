@@ -342,7 +342,7 @@ const searchUsers = asyncHandler(async (req, res) => {
 });
 
 const getUser = asyncHandler(async (req, res) => {
-  res.json({ user: await userSearch.getUser(req.params.userId) });
+  res.json({ user: await userSearch.getUser(req.params.userId, req.user) });
 });
 
 const suspendUser = asyncHandler(async (req, res) => {

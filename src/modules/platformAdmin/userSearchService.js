@@ -3,6 +3,7 @@
 const { QueryTypes } = require('sequelize');
 const db = require('../../db/models');
 const { NotFoundError } = require('../../core/errors/AppError');
+const { canActOn } = require('./userModerationService');
 const access = require('../workspaces/workspaceAccessService');
 const siteTraffic = require('../siteAnalytics/siteTrafficService');
 const primaryHost = require('../domains/primaryHost');
@@ -200,10 +201,10 @@ async function searchUsers({ q = '', page = 1, limit = 25, includeDeleted = fals
   };
 }
 
-/** GET /admin/users/:userId */
-async function getUser(userId) {
+/** GET /admin/users/:userId, as `viewer` sees it. */
+async function getUser(userId, viewer) {
   const user = await db.User.findByPk(userId, {
-    attributes: [...USER_ATTRIBUTES, 'phone', 'phoneVerifiedAt', 'usernameChangedAt', 'suspendedAt', 'suspendedReason'],
+    attributes: [...USER_ATTRIBUTES, 'phone', 'phoneVerifiedAt', 'usernameChangedAt', 'suspendedAt', 'suspendedReason', 'platformPermissions'],
   });
   if (!user) throw new NotFoundError('User');
   const stores = await storesFor([user.id], new Set());
@@ -218,6 +219,9 @@ async function getUser(userId) {
     acquisition: await siteTraffic.acquisitionFor(user.id),
     // Approximate, from the marketing-site visits they signed up from; null when none carries one.
     location: await siteTraffic.locationFor(user.id),
+    // Whether the viewer may suspend, delete or reset this account. A yes or no
+    // rather than the account's keys: the store list's permission doesn't show those.
+    canActOn: await canActOn(viewer, user),
   };
 }
 

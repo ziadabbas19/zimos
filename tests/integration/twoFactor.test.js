@@ -147,6 +147,23 @@ describe('two-step sign-in, switched on', () => {
     const plain = await login(user);
     expect(plain.body.accessToken).toBeTruthy();
   });
+
+  it('the console reset follows the rule for an account above the actor', async () => {
+    const above = await makePlatformUser('admin');
+    await request(app).post('/api/v1/auth/two-factor/email/enable').set(above.H).send({ password: above.password }).expect(200);
+    await db.User.update({ platformPermissions: ['plans.manage', 'support.manage'] }, { where: { id: above.userId } });
+    const manager = await makePlatformUser('admin');
+    await db.User.update({ platformPermissions: ['support.manage', 'admins.manage'] }, { where: { id: manager.userId } });
+
+    const res = await request(app).post(`/api/v1/admin/users/${above.userId}/two-factor/reset`).set(manager.H);
+    expect(res.status).toBe(403);
+    expect(res.body.error.code).toBe('PERMISSION_NOT_HELD');
+    expect((await db.UserTwoFactor.findByPk(above.userId)).mode).toBe('email');
+
+    const creator = await makePlatformUser('creator');
+    expect((await request(app).post(`/api/v1/admin/users/${above.userId}/two-factor/reset`).set(creator.H)).status).toBe(200);
+    expect((await db.UserTwoFactor.findByPk(above.userId)).mode).toBe('off');
+  });
 });
 
 describe('the new-device code (NEW_DEVICE_CODE)', () => {
