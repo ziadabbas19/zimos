@@ -23,6 +23,7 @@ const botProtection = require('../risk/botProtection');
 const checkoutOtp = require('../risk/checkoutOtp');
 const lostOrders = require('../checkoutSessions/lostOrderService');
 const lostOrderController = require('../checkoutSessions/lostOrderController');
+const { publicCatalogCache } = require('./publicCatalogCache');
 
 const router = Router({ mergeParams: true });
 router.use(resolvePublicWorkspace);
@@ -41,13 +42,13 @@ router.post('/checkout/otp/resend', checkoutOtpLimiter, checkoutOtp.resend);
 // What a recovery link (/r/:token) rebuilds: the cart and the form.
 router.get('/recover/:token', lostOrderController.recover);
 
-router.get('/', validate(schemas.workspaceParam), controller.getStore);
-router.get('/policies/:key', validate(schemas.getPolicy), controller.getPolicy);
-router.get('/sitemap', validate(schemas.workspaceParam), controller.getSitemap);
-router.get('/products', collectOptionFilters, validate(schemas.listProducts), controller.listProducts);
+router.get('/', publicCatalogCache, validate(schemas.workspaceParam), controller.getStore);
+router.get('/policies/:key', publicCatalogCache, validate(schemas.getPolicy), controller.getPolicy);
+router.get('/sitemap', publicCatalogCache, validate(schemas.workspaceParam), controller.getSitemap);
+router.get('/products', publicCatalogCache, collectOptionFilters, validate(schemas.listProducts), controller.listProducts);
 // Above '/products/:idOrSlug', so "suggest" is never read as a product slug.
 router.get('/products/suggest', suggestLimiter, validate(schemas.suggest), controller.suggestProducts);
-router.get('/products/:idOrSlug', validate(schemas.getProduct), controller.getProduct);
+router.get('/products/:idOrSlug', publicCatalogCache, validate(schemas.getProduct), controller.getProduct);
 // Closed unless REVIEWS_PUBLIC_SUBMISSION_ENABLED (reviewController.submissionGate).
 // A few a minute per address before anything is read; reviewService caps an hour too.
 router.post('/products/:productId/reviews', reviewController.submissionGate, reviewLimiter, validate(reviewSchemas.submit), reviewController.submit);
@@ -60,11 +61,11 @@ router.get('/review-photos/:uploadId', validate(reviewSchemas.photo), reviewCont
 router.use(require('../combos/comboRoutes').store);
 // A product page's A/B test: which variant this visitor sees (catalog/productTests.js).
 router.use(require('../catalog/productTests').publicRouter);
-router.get('/collections', validate(schemas.workspaceParam), controller.listCollections);
+router.get('/collections', publicCatalogCache, validate(schemas.workspaceParam), controller.listCollections);
 // A shopper's photo for a product's image field (customerUploads). Limited
 // before multer reads a byte; multer refuses anything over 15 MB mid-stream.
 router.post('/uploads', uploadLimiter, customerUploadController.acceptFile, customerUploadController.create);
-router.get('/collections/:collectionId', validate(schemas.getCollection), controller.getCollection);
+router.get('/collections/:collectionId', publicCatalogCache, validate(schemas.getCollection), controller.getCollection);
 
 // Shopper order lookup. The limiter runs ahead of `validate` so a request that
 // can't pass validation never reaches the database; it keys on the phone and

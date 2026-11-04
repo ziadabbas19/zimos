@@ -1212,10 +1212,18 @@ const env = {
   //   workspaceCacheTtlSeconds (PUBLIC_WORKSPACE_CACHE_TTL_SECONDS, 0 = off, at
   //     most 300): storefront/publicWorkspaceCache.js. Off under NODE_ENV=test
   //     unless a test sets it.
+  //   apiCache (STOREFRONT_API_CACHE_ENABLED, exactly "true"; STOREFRONT_API_S_MAXAGE,
+  //     1 to 3600, default 30; STOREFRONT_API_SWR, 0 to 86400, default 60):
+  //     storefront/publicCatalogCache.js.
   storefrontPerf: {
     searchFast: process.env.STOREFRONT_SEARCH_FAST_ENABLED === 'true',
     workspaceCacheTtlSeconds:
       process.env.NODE_ENV === 'test' ? 0 : wholeNumberInRange(process.env.PUBLIC_WORKSPACE_CACHE_TTL_SECONDS, 0, 0, 300),
+    apiCache: {
+      enabled: process.env.STOREFRONT_API_CACHE_ENABLED === 'true',
+      sMaxage: wholeNumberInRange(process.env.STOREFRONT_API_S_MAXAGE, 30, 1, 3600),
+      swr: wholeNumberInRange(process.env.STOREFRONT_API_SWR, 60, 0, 86400),
+    },
   },
 
   cloudflarePurge: {
