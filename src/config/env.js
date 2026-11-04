@@ -696,6 +696,14 @@ const env = {
     key: (process.env.REQUEST_TIMING_KEY || '').trim(),
   },
 
+  // Core Web Vitals from a sample of real store visits (webVitals/). Off unless
+  // exactly "true": the endpoint answers 404 and nothing is written.
+  webVitals: {
+    enabled: process.env.WEB_VITALS_ENABLED === 'true',
+    perMinute: intInRange(process.env.WEB_VITALS_RATE_LIMIT_PER_MINUTE, 30, 1, 10000),
+    retentionDays: intInRange(process.env.WEB_VITALS_RETENTION_DAYS, 30, 0, 3650),
+  },
+
   // Photos shoppers attach to an order through a product's custom fields
   // (POST /store/:workspaceId/uploads). See modules/customerUploads.
   customerUploads: {

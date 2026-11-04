@@ -38,6 +38,7 @@ const discountRoutes = require('./modules/discounts/discountRoutes');
 const shippingRoutes = require('./modules/shipping/shippingRoutes');
 const taxRoutes = require('./modules/tax/taxRoutes');
 const storefrontRoutes = require('./modules/storefront/storefrontRoutes');
+const webVitalsRoutes = require('./modules/webVitals/webVitalsRoutes');
 const cartRoutes = require('./modules/cart/cartRoutes');
 const pagesRoutes = require('./modules/pages/pagesRoutes');
 const pagesPublicRoutes = require('./modules/pages/pagesPublicRoutes');
@@ -112,6 +113,7 @@ app.use(
 // Storefront analytics beacons get their own, much smaller, body limit. Mounted
 // before the API-wide parser below, which then skips the already-read body.
 app.use(`/api/${env.apiVersion}/store/:workspaceId/events`, eventsPublicRoutes.eventsBodyParser);
+app.use(`/api/${env.apiVersion}/store/:workspaceId/vitals`, webVitalsRoutes.vitalsBodyParser);
 // The marketing site's anonymous beacon reads its own 2kb body and has its own
 // per-IP limit; off, the path answers 404 (siteAnalytics/).
 app.use(siteEventsRoutes.PATH, siteEventsRoutes);
@@ -337,6 +339,7 @@ v1.use('/store/:workspaceId/pages', pagesPublicRoutes);
 v1.use('/store/:workspaceId/funnels', funnelsPublicRoutes);
 // Storefront visit tracking (page views, cart, checkout, purchase).
 v1.use('/store/:workspaceId/events', eventsPublicRoutes);
+v1.use('/store/:workspaceId/vitals', webVitalsRoutes);
 v1.use('/store/:workspaceId/forms', contactRoutes.store);
 v1.use('/store/:workspaceId/downloads', digitalRoutes.store);
 v1.use('/store/:workspaceId/shoppable-images', shoppableImageRoutes.store);

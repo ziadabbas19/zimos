@@ -44,6 +44,7 @@ const TABLES = {
   ai_jobs: wipe(STORE),
   ai_usage: wipe(STORE),
   analytics_events: wipe(STORE),
+  store_web_vitals: wipe(STORE),
   analytics_sessions: wipe(STORE),
   analytics_quarantine_events: wipe('events of sessions the events guard kept out of the numbers (migration 704)'),
   announcements: wipe('announcements written in the console before launch (decided: wipe)'),

@@ -362,6 +362,20 @@ function createSuggestLimiter({ minuteMax, hourMax, skip: skipAll = () => false 
   return [bucket(60 * 1000, minuteMax, true, 'm'), bucket(60 * 60 * 1000, hourMax, false, 'h')];
 }
 
+/*
+ * A store page's Core Web Vitals (POST /store/:id/vitals, modules/webVitals). A
+ * beacon nobody reads the answer to, so going over its budget is a quiet 204.
+ */
+const webVitalsLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: () => env.webVitals.perMinute,
+  standardHeaders: false,
+  legacyHeaders: false,
+  skip,
+  keyGenerator: (req) => `vitals:${ipKeyGenerator(clientIp(req))}`,
+  handler: (req, res) => res.status(204).end(),
+});
+
 const suggestLimiter = createSuggestLimiter({
   minuteMax: env.rateLimit.suggestMinuteMax,
   hourMax: env.rateLimit.suggestHourMax,
@@ -714,6 +728,7 @@ module.exports = {
   authLimiter,
   createAuthLimiter,
   storefrontLimiter,
+  webVitalsLimiter,
   createStorefrontLimiter,
   trackingLimiter,
   createTrackingLimiter,
