@@ -6,6 +6,7 @@ const { AppError, ConflictError, NotFoundError, ValidationError } = require('../
 const { applyBasisPoints } = require('../../core/utils/money');
 const { recordAudit } = require('../audit/auditService');
 const { PLATFORM_ROLES, isCreator } = require('../../core/security/platformPermissions');
+const reviewNotifications = require('./referralReviewNotifications');
 const { commissionRateFor, DEFAULT_COMMISSION_RATE_BP } = require('./commissionPolicy');
 const terms = require('./referralTerms');
 
@@ -355,6 +356,7 @@ async function createCodeInTransaction(agentId, body, req, transaction, { own = 
     { transaction }
   );
   await auditCode('referral_code.create', req, created, null, auditState(created), transaction);
+  if (approvalStatus === 'pending') await reviewNotifications.codeWaiting(created, 'new', authorsOf(created), req, transaction);
   return created;
 }
 
@@ -486,6 +488,10 @@ async function applyChange(code, patch, req, transaction) {
   const before = auditState(code);
   await code.update(fields, { transaction });
   await auditCode(action, req, code, before, auditState(code), transaction);
+  if (reviewed && changed.length) {
+    if (code.approvalStatus === 'pending') await reviewNotifications.codeWaiting(code, 'change', authorsOf(code), req, transaction);
+    else await reviewNotifications.codeNoLongerWaiting(code, transaction);
+  }
   return serializeCode(code);
 }
 
@@ -532,6 +538,9 @@ async function updateOwnCode(codeId, patch, req) {
 
 // -------------------------------------------------------------- the review
 
+/** Who hears how a review went: its owner, and whoever made it or changed it. */
+const concernedWith = (code) => [code.agentId, ...authorsOf(code)];
+
 async function lockPending(codeId, req, transaction) {
   const code = await db.ReferralCode.findByPk(codeId, { transaction, lock: transaction.LOCK.UPDATE });
   if (!code) throw new NotFoundError('Referral code');
@@ -556,7 +565,10 @@ async function approveCode(codeId, edits, req) {
     const waiting = code.pendingChanges || null;
     // The agent may have lost the role since the change was asked for.
     if (waiting && waiting.agentId) await assertAgent(waiting.agentId, transaction);
-    const columns = await columnsFor({ ...code.get(), ...(waiting || {}) }, edits, transaction);
+    const effective = { ...code.get(), ...(waiting || {}) };
+    const columns = await columnsFor(effective, edits, transaction);
+    const concerned = concernedWith(code);
+    const edited = Object.keys(columns).some((key) => !sameValue(key, columns[key], effective[key]));
 
     const before = auditState(code);
     await code.update(
@@ -576,6 +588,12 @@ async function approveCode(codeId, edits, req) {
       { transaction }
     );
     await auditCode('referral_code.approve', req, code, before, auditState(code), transaction);
+    await reviewNotifications.codeDecided(
+      code,
+      { decision: 'approved', change: waiting ? 'change' : 'new', edited, concerned: [...concerned, code.agentId] },
+      req,
+      transaction
+    );
     return serializeCode(code);
   });
 }
@@ -589,6 +607,7 @@ async function rejectCode(codeId, { reason }, req) {
     const code = await lockPending(codeId, req, transaction);
     const before = auditState(code);
     const changeOnly = Boolean(code.pendingChanges);
+    const concerned = concernedWith(code);
     await code.update(
       {
         pendingChanges: null,
@@ -604,6 +623,7 @@ async function rejectCode(codeId, { reason }, req) {
       { transaction }
     );
     await auditCode('referral_code.reject', req, code, before, auditState(code), transaction);
+    await reviewNotifications.codeDecided(code, { decision: 'rejected', change: changeOnly ? 'change' : 'new', reason: reason || null, concerned }, req, transaction);
     return serializeCode(code);
   });
 }
