@@ -48,6 +48,8 @@ module.exports = (sequelize, DataTypes) => {
       changesRejected: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false, field: 'changes_rejected' },
       // The owner's change to an approved code, as columns: nothing prices with it until it is approved.
       pendingChanges: { type: DataTypes.JSONB, allowNull: true, field: 'pending_changes' },
+      // Who changed what is waiting: nobody but a creator reviews their own change (migration 743).
+      reviewAuthors: { type: DataTypes.JSONB, allowNull: false, defaultValue: [], field: 'review_authors' },
       reviewedByUserId: { type: DataTypes.UUID, allowNull: true, field: 'reviewed_by_user_id' },
       reviewedAt: { type: DataTypes.DATE, allowNull: true, field: 'reviewed_at' },
     },

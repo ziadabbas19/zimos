@@ -431,16 +431,32 @@ const getUserReferrals = asyncHandler(async (req, res) => {
   res.json(await referralCodeAdmin.forUser(req.params.userId));
 });
 
+// 202 with { request } from anyone but a creator: it waits for review, and nothing has changed yet.
 const createAgentLink = asyncHandler(async (req, res) => {
-  res.status(201).json({ link: await agentLinks.createManual(req.params.workspaceId, req.body, req) });
+  const result = await agentLinks.createManual(req.params.workspaceId, req.body, req);
+  res.status(result.request ? 202 : 201).json(result);
 });
 
 const updateAgentLink = asyncHandler(async (req, res) => {
-  res.json({ link: await agentLinks.update(req.params.linkId, req.body, req) });
+  const result = await agentLinks.update(req.params.linkId, req.body, req);
+  res.status(result.request ? 202 : 200).json(result);
 });
 
 const endAgentLink = asyncHandler(async (req, res) => {
-  res.json({ link: await agentLinks.end(req.params.linkId, req.body || {}, req) });
+  const result = await agentLinks.end(req.params.linkId, req.body || {}, req);
+  res.status(result.request ? 202 : 200).json(result);
+});
+
+const listAgentLinkRequests = asyncHandler(async (req, res) => {
+  res.json(await agentLinks.listRequests(req.query));
+});
+
+const approveAgentLinkRequest = asyncHandler(async (req, res) => {
+  res.json(await agentLinks.approveRequest(req.params.requestId, req));
+});
+
+const rejectAgentLinkRequest = asyncHandler(async (req, res) => {
+  res.json(await agentLinks.rejectRequest(req.params.requestId, req.body || {}, req));
 });
 
 const listCommissions = asyncHandler(async (req, res) => {
@@ -575,6 +591,9 @@ module.exports = {
   createAgentLink,
   updateAgentLink,
   endAgentLink,
+  listAgentLinkRequests,
+  approveAgentLinkRequest,
+  rejectAgentLinkRequest,
   listCommissions,
   markCommissionPaid,
   getMyReferrals,

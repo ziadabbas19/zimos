@@ -125,8 +125,12 @@ async function getCode(codeId) {
 async function forWorkspace(workspaceId) {
   const workspace = await db.Workspace.findByPk(workspaceId, { attributes: ['id'] });
   if (!workspace) throw new NotFoundError('Workspace');
-  const [used, links] = await Promise.all([redemptions.forWorkspace(workspaceId), agentLinks.listForWorkspace(workspaceId)]);
-  return { redemptions: used, links, openLink: links.find((l) => l.open) || null, v2Enabled: referralCodes.v2Enabled() };
+  const [used, links, linkRequests] = await Promise.all([
+    redemptions.forWorkspace(workspaceId),
+    agentLinks.listForWorkspace(workspaceId),
+    agentLinks.requestsForWorkspace(workspaceId),
+  ]);
+  return { redemptions: used, links, openLink: links.find((l) => l.open) || null, linkRequests, v2Enabled: referralCodes.v2Enabled() };
 }
 
 /** GET /admin/users/:id/referrals — every code entered on the stores this account owns. */

@@ -133,11 +133,20 @@ async function makePlatformUser(roleKey = 'admin', overrides = {}) {
   return { ...auth, H: { Authorization: `Bearer ${auth.accessToken}` } };
 }
 
+/** A creator's approval of a code someone else made, which waits for it otherwise. */
+async function approveReferralCode(codeId) {
+  const creator = await makePlatformUser('creator');
+  const res = await request(app).post(`/api/v1/admin/referral-codes/${codeId}/approve`).set(creator.H).send({});
+  if (res.status !== 200) throw new Error(`approveReferralCode failed: ${res.status} ${JSON.stringify(res.body)}`);
+  return res.body.code;
+}
+
 module.exports = {
   addMemberWithRole,
   confirmCodOrder,
   setPlatformRole,
   addPlatformKeys,
+  approveReferralCode,
   makePlatformUser,
   app,
   request,

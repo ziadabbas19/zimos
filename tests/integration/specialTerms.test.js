@@ -7,7 +7,7 @@
 //   { kind: 'free_months',    months, note }            comp months, no charge
 //   { kind: 'price_override', priceAmount, charges, note } a price for the next N charges
 
-const { app, request, registerAndActivate, addPlatformKeys, makePlatformUser } = require('../helpers/factories');
+const { app, request, registerAndActivate, addPlatformKeys, approveReferralCode, makePlatformUser } = require('../helpers/factories');
 const db = require('../../src/db/models');
 const env = require('../../src/config/env');
 const billingService = require('../../src/modules/billing/billingService');
@@ -139,11 +139,12 @@ describe('a price override', () => {
     const admin = await makePlatformUser('admin');
     await addPlatformKeys(admin.userId, ['agents.create']);
     const person = await registerAndActivate();
-    await request(app)
+    const made = await request(app)
       .post('/api/v1/admin/agents')
       .set(admin.H)
       .send({ email: person.email, firstCode: { code: 'BUNDLE10', discountType: 'percentage', discountValue: 1000 } })
       .expect(201);
+    await approveReferralCode(made.body.code.id);
     const { wid, H } = await setup('BUNDLE10');
 
     const res = await grant(admin, wid, { kind: 'price_override', priceAmount: 20000, charges: 1, note: 'Bundle deal: 200 for the first month' });

@@ -78,8 +78,9 @@ const PLATFORM_PERMISSIONS = Object.freeze({
   // payment methods: no migration adds it to the admin role or to any admin, so
   // a creator grants it by hand.
   AGENTS_CREATE: 'agents.create',
-  // Approving or rejecting a code an agent made or changed. Held through '*'
-  // only as well.
+  // Approving or rejecting a code, a change to one, or a change to a store's
+  // agent link, from anyone but a creator. Never your own: only a creator
+  // reviews what they made. Held through '*' only as well.
   REFERRAL_CODES_APPROVE: 'referral_codes.approve',
   // The ledger's one write: flipping a row to marked_paid.
   COMMISSIONS_MARK_PAID: 'commissions.mark_paid',

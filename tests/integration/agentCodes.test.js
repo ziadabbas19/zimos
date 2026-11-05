@@ -6,11 +6,23 @@
 
 const { app, request, registerAndActivate, makePlatformUser } = require('../helpers/factories');
 const db = require('../../src/db/models');
+const env = require('../../src/config/env');
 const billingService = require('../../src/modules/billing/billingService');
+const agentLinks = require('../../src/modules/referrals/agentLinkService');
+
+const ORIGINAL_V2 = env.billing.referralCodesV2.enabled;
 
 beforeEach(async () => {
   await billingService.seedDefaultPlans();
 });
+
+afterEach(() => {
+  env.billing.referralCodesV2.enabled = ORIGINAL_V2;
+});
+
+const v2On = () => {
+  env.billing.referralCodesV2.enabled = true;
+};
 
 const path = (rest) => `/api/v1/admin${rest}`;
 const get = (who, rest) => request(app).get(path(rest)).set(who.H);
@@ -22,6 +34,21 @@ const reject = (who, id, reason) => request(app).post(path(`/referral-codes/${id
 const grant = (who, body) => request(app).post(path('/admins')).set(who.H).send(body);
 const editAdmin = (who, id, body) => request(app).patch(path(`/admins/${id}`)).set(who.H).send(body);
 const addAgent = (who, body) => request(app).post(path('/agents')).set(who.H).send(body);
+const addCode = (who, agentId, body) => request(app).post(path(`/agents/${agentId}/codes`)).set(who.H).send(body);
+const linkStore = (who, wid, body) => request(app).post(path(`/workspaces/${wid}/agent-links`)).set(who.H).send(body);
+const editLink = (who, id, body) => request(app).patch(path(`/agent-links/${id}`)).set(who.H).send(body);
+const endLink = (who, id) => request(app).post(path(`/agent-links/${id}/end`)).set(who.H).send({});
+const approveLink = (who, id) => request(app).post(path(`/agent-link-requests/${id}/approve`)).set(who.H).send({});
+const rejectLink = (who, id, reason) => request(app).post(path(`/agent-link-requests/${id}/reject`)).set(who.H).send({ reason });
+const rateOf = (rateBp) => ({ monthly: [{ count: null, rateBp }], yearly: [{ count: null, rateBp }] });
+const linkNow = (wid) => agentLinks.linkAt(wid, new Date());
+const MANAGER = ['agents.view', 'agents.manage'];
+const REVIEWER = [...MANAGER, 'referral_codes.approve'];
+
+function expectOwnWork(res) {
+  expect(res.status).toBe(403);
+  expect(res.body.error.code).toBe('REVIEW_OF_OWN_WORK');
+}
 
 async function holding(permissions) {
   const who = await makePlatformUser('admin');
@@ -208,6 +235,230 @@ describe('a money change to an approved code', () => {
     expect(rejected.body.code).toMatchObject({ approvalStatus: 'approved', active: true, discountValue: 1000, changesRejected: true, approvalNote: 'Too much', proposed: null });
     expect((await openStoreWith('LIVE-1')).status).toBe(201);
     expect(await db.AuditLog.count({ where: { action: 'referral_code.reject' } })).toBe(1);
+  });
+});
+
+describe('a new code from anyone but a creator', () => {
+  it('waits for review from agents.manage, on the console routes and as a first code', async () => {
+    v2On();
+    const creator = await makePlatformUser('creator');
+    const manager = await holding([...MANAGER, 'agents.create']);
+    const agent = await makePlatformUser('agent');
+
+    const made = await addCode(manager, agent.userId, { code: 'NEW-1', discountType: 'percentage', discountValue: 5000 });
+    expect(made.status).toBe(201);
+    expect(made.body.code).toMatchObject({ approvalStatus: 'pending', active: false });
+    expectRefused(await openStoreWith('NEW-1'));
+
+    const standalone = await request(app).post(path('/referral-codes')).set(manager.H).send({ code: 'NEW-2', audience: 'any' });
+    expect(standalone.body.code).toMatchObject({ approvalStatus: 'pending', active: false });
+    expectRefused(await openStoreWith('NEW-2'));
+
+    const person = await registerAndActivate();
+    const first = await addAgent(manager, { email: person.email, firstCode: { code: 'NEW-3', audience: 'any' } });
+    expect(first.status).toBe(201);
+    expect(first.body.code).toMatchObject({ approvalStatus: 'pending', active: false });
+    expectRefused(await openStoreWith('NEW-3'));
+
+    expect((await approve(creator, standalone.body.code.id)).body.code).toMatchObject({ approvalStatus: 'approved', active: true });
+    expect((await openStoreWith('NEW-2')).status).toBe(201);
+  });
+
+  it('is live at once from a creator', async () => {
+    const creator = await makePlatformUser('creator');
+    const agent = await makePlatformUser('agent');
+    const made = await addCode(creator, agent.userId, { code: 'NEW-4' });
+    expect(made.body.code).toMatchObject({ approvalStatus: 'approved', active: true });
+    expect((await openStoreWith('NEW-4')).status).toBe(201);
+  });
+});
+
+describe('a change to a code\'s agent', () => {
+  it('waits for review from anyone but a creator', async () => {
+    v2On();
+    const { creator, agent, id } = await approvedCode();
+    const other = await makePlatformUser('agent');
+    const manager = await holding(MANAGER);
+
+    const changed = await editCode(manager, id, { agentId: other.userId });
+    expect(changed.status).toBe(200);
+    expect(changed.body.code).toMatchObject({ approvalStatus: 'pending', agentId: agent.userId });
+    expect(changed.body.code.proposed.agentId).toBe(other.userId);
+    expect((await db.ReferralCode.findByPk(id)).agentId).toBe(agent.userId);
+
+    expect((await approve(creator, id)).body.code).toMatchObject({ approvalStatus: 'approved', agentId: other.userId });
+
+    const back = await editCode(creator, id, { agentId: agent.userId });
+    expect(back.body.code).toMatchObject({ approvalStatus: 'approved', agentId: agent.userId });
+  });
+});
+
+describe("a change to a store's agent link", () => {
+  async function store() {
+    const res = await openStoreWith(undefined);
+    expect(res.status).toBe(201);
+    return res.body.workspace.id;
+  }
+
+  it('waits for review from anyone but a creator: nothing earns until it is approved', async () => {
+    v2On();
+    const creator = await makePlatformUser('creator');
+    const manager = await holding(MANAGER);
+    const agent = await makePlatformUser('agent');
+    const wid = await store();
+
+    const asked = await linkStore(manager, wid, { agentId: agent.userId, terms: rateOf(2000) });
+    expect(asked.status).toBe(202);
+    expect(asked.body.request).toMatchObject({ status: 'pending', kind: 'link', agent: { id: agent.userId }, requestedBy: { id: manager.userId } });
+    expect(asked.body.link).toBeUndefined();
+    expect(await db.AgentLink.count({ where: { workspaceId: wid } })).toBe(0);
+    expect(await linkNow(wid)).toBeNull();
+
+    // Where a reviewer finds it.
+    const list = await get(manager, '/agent-link-requests');
+    expect(list.body.requests.map((r) => r.id)).toEqual([asked.body.request.id]);
+    const page = await get(manager, `/workspaces/${wid}/referrals`);
+    expect(page.body).toMatchObject({ openLink: null, linkRequests: [{ id: asked.body.request.id, status: 'pending' }] });
+
+    const approved = await approveLink(creator, asked.body.request.id);
+    expect(approved.status).toBe(200);
+    expect(approved.body.request.status).toBe('approved');
+    expect(approved.body.link).toMatchObject({ open: true, agent: { id: agent.userId }, createdBy: { id: manager.userId } });
+    expect((await linkNow(wid)).agentId).toBe(agent.userId);
+    expect(await db.AuditLog.count({ where: { action: 'agent_link.request' } })).toBe(1);
+    expect(await db.AuditLog.count({ where: { action: 'agent_link.approve' } })).toBe(1);
+    expect(await db.AuditLog.count({ where: { action: 'agent_link.create' } })).toBe(1);
+  });
+
+  it('keeps the link as it stands until a change, a move or an end is approved', async () => {
+    v2On();
+    const creator = await makePlatformUser('creator');
+    const manager = await holding(MANAGER);
+    const agentA = await makePlatformUser('agent');
+    const agentB = await makePlatformUser('agent');
+    const wid = await store();
+
+    // A creator's applies at once.
+    const first = await linkStore(creator, wid, { agentId: agentA.userId, terms: rateOf(2000) });
+    expect(first.status).toBe(201);
+    const linkId = first.body.link.id;
+    const rateNow = async () => (await linkNow(wid)).terms.monthly[0].rateBp;
+
+    const raise = await editLink(manager, linkId, { terms: rateOf(9000) });
+    expect(raise.status).toBe(202);
+    expect(await rateNow()).toBe(2000);
+    // One waiting per store.
+    const second = await endLink(manager, linkId);
+    expect(second.status).toBe(409);
+    expect(second.body.error.code).toBe('AGENT_LINK_REQUEST_PENDING');
+
+    const rejected = await rejectLink(creator, raise.body.request.id, 'Too much');
+    expect(rejected.body.request).toMatchObject({ status: 'rejected', reason: 'Too much' });
+    expect(await rateNow()).toBe(2000);
+    expect((await rejectLink(creator, raise.body.request.id, 'Again')).body.error.code).toBe('AGENT_LINK_REQUEST_NOT_PENDING');
+
+    const again = await editLink(manager, linkId, { terms: rateOf(3000) });
+    expect(await rateNow()).toBe(2000);
+    expect((await approveLink(creator, again.body.request.id)).status).toBe(200);
+    expect(await rateNow()).toBe(3000);
+
+    const move = await linkStore(manager, wid, { agentId: agentB.userId, terms: rateOf(5000) });
+    expect(move.status).toBe(202);
+    expect((await linkNow(wid)).agentId).toBe(agentA.userId);
+    const moved = await approveLink(creator, move.body.request.id);
+    expect(moved.body.link.agent.id).toBe(agentB.userId);
+    expect(await db.AgentLink.findByPk(linkId)).toMatchObject({ endReason: 'replaced', endedByUserId: manager.userId });
+
+    const end = await endLink(manager, moved.body.link.id);
+    expect(end.status).toBe(202);
+    expect((await linkNow(wid)).agentId).toBe(agentB.userId);
+    const ended = await approveLink(creator, end.body.request.id);
+    expect(ended.body.link).toMatchObject({ open: false, endReason: 'ended', endedBy: { id: manager.userId } });
+    expect(await linkNow(wid)).toBeNull();
+  });
+
+  it('stays closed to whoever holds only the view', async () => {
+    v2On();
+    const viewer = await holding(['agents.view']);
+    const manager = await holding(MANAGER);
+    const agent = await makePlatformUser('agent');
+    const wid = await store();
+    expect((await linkStore(viewer, wid, { agentId: agent.userId, terms: rateOf(2000) })).status).toBe(403);
+    const asked = await linkStore(manager, wid, { agentId: agent.userId, terms: rateOf(2000) });
+    expect((await approveLink(manager, asked.body.request.id)).status).toBe(403);
+    expect((await rejectLink(viewer, asked.body.request.id, 'No')).status).toBe(403);
+    expect((await get(agent, '/agent-link-requests')).status).toBe(403);
+  });
+});
+
+describe('nobody but a creator reviews their own work', () => {
+  it('refuses a code they made, whoever else may review it', async () => {
+    const reviewer = await holding(REVIEWER);
+    const other = await holding(REVIEWER);
+    const agent = await makePlatformUser('agent');
+    const made = await addCode(reviewer, agent.userId, { code: 'OWN-1' });
+    expect(made.body.code.authorIds).toEqual([reviewer.userId]);
+    expectOwnWork(await approve(reviewer, made.body.code.id));
+    expectOwnWork(await reject(reviewer, made.body.code.id, 'No'));
+    expect((await db.ReferralCode.findByPk(made.body.code.id)).approvalStatus).toBe('pending');
+    expect((await approve(other, made.body.code.id)).status).toBe(200);
+  });
+
+  it('refuses a change they made, or had a hand in, and only for as long as it waits', async () => {
+    const { id } = await approvedCode();
+    const reviewer = await holding(REVIEWER);
+    const other = await holding(REVIEWER);
+    const manager = await holding(MANAGER);
+
+    await editCode(reviewer, id, { discountValue: 2000 });
+    await editCode(manager, id, { commissionRateBp: 1000 });
+    expectOwnWork(await approve(reviewer, id));
+    expectOwnWork(await reject(reviewer, id, 'No'));
+    expect((await reject(other, id, 'Too much')).status).toBe(200);
+
+    // Their change is gone: someone else's is theirs to review.
+    await editCode(manager, id, { discountValue: 3000 });
+    expect((await approve(reviewer, id)).body.code).toMatchObject({ approvalStatus: 'approved', discountValue: 3000 });
+  });
+
+  it('still refuses someone who changed a code never approved, after it is rejected and sent again', async () => {
+    const reviewer = await holding(REVIEWER);
+    const other = await holding(REVIEWER);
+    const agent = await makePlatformUser('agent');
+    const { id } = (await makeOwn(agent, { code: 'OWN-2' })).body.code;
+    await editCode(reviewer, id, { commissionRateBp: 1000 });
+    await reject(other, id, 'No');
+    await editOwn(agent, id, { commissionRateBp: 2000 });
+    expectOwnWork(await approve(reviewer, id));
+  });
+
+  it('refuses a change to a store link they asked for, or on a link they made', async () => {
+    v2On();
+    const reviewer = await holding(REVIEWER);
+    const other = await holding(REVIEWER);
+    const manager = await holding(MANAGER);
+    const agent = await makePlatformUser('agent');
+    const res = await openStoreWith(undefined);
+    const wid = res.body.workspace.id;
+
+    const asked = await linkStore(reviewer, wid, { agentId: agent.userId, terms: rateOf(2000) });
+    expect(asked.body.request.authorIds).toEqual([reviewer.userId]);
+    expectOwnWork(await approveLink(reviewer, asked.body.request.id));
+    expectOwnWork(await rejectLink(reviewer, asked.body.request.id, 'No'));
+    const approved = await approveLink(other, asked.body.request.id);
+    expect(approved.status).toBe(200);
+
+    const change = await editLink(manager, approved.body.link.id, { terms: rateOf(3000) });
+    expectOwnWork(await approveLink(reviewer, change.body.request.id));
+    expect((await approveLink(other, change.body.request.id)).status).toBe(200);
+  });
+
+  it('lets a creator through, on what they changed too', async () => {
+    const creator = await makePlatformUser('creator');
+    const agent = await makePlatformUser('agent');
+    const { id } = (await makeOwn(agent, { code: 'OWN-3' })).body.code;
+    await editCode(creator, id, { commissionRateBp: 1000 });
+    expect((await approve(creator, id)).body.code).toMatchObject({ approvalStatus: 'approved', commissionRateBp: 1000 });
   });
 });
 

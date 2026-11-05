@@ -33,15 +33,16 @@ const terms = require('./referralTerms');
  * changes what stores entering it from then on get: a store that entered it
  * keeps the terms it entered it with (redemptionService).
  *
- * The review (migration 742, referral_codes.approve): an account can make its
- * own codes through /my/* (referrals.view_own). A new one is pending and
- * switched off (active false), so nothing that reads `active` treats it as a
- * code at all. A change to an approved code that touches money, from anyone but
- * a creator and from the console or /my/* alike (applyChange), waits in
- * pending_changes: the code stays pending for anyone new, and stores already
- * using it keep what was approved, since nothing prices with a change nobody
- * approved. Rejecting that change leaves the code as it was approved. Codes
- * made from the console are approved as they are made, as before.
+ * The review (migrations 742 and 743, referral_codes.approve): an account can
+ * make its own codes through /my/* (referrals.view_own), and anyone with
+ * agents.manage from the console. From anyone but a creator a new one is pending
+ * and switched off (active false), so nothing that reads `active` treats it as a
+ * code at all. A change to an approved code, from anyone but a creator and from
+ * the console or /my/* alike (applyChange), waits in pending_changes unless it
+ * only renames the code or switches it: the code stays pending for anyone new,
+ * and stores already using it keep what was approved, since nothing prices with
+ * a change nobody approved. Rejecting that change leaves the code as it was
+ * approved. Nobody but a creator reviews a code they made or a change they made.
  */
 
 const DISCOUNT_TYPES = ['none', 'percentage', 'fixed'];
@@ -125,11 +126,17 @@ function codeFields(code) {
   };
 }
 
+/** Who may not review it, a creator aside: whoever made the code or changed what is waiting. */
+function authorsOf(code) {
+  return [...new Set([code.createdByUserId, ...(code.reviewAuthors || [])])].filter(Boolean);
+}
+
 function serializeCode(code) {
   const row = code.get ? code.get() : code;
   return {
     ...codeFields(code),
     approvalStatus: code.approvalStatus || 'approved',
+    authorIds: authorsOf(code),
     approvalNote: code.approvalNote || null,
     changesRejected: Boolean(code.changesRejected),
     reviewedAt: code.reviewedAt || null,
@@ -298,10 +305,11 @@ function firstPaymentTerms(fields, commissionRateBp) {
 
 /**
  * `agentId` null: a code with no agent (second kind only). `own`: an account
- * making its own code, which may hold any role that has the feature; it starts
- * as `approvalStatus` says, switched off until it is approved.
+ * making its own code, which may hold any role that has the feature. From anyone
+ * but a creator it starts pending, switched off until it is approved.
  */
-async function createCodeInTransaction(agentId, body, req, transaction, { own = false, approvalStatus = 'approved' } = {}) {
+async function createCodeInTransaction(agentId, body, req, transaction, { own = false } = {}) {
+  const approvalStatus = isCreator(req.user) ? 'approved' : 'pending';
   const v2 = v2Enabled();
   if (!v2 && (agentId == null || V2_FIELDS.some((key) => key !== 'agentId' && has(body, key)))) throw v2Disabled();
   if (agentId != null && !own) await assertAgent(agentId, transaction);
@@ -430,9 +438,9 @@ function sameValue(key, a, b) {
 
 /**
  * The one check on a change to a code, from the console or from /my/*. A
- * creator's applies as it is. From anyone else, the name, the on/off switch and
- * who it belongs to apply at once; anything else that really changes is money
- * (the discount, the commission, the limits, the dates), and
+ * creator's applies as it is. From anyone else, the name and the on/off switch
+ * apply at once; anything else that really changes (the discount, the
+ * commission, the limits, the dates, its agent), and
  *   - on a code never approved, goes on the code, which waits for review again;
  *   - on an approved one, waits in pending_changes while the code goes on as
  *     approved, and the code is pending; changing it back clears the wait.
@@ -440,7 +448,7 @@ function sameValue(key, a, b) {
 async function applyChange(code, patch, req, transaction) {
   const reviewed = !isCreator(req.user);
   const effective = reviewed ? { ...code.get(), ...(code.pendingChanges || {}) } : code;
-  const { label, active, agentId, ...money } = await columnsFor(effective, patch, transaction);
+  const { label, active, ...money } = await columnsFor(effective, patch, transaction);
   if (active === true && !code.active && neverApproved(code)) {
     throw new ConflictError('This code has not been approved yet.', 'REFERRAL_CODE_NOT_APPROVED');
   }
@@ -448,16 +456,17 @@ async function applyChange(code, patch, req, transaction) {
   const changed = Object.keys(money).filter((key) => !sameValue(key, money[key], effective[key]));
   const asked = Object.fromEntries(changed.map((key) => [key, money[key]]));
   const fields = { updatedByUserId: req.user.id };
-  for (const [key, value] of Object.entries({ label, active, agentId })) {
+  for (const [key, value] of Object.entries({ label, active })) {
     if (value !== undefined) fields[key] = value;
   }
+  const authored = [...new Set([...(code.reviewAuthors || []), req.user.id])];
 
   let action = 'referral_code.update';
   if (!reviewed) {
     Object.assign(fields, money);
   } else if (neverApproved(code)) {
     Object.assign(fields, asked);
-    if (changed.length) Object.assign(fields, { approvalStatus: 'pending', approvalNote: null });
+    if (changed.length) Object.assign(fields, { approvalStatus: 'pending', approvalNote: null, reviewAuthors: authored });
   } else if (changed.length) {
     const waiting = { ...(code.pendingChanges || {}), ...asked };
     for (const key of Object.keys(waiting)) {
@@ -469,6 +478,7 @@ async function applyChange(code, patch, req, transaction) {
       approvalStatus: any ? 'pending' : 'approved',
       approvalNote: null,
       changesRejected: false,
+      reviewAuthors: any ? authored : [],
     });
     action = 'referral_code.submit_changes';
   }
@@ -504,8 +514,7 @@ async function updateCode(codeId, patch, req) {
 async function createOwnCode(body, req) {
   return db.sequelize.transaction(async (transaction) => {
     try {
-      const approvalStatus = isCreator(req.user) ? 'approved' : 'pending';
-      return serializeCode(await createCodeInTransaction(req.user.id, body, req, transaction, { own: true, approvalStatus }));
+      return serializeCode(await createCodeInTransaction(req.user.id, body, req, transaction, { own: true }));
     } catch (err) {
       throw uniqueViolationToConflict(err, body.code);
     }
@@ -523,11 +532,14 @@ async function updateOwnCode(codeId, patch, req) {
 
 // -------------------------------------------------------------- the review
 
-async function lockPending(codeId, transaction) {
+async function lockPending(codeId, req, transaction) {
   const code = await db.ReferralCode.findByPk(codeId, { transaction, lock: transaction.LOCK.UPDATE });
   if (!code) throw new NotFoundError('Referral code');
   if (code.approvalStatus !== 'pending') {
     throw new ConflictError('This code is not waiting for review.', 'REFERRAL_CODE_NOT_PENDING');
+  }
+  if (!isCreator(req.user) && authorsOf(code).includes(req.user.id)) {
+    throw new AppError('REVIEW_OF_OWN_WORK', 'You made this code or changed it, so someone else has to review it.', 403);
   }
   return code;
 }
@@ -540,8 +552,10 @@ async function lockPending(codeId, transaction) {
  */
 async function approveCode(codeId, edits, req) {
   return db.sequelize.transaction(async (transaction) => {
-    const code = await lockPending(codeId, transaction);
+    const code = await lockPending(codeId, req, transaction);
     const waiting = code.pendingChanges || null;
+    // The agent may have lost the role since the change was asked for.
+    if (waiting && waiting.agentId) await assertAgent(waiting.agentId, transaction);
     const columns = await columnsFor({ ...code.get(), ...(waiting || {}) }, edits, transaction);
 
     const before = auditState(code);
@@ -554,6 +568,7 @@ async function approveCode(codeId, edits, req) {
         approvalStatus: 'approved',
         approvalNote: null,
         changesRejected: false,
+        reviewAuthors: [],
         reviewedByUserId: req.user.id,
         reviewedAt: new Date(),
         updatedByUserId: req.user.id,
@@ -571,7 +586,7 @@ async function approveCode(codeId, edits, req) {
  */
 async function rejectCode(codeId, { reason }, req) {
   return db.sequelize.transaction(async (transaction) => {
-    const code = await lockPending(codeId, transaction);
+    const code = await lockPending(codeId, req, transaction);
     const before = auditState(code);
     const changeOnly = Boolean(code.pendingChanges);
     await code.update(
@@ -580,6 +595,8 @@ async function rejectCode(codeId, { reason }, req) {
         approvalStatus: changeOnly ? 'approved' : 'rejected',
         changesRejected: changeOnly,
         approvalNote: reason || null,
+        // A code never approved keeps what they changed, so they still can't review it.
+        ...(changeOnly ? { reviewAuthors: [] } : {}),
         reviewedByUserId: req.user.id,
         reviewedAt: new Date(),
         updatedByUserId: req.user.id,

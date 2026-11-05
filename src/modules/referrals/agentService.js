@@ -252,8 +252,8 @@ async function getAgent(agentId, { forAgent = false } = {}) {
  * Gives an existing, active account the agent role and, optionally, its
  * first referral code, atomically. Gated by agents.create, not admins.manage:
  * this path can only ever assign the agent role and the agent's default
- * permission set. The first code is live at once, so it takes agents.manage
- * as any code made from the console does.
+ * permission set. The first code takes agents.manage, as any code made from the
+ * console does, and waits for review like one unless a creator makes it.
  */
 async function createAgent({ email, firstCode }, req) {
   if (firstCode && !hasPlatformPermission(req.user, PLATFORM_PERMISSIONS.AGENTS_MANAGE)) {

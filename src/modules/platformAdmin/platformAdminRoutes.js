@@ -207,6 +207,10 @@ router.get('/users/:userId/referrals', can(P.AGENTS_VIEW), validate(schemas.user
 router.post('/workspaces/:workspaceId/agent-links', can(P.AGENTS_MANAGE), validate(schemas.createAgentLink), controller.createAgentLink);
 router.patch('/agent-links/:linkId', can(P.AGENTS_MANAGE), validate(schemas.updateAgentLink), controller.updateAgentLink);
 router.post('/agent-links/:linkId/end', can(P.AGENTS_MANAGE), validate(schemas.endAgentLink), controller.endAgentLink);
+// A change to a store's agent from anyone but a creator waits here (migration 743).
+router.get('/agent-link-requests', can(P.AGENTS_VIEW), validate(schemas.listAgentLinkRequests), controller.listAgentLinkRequests);
+router.post('/agent-link-requests/:requestId/approve', can(P.REFERRAL_CODES_APPROVE), validate(schemas.agentLinkRequestParams), controller.approveAgentLinkRequest);
+router.post('/agent-link-requests/:requestId/reject', can(P.REFERRAL_CODES_APPROVE), validate(schemas.rejectAgentLinkRequest), controller.rejectAgentLinkRequest);
 router.get('/commissions', can(P.AGENTS_VIEW), validate(schemas.listCommissions), controller.listCommissions);
 router.post('/commissions/:commissionId/mark-paid', can(P.COMMISSIONS_MARK_PAID), validate(schemas.markCommissionPaid), controller.markCommissionPaid);
 router.get('/my/referrals', can(P.REFERRALS_VIEW_OWN), controller.getMyReferrals);

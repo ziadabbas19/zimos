@@ -7,7 +7,7 @@
 // subscriptionChargeService.createCharge (the seam a gateway plugs into) and
 // paid through the signed billing webhook, exactly as a gateway would.
 
-const { app, request, registerAndActivate, addMemberWithRole, addPlatformKeys, makePlatformUser } = require('../helpers/factories');
+const { app, request, registerAndActivate, addMemberWithRole, addPlatformKeys, approveReferralCode, makePlatformUser } = require('../helpers/factories');
 const db = require('../../src/db/models');
 const env = require('../../src/config/env');
 const billingService = require('../../src/modules/billing/billingService');
@@ -47,7 +47,9 @@ async function newAgent(admin, firstCode) {
   const person = await registerAndActivate({ fullName: 'Agent Person' });
   const res = await request(app).post('/api/v1/admin/agents').set(admin.H).send({ email: person.email, firstCode });
   if (res.status !== 201) throw new Error(`newAgent failed: ${res.status} ${JSON.stringify(res.body)}`);
-  return { ...person, H: { Authorization: `Bearer ${person.accessToken}` }, code: res.body.code };
+  // From an admin, the first code waits for a creator's review.
+  const code = res.body.code && (await approveReferralCode(res.body.code.id));
+  return { ...person, H: { Authorization: `Bearer ${person.accessToken}` }, code };
 }
 
 /** A merchant whose workspace was created with `referralCode`, moved onto Starter. */

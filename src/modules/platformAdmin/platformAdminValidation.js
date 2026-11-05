@@ -575,6 +575,19 @@ module.exports = {
     params: Joi.object({ linkId: uuid.required() }),
     body: Joi.object({ note: Joi.string().trim().max(1000).allow('', null).optional() }),
   },
+  // A change to a store's agent from anyone but a creator (migration 743).
+  listAgentLinkRequests: {
+    query: Joi.object({
+      status: Joi.string().valid('pending', 'approved', 'rejected').default('pending'),
+      limit: Joi.number().integer().min(1).max(200).default(50),
+      offset: Joi.number().integer().min(0).default(0),
+    }),
+  },
+  agentLinkRequestParams: { params: Joi.object({ requestId: uuid.required() }) },
+  rejectAgentLinkRequest: {
+    params: Joi.object({ requestId: uuid.required() }),
+    body: Joi.object({ reason: Joi.string().trim().max(1000).allow('', null) }).default({}),
+  },
   // The code string is fixed once created (merchants and print use it).
   updateReferralCode: {
     params: Joi.object({ codeId: uuid.required() }),
