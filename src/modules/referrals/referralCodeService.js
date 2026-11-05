@@ -5,7 +5,7 @@ const env = require('../../config/env');
 const { AppError, ConflictError, NotFoundError, ValidationError } = require('../../core/errors/AppError');
 const { applyBasisPoints } = require('../../core/utils/money');
 const { recordAudit } = require('../audit/auditService');
-const { PLATFORM_ROLES } = require('../../core/security/platformPermissions');
+const { PLATFORM_ROLES, isCreator } = require('../../core/security/platformPermissions');
 const { commissionRateFor, DEFAULT_COMMISSION_RATE_BP } = require('./commissionPolicy');
 const terms = require('./referralTerms');
 
@@ -32,6 +32,17 @@ const terms = require('./referralTerms');
  * stays that kind until the console gives it `terms`. Changing a code
  * changes what stores entering it from then on get: a store that entered it
  * keeps the terms it entered it with (redemptionService).
+ *
+ * The review (migrations 742 and 743, referral_codes.approve): an account can
+ * make its own codes through /my/* (referrals.view_own), and anyone with
+ * agents.manage from the console. From anyone but a creator a new one is pending
+ * and switched off (active false), so nothing that reads `active` treats it as a
+ * code at all. A change to an approved code, from anyone but a creator and from
+ * the console or /my/* alike (applyChange), waits in pending_changes unless it
+ * only renames the code or switches it: the code stays pending for anyone new,
+ * and stores already using it keep what was approved, since nothing prices with
+ * a change nobody approved. Rejecting that change leaves the code as it was
+ * approved. Nobody but a creator reviews a code they made or a change they made.
  */
 
 const DISCOUNT_TYPES = ['none', 'percentage', 'fixed'];
@@ -79,7 +90,7 @@ function normalizeCode(code) {
   return String(code || '').trim().toUpperCase();
 }
 
-function serializeCode(code) {
+function codeFields(code) {
   return {
     id: code.id,
     agentId: code.agentId,
@@ -113,6 +124,30 @@ function serializeCode(code) {
     createdAt: code.createdAt,
     updatedAt: code.updatedAt,
   };
+}
+
+/** Who may not review it, a creator aside: whoever made the code or changed what is waiting. */
+function authorsOf(code) {
+  return [...new Set([code.createdByUserId, ...(code.reviewAuthors || [])])].filter(Boolean);
+}
+
+function serializeCode(code) {
+  const row = code.get ? code.get() : code;
+  return {
+    ...codeFields(code),
+    approvalStatus: code.approvalStatus || 'approved',
+    authorIds: authorsOf(code),
+    approvalNote: code.approvalNote || null,
+    changesRejected: Boolean(code.changesRejected),
+    reviewedAt: code.reviewedAt || null,
+    // How it would read with the change waiting for review; it changes nothing until then.
+    proposed: code.pendingChanges ? codeFields({ ...row, ...code.pendingChanges }) : null,
+  };
+}
+
+/** Whether a store may enter it now: switched on, and nothing waiting for review. */
+function canBeEntered(code) {
+  return Boolean(code.active) && (code.approvalStatus || 'approved') === 'approved';
 }
 
 /**
@@ -194,8 +229,8 @@ async function auditCode(action, req, code, before, after, transaction) {
 }
 
 function auditState(code) {
-  const { id, createdAt, updatedAt, effectiveCommissionRateBp, effectiveTerms, state, usesCount, ...rest } = serializeCode(code);
-  return rest;
+  const { id, createdAt, updatedAt, effectiveCommissionRateBp, effectiveTerms, state, usesCount, proposed, ...rest } = serializeCode(code);
+  return { ...rest, pendingChanges: code.pendingChanges || null };
 }
 
 async function assertAgent(agentId, transaction) {
@@ -268,11 +303,16 @@ function firstPaymentTerms(fields, commissionRateBp) {
   return terms.normalizeTerms({ monthly: { discount, commission }, yearly: { discount, commission } });
 }
 
-/** `agentId` null: a code with no agent (second kind only). */
-async function createCodeInTransaction(agentId, body, req, transaction) {
+/**
+ * `agentId` null: a code with no agent (second kind only). `own`: an account
+ * making its own code, which may hold any role that has the feature. From anyone
+ * but a creator it starts pending, switched off until it is approved.
+ */
+async function createCodeInTransaction(agentId, body, req, transaction, { own = false } = {}) {
+  const approvalStatus = isCreator(req.user) ? 'approved' : 'pending';
   const v2 = v2Enabled();
   if (!v2 && (agentId == null || V2_FIELDS.some((key) => key !== 'agentId' && has(body, key)))) throw v2Disabled();
-  if (agentId != null) await assertAgent(agentId, transaction);
+  if (agentId != null && !own) await assertAgent(agentId, transaction);
 
   const code = normalizeCode(body.code);
   if (!CODE_PATTERN.test(code)) {
@@ -307,7 +347,8 @@ async function createCodeInTransaction(agentId, body, req, transaction) {
       label: body.label ? body.label : null,
       ...(v2 ? { discountType: 'none', discountValue: null, discountCurrency: null, commissionRateBp: null } : { ...fields, commissionRateBp }),
       ...second,
-      active: body.active === undefined ? true : body.active,
+      active: approvalStatus === 'approved' ? (body.active === undefined ? true : body.active) : false,
+      approvalStatus,
       createdByUserId: req.user.id,
       updatedByUserId: req.user.id,
     },
@@ -339,6 +380,116 @@ function uniqueViolationToConflict(err, code) {
 const EDITABLE = ['label', 'discountType', 'discountValue', 'discountCurrency', 'commissionRateBp', 'active'];
 
 /**
+ * What `patch` asks of `code`, checked, as columns. `code` is the code as it
+ * stands, or as it would with a change already waiting.
+ */
+async function columnsFor(code, patch, transaction) {
+  const v2 = v2Enabled();
+  if (!v2 && V2_FIELDS.some((key) => has(patch, key))) throw v2Disabled();
+
+  const next = {};
+  for (const key of EDITABLE) if (key in patch) next[key] = patch[key] === '' ? null : patch[key];
+  // Switching the type clears the fields the new type does not take, so a
+  // form can send just { discountType: 'none' }.
+  if (next.discountType === 'none') {
+    if (!('discountValue' in next)) next.discountValue = null;
+    if (!('discountCurrency' in next)) next.discountCurrency = null;
+  } else if (next.discountType === 'percentage' && !('discountCurrency' in next)) {
+    next.discountCurrency = null;
+  }
+  const merged = {
+    discountType: 'discountType' in next ? next.discountType : code.discountType,
+    discountValue:
+      'discountValue' in next ? next.discountValue : code.discountValue == null ? null : Number(code.discountValue),
+    discountCurrency: 'discountCurrency' in next ? next.discountCurrency : code.discountCurrency,
+  };
+  // A second-kind code's discount lives in its terms; its first-kind fields stay empty.
+  if (!code.terms || !['discountType', 'discountValue', 'discountCurrency'].some((key) => key in next)) assertDiscount(merged);
+  else throw new ValidationError([{ field: 'discountType', message: "This code's discount is set by its schedule (terms)" }], 'Invalid body');
+  const second = v2 ? await v2Columns(patch, code, transaction) : {};
+  if (v2 && has(patch, 'agentId')) {
+    if (patch.agentId != null) await assertAgent(patch.agentId, transaction);
+    second.agentId = patch.agentId;
+  }
+  // A first-kind code given a schedule keeps its own discount and rate
+  // columns, untouched: with the flag off again it prices exactly as before.
+  return { ...next, ...second };
+}
+
+/** Never approved yet: no store can be using it. */
+const neverApproved = (code) => code.approvalStatus !== 'approved' && !code.pendingChanges;
+
+const DATE_COLUMNS = ['startsAt', 'endsAt'];
+const AMOUNT_COLUMNS = ['discountValue', 'minPriceAmount', 'grantValue'];
+const LIST_COLUMNS = ['allowedPlanIds', 'allowedCycles'];
+
+/** A form sends every field: what matters is what differs, whatever form each side is in. */
+function sameValue(key, a, b) {
+  const plain = (v) => {
+    if (v === undefined || v === null || v === '') return null;
+    if (DATE_COLUMNS.includes(key)) return new Date(v).getTime();
+    if (AMOUNT_COLUMNS.includes(key)) return Number(v);
+    if (LIST_COLUMNS.includes(key)) return v.length ? [...v].sort() : null;
+    if (key === 'terms') return terms.normalizeTerms(v);
+    return v;
+  };
+  return JSON.stringify(plain(a)) === JSON.stringify(plain(b));
+}
+
+/**
+ * The one check on a change to a code, from the console or from /my/*. A
+ * creator's applies as it is. From anyone else, the name and the on/off switch
+ * apply at once; anything else that really changes (the discount, the
+ * commission, the limits, the dates, its agent), and
+ *   - on a code never approved, goes on the code, which waits for review again;
+ *   - on an approved one, waits in pending_changes while the code goes on as
+ *     approved, and the code is pending; changing it back clears the wait.
+ */
+async function applyChange(code, patch, req, transaction) {
+  const reviewed = !isCreator(req.user);
+  const effective = reviewed ? { ...code.get(), ...(code.pendingChanges || {}) } : code;
+  const { label, active, ...money } = await columnsFor(effective, patch, transaction);
+  if (active === true && !code.active && neverApproved(code)) {
+    throw new ConflictError('This code has not been approved yet.', 'REFERRAL_CODE_NOT_APPROVED');
+  }
+
+  const changed = Object.keys(money).filter((key) => !sameValue(key, money[key], effective[key]));
+  const asked = Object.fromEntries(changed.map((key) => [key, money[key]]));
+  const fields = { updatedByUserId: req.user.id };
+  for (const [key, value] of Object.entries({ label, active })) {
+    if (value !== undefined) fields[key] = value;
+  }
+  const authored = [...new Set([...(code.reviewAuthors || []), req.user.id])];
+
+  let action = 'referral_code.update';
+  if (!reviewed) {
+    Object.assign(fields, money);
+  } else if (neverApproved(code)) {
+    Object.assign(fields, asked);
+    if (changed.length) Object.assign(fields, { approvalStatus: 'pending', approvalNote: null, reviewAuthors: authored });
+  } else if (changed.length) {
+    const waiting = { ...(code.pendingChanges || {}), ...asked };
+    for (const key of Object.keys(waiting)) {
+      if (sameValue(key, waiting[key], code.get(key))) delete waiting[key];
+    }
+    const any = Object.keys(waiting).length > 0;
+    Object.assign(fields, {
+      pendingChanges: any ? waiting : null,
+      approvalStatus: any ? 'pending' : 'approved',
+      approvalNote: null,
+      changesRejected: false,
+      reviewAuthors: any ? authored : [],
+    });
+    action = 'referral_code.submit_changes';
+  }
+
+  const before = auditState(code);
+  await code.update(fields, { transaction });
+  await auditCode(action, req, code, before, auditState(code), transaction);
+  return serializeCode(code);
+}
+
+/**
  * Changes a code. The first-kind fields (discount_*, commission_rate_bp)
  * stay editable on a code with no terms, as before. With the flag on, the
  * second-kind fields too, `agentId` included (giving an agentless code an
@@ -346,45 +497,113 @@ const EDITABLE = ['label', 'discountType', 'discountValue', 'discountCurrency', 
  * `terms` turns a first-kind code into the second kind: from then on (flag
  * on) its schedule prices every store using it, at each store's own payment
  * number; its first-kind discount and rate stay as they were (read-only),
- * and are what prices it again if the flag is turned off.
+ * and are what prices it again if the flag is turned off. A code never
+ * approved can't be switched on here: that is what approving it does.
  */
 async function updateCode(codeId, patch, req) {
   return db.sequelize.transaction(async (transaction) => {
     const code = await db.ReferralCode.findByPk(codeId, { transaction, lock: transaction.LOCK.UPDATE });
     if (!code) throw new NotFoundError('Referral code');
-    const v2 = v2Enabled();
-    if (!v2 && V2_FIELDS.some((key) => has(patch, key))) throw v2Disabled();
+    return applyChange(code, patch, req, transaction);
+  });
+}
 
-    const next = {};
-    for (const key of EDITABLE) if (key in patch) next[key] = patch[key] === '' ? null : patch[key];
-    // Switching the type clears the fields the new type does not take, so a
-    // form can send just { discountType: 'none' }.
-    if (next.discountType === 'none') {
-      if (!('discountValue' in next)) next.discountValue = null;
-      if (!('discountCurrency' in next)) next.discountCurrency = null;
-    } else if (next.discountType === 'percentage' && !('discountCurrency' in next)) {
-      next.discountCurrency = null;
+// ------------------------------------------------------------- own codes
+
+/** POST /admin/my/referral-codes: the requester's own code, always theirs whatever the body says. */
+async function createOwnCode(body, req) {
+  return db.sequelize.transaction(async (transaction) => {
+    try {
+      return serializeCode(await createCodeInTransaction(req.user.id, body, req, transaction, { own: true }));
+    } catch (err) {
+      throw uniqueViolationToConflict(err, body.code);
     }
-    const merged = {
-      discountType: 'discountType' in next ? next.discountType : code.discountType,
-      discountValue:
-        'discountValue' in next ? next.discountValue : code.discountValue == null ? null : Number(code.discountValue),
-      discountCurrency: 'discountCurrency' in next ? next.discountCurrency : code.discountCurrency,
-    };
-    // A second-kind code's discount lives in its terms; its first-kind fields stay empty.
-    if (!code.terms || !['discountType', 'discountValue', 'discountCurrency'].some((key) => key in next)) assertDiscount(merged);
-    else throw new ValidationError([{ field: 'discountType', message: "This code's discount is set by its schedule (terms)" }], 'Invalid body');
-    const second = v2 ? await v2Columns(patch, code, transaction) : {};
-    if (v2 && has(patch, 'agentId')) {
-      if (patch.agentId != null) await assertAgent(patch.agentId, transaction);
-      second.agentId = patch.agentId;
-    }
-    // A first-kind code given a schedule keeps its own discount and rate
-    // columns, untouched: with the flag off again it prices exactly as before.
+  });
+}
+
+/** PATCH /admin/my/referral-codes/:codeId. Someone else's code answers as if it didn't exist. */
+async function updateOwnCode(codeId, patch, req) {
+  return db.sequelize.transaction(async (transaction) => {
+    const code = await db.ReferralCode.findByPk(codeId, { transaction, lock: transaction.LOCK.UPDATE });
+    if (!code || code.agentId !== req.user.id) throw new NotFoundError('Referral code');
+    return applyChange(code, patch, req, transaction);
+  });
+}
+
+// -------------------------------------------------------------- the review
+
+async function lockPending(codeId, req, transaction) {
+  const code = await db.ReferralCode.findByPk(codeId, { transaction, lock: transaction.LOCK.UPDATE });
+  if (!code) throw new NotFoundError('Referral code');
+  if (code.approvalStatus !== 'pending') {
+    throw new ConflictError('This code is not waiting for review.', 'REFERRAL_CODE_NOT_PENDING');
+  }
+  if (!isCreator(req.user) && authorsOf(code).includes(req.user.id)) {
+    throw new AppError('REVIEW_OF_OWN_WORK', 'You made this code or changed it, so someone else has to review it.', 403);
+  }
+  return code;
+}
+
+/**
+ * POST /admin/referral-codes/:codeId/approve. `edits` is anything the reviewer
+ * changed, on top of what was waiting. A code never approved is switched on; a
+ * change to an approved one takes effect, and the code stays as on or off as
+ * it was.
+ */
+async function approveCode(codeId, edits, req) {
+  return db.sequelize.transaction(async (transaction) => {
+    const code = await lockPending(codeId, req, transaction);
+    const waiting = code.pendingChanges || null;
+    // The agent may have lost the role since the change was asked for.
+    if (waiting && waiting.agentId) await assertAgent(waiting.agentId, transaction);
+    const columns = await columnsFor({ ...code.get(), ...(waiting || {}) }, edits, transaction);
 
     const before = auditState(code);
-    await code.update({ ...next, ...second, updatedByUserId: req.user.id }, { transaction });
-    await auditCode('referral_code.update', req, code, before, auditState(code), transaction);
+    await code.update(
+      {
+        ...(waiting || {}),
+        ...columns,
+        active: waiting ? code.active : true,
+        pendingChanges: null,
+        approvalStatus: 'approved',
+        approvalNote: null,
+        changesRejected: false,
+        reviewAuthors: [],
+        reviewedByUserId: req.user.id,
+        reviewedAt: new Date(),
+        updatedByUserId: req.user.id,
+      },
+      { transaction }
+    );
+    await auditCode('referral_code.approve', req, code, before, auditState(code), transaction);
+    return serializeCode(code);
+  });
+}
+
+/**
+ * POST /admin/referral-codes/:codeId/reject. A code never approved stays off;
+ * a change to an approved one is dropped, and the code goes on as approved.
+ */
+async function rejectCode(codeId, { reason }, req) {
+  return db.sequelize.transaction(async (transaction) => {
+    const code = await lockPending(codeId, req, transaction);
+    const before = auditState(code);
+    const changeOnly = Boolean(code.pendingChanges);
+    await code.update(
+      {
+        pendingChanges: null,
+        approvalStatus: changeOnly ? 'approved' : 'rejected',
+        changesRejected: changeOnly,
+        approvalNote: reason || null,
+        // A code never approved keeps what they changed, so they still can't review it.
+        ...(changeOnly ? { reviewAuthors: [] } : {}),
+        reviewedByUserId: req.user.id,
+        reviewedAt: new Date(),
+        updatedByUserId: req.user.id,
+      },
+      { transaction }
+    );
+    await auditCode('referral_code.reject', req, code, before, auditState(code), transaction);
     return serializeCode(code);
   });
 }
@@ -396,7 +615,7 @@ async function updateCode(codeId, patch, req) {
 async function findUsableCode(input, transaction) {
   const code = normalizeCode(input);
   const row = CODE_PATTERN.test(code) ? await db.ReferralCode.findOne({ where: { code }, transaction }) : null;
-  if (!row || !row.active) {
+  if (!row || !canBeEntered(row)) {
     throw new AppError('REFERRAL_CODE_INVALID', "That referral code isn't valid. Check it and try again.", 422);
   }
   return row;
@@ -414,11 +633,16 @@ module.exports = {
   normalizeCode,
   serializeCode,
   serializeCodeForMerchant,
+  canBeEntered,
   assertDiscount,
   discountFor,
   createCode,
   createCodeInTransaction,
   uniqueViolationToConflict,
   updateCode,
+  createOwnCode,
+  updateOwnCode,
+  approveCode,
+  rejectCode,
   findUsableCode,
 };

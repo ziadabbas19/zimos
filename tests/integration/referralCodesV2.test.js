@@ -9,7 +9,7 @@
 // working as before. Charges are paid through the signed billing webhook, as
 // in agentReferrals.test.js.
 
-const { app, request, registerAndActivate, makePlatformUser, uniqueEmail } = require('../helpers/factories');
+const { app, request, registerAndActivate, addPlatformKeys, approveReferralCode, makePlatformUser, uniqueEmail } = require('../helpers/factories');
 const db = require('../../src/db/models');
 const env = require('../../src/config/env');
 const billingService = require('../../src/modules/billing/billingService');
@@ -61,10 +61,12 @@ const both = (discount, commission = []) => ({ monthly: { discount, commission }
 async function makeCode(body) {
   const res = await request(app).post('/api/v1/admin/referral-codes').set(admin.H).send(body);
   if (res.status !== 201) throw new Error(`makeCode failed: ${res.status} ${JSON.stringify(res.body)}`);
-  return res.body.code;
+  // From an admin, a new code waits for a creator's review.
+  return approveReferralCode(res.body.code.id);
 }
 
 async function newAgent() {
+  await addPlatformKeys(admin.userId, ['agents.create']);
   const person = await registerAndActivate({ fullName: 'Agent Person' });
   const res = await request(app).post('/api/v1/admin/agents').set(admin.H).send({ email: person.email });
   if (res.status !== 201) throw new Error(`newAgent failed: ${res.status} ${JSON.stringify(res.body)}`);
@@ -110,6 +112,7 @@ describe('flag off: the first kind as before, the second refused', () => {
       .send({ code: 'OLD10', discountType: 'percentage', discountValue: 1000 });
     expect(old.status).toBe(201);
     expect(old.body.code).toMatchObject({ kind: 'legacy', audience: 'any', terms: null, usesCount: 0 });
+    await approveReferralCode(old.body.code.id);
 
     // The same owner may still use it on a second store, as before (no once-per rule with the flag off).
     const first = await signup('OLD10');
@@ -291,9 +294,11 @@ describe('commission: links from codes, schedules and basis', () => {
     await makeCode({ code: 'AGENTA', agentId: agentA.userId, audience: 'any', terms: both([], [rate(null, 3000)]) });
 
     const store = await signup(null);
+    // Only a creator's change to a link applies at once (agentCodes.test.js has the rest).
+    const creator = await makePlatformUser('creator');
     const linked = await request(app)
       .post(`/api/v1/admin/workspaces/${store.wid}/agent-links`)
-      .set(admin.H)
+      .set(creator.H)
       .send({ agentId: agentB.userId, terms: { monthly: [rate(null, 2000)], yearly: [rate(null, 1000)] }, note: 'Brought by phone' });
     expect(linked.status).toBe(201);
     expect(linked.body.link).toMatchObject({ source: 'manual', open: true, code: null, agent: { id: agentB.userId } });
@@ -307,7 +312,7 @@ describe('commission: links from codes, schedules and basis', () => {
     // Moved to A by hand: B's link ends as replaced.
     const moved = await request(app)
       .post(`/api/v1/admin/workspaces/${store.wid}/agent-links`)
-      .set(admin.H)
+      .set(creator.H)
       .send({ agentId: agentA.userId, terms: { monthly: [rate(1, 5000)], yearly: [rate(1, 5000)] } });
     expect(moved.status).toBe(201);
     const history = await request(app).get(`/api/v1/admin/workspaces/${store.wid}/referrals`).set(admin.H);
@@ -320,7 +325,7 @@ describe('commission: links from codes, schedules and basis', () => {
     await payNext(store.wid);
     expect((await db.AgentCommission.findAll({ where: { workspaceId: store.wid }, order: [['paidAt', 'ASC']] })).map((r) => r.agentId)).toEqual([agentB.userId, agentA.userId]);
 
-    const end = await request(app).post(`/api/v1/admin/agent-links/${moved.body.link.id}/end`).set(admin.H).send({});
+    const end = await request(app).post(`/api/v1/admin/agent-links/${moved.body.link.id}/end`).set(creator.H).send({});
     expect([end.status, end.body.link.endReason]).toEqual([200, 'ended']);
     const actions = (await db.AuditLog.findAll({ where: { entityType: 'AgentLink' } })).map((a) => `${a.action}:${a.entityId === moved.body.link.id ? 'A' : 'B'}`);
     expect(actions.sort()).toEqual(['agent_link.create:A', 'agent_link.create:B', 'agent_link.end:A', 'agent_link.end:B']);
@@ -336,15 +341,18 @@ describe('a code of the first kind given a schedule (FREE100)', () => {
       .set(admin.H)
       .send({ code: 'FREE100', discountType: 'percentage', discountValue: 10000, commissionRateBp: 0 });
     expect(made.status).toBe(201);
+    await approveReferralCode(made.body.code.id);
     const early = await signup('FREE100');
     const trialing = await signup('FREE100');
     // As before: 100% off every charge.
     expect([Number((await payNext(early.wid)).amount), Number((await payNext(early.wid)).amount)]).toEqual([0, 0]);
 
     v2(true);
+    // Only a creator's money changes apply at once (agentCodes.test.js has the rest).
+    const creator = await makePlatformUser('creator');
     const converted = await request(app)
       .patch(`/api/v1/admin/referral-codes/${made.body.code.id}`)
-      .set(admin.H)
+      .set(creator.H)
       .send({ terms: both([pct(1, 10000)], [rate(null, 1000)]) });
     expect(converted.status).toBe(200);
     // Its first-kind discount and rate are kept, for the flag turned off again.
@@ -450,9 +458,10 @@ describe('permissions and the audit', () => {
     expect((await request(app).post('/api/v1/admin/referral-codes').set(AH).send({ code: 'MINE1' })).status).toBe(403);
 
     const code = await makeCode({ code: 'AUDITED', audience: 'any' });
-    await request(app).patch(`/api/v1/admin/referral-codes/${code.id}`).set(admin.H).send({ maxUses: 5, agentId: agent.userId });
+    const creator = await makePlatformUser('creator');
+    await request(app).patch(`/api/v1/admin/referral-codes/${code.id}`).set(creator.H).send({ maxUses: 5, agentId: agent.userId });
     const entry = await db.AuditLog.findOne({ where: { action: 'referral_code.update', entityId: code.id } });
-    expect([entry.actorUserId, entry.beforeState.maxUses, entry.afterState.maxUses, entry.beforeState.agentId, entry.afterState.agentId]).toEqual([admin.userId, null, 5, null, agent.userId]);
+    expect([entry.actorUserId, entry.beforeState.maxUses, entry.afterState.maxUses, entry.beforeState.agentId, entry.afterState.agentId]).toEqual([creator.userId, null, 5, null, agent.userId]);
   });
 });
 

@@ -5,7 +5,7 @@ const db = require('../../db/models');
 const { AppError, ConflictError, NotFoundError } = require('../../core/errors/AppError');
 const { recordAudit } = require('../audit/auditService');
 const { planPrice } = require('../billing/planPricing');
-const { normalizeCode, CODE_PATTERN } = require('./referralCodeService');
+const { normalizeCode, CODE_PATTERN, canBeEntered } = require('./referralCodeService');
 const { emailKey } = require('./emailKey');
 const pricing = require('./referralPricing');
 const agentLinks = require('./agentLinkService');
@@ -16,7 +16,8 @@ const agentLinks = require('./agentLinkService');
  * path for all three, inside the caller's transaction.
  *
  * Always (as before): the code must exist and be active; the same code again
- * is a no-op; one code at a time per store.
+ * is a no-op; one code at a time per store. Nor can it be waiting for a
+ * creator's review (migration 742); a store already using it keeps it.
  *
  * With REFERRAL_CODES_V2_ENABLED, also, each with its own error:
  *   - its dates (starts_at / ends_at) and its use limit (max_uses, counted by
@@ -165,6 +166,7 @@ async function assess(subscription, input, { planId = null, billingCycle = null,
   const v2 = pricing.v2Enabled();
   if (!v2 && isSecondKind(code)) throw invalid();
   if (subscription.referralCodeId === code.id) return { code, sameCode: true, kind: null, replaces: null };
+  if (!canBeEntered(code)) throw invalid();
 
   const workspace = await db.Workspace.findByPk(subscription.workspaceId, {
     attributes: ['id', 'ownerUserId'],

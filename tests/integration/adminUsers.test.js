@@ -299,13 +299,13 @@ describe('platform users: roles and permissions', () => {
     const agent = await makePlatformUser('agent');
     const escalate = await edit(manager, agent.userId, { permissions: ['referrals.view_own', 'secret.key'] });
     expect(escalate.status).toBe(422);
-    const trimmed = await edit(creator, manager.userId, { permissions: ['admins.view', 'admins.manage'] });
+    const trimmed = await edit(creator, manager.userId, { permissions: ['admins.view', 'admins.manage', 'agents.create'] });
     expect(trimmed.status).toBe(200);
     const notHeld = await edit(manager, agent.userId, { permissions: ['referrals.view_own', 'plans.manage'] });
     expect(notHeld.status).toBe(403);
     expect(notHeld.body.error.code).toBe('PERMISSION_NOT_HELD');
 
-    // What they may do: give an ordinary account a non-creator role.
+    // What they may do: give an ordinary account a non-creator role, here with agents.create.
     expect((await grant(manager, { email: target.email, role: 'agent' })).status).toBe(201);
     expect((await reload(other.userId)).platformRole).toBe('creator');
   });
@@ -405,11 +405,12 @@ describe('platform users: roles and permissions', () => {
     }
   });
 
-  it('creating an agent re-reads the requester for agents.manage', async () => {
+  it('creating an agent re-reads the requester for agents.create', async () => {
     const adminUsers = require('../../src/modules/platformAdmin/adminUsersService');
     const agentService = require('../../src/modules/referrals/agentService');
     const creator = await makePlatformUser('creator');
     const manager = await makePlatformUser('admin');
+    await db.User.update({ platformPermissions: ['agents.create'] }, { where: { id: manager.userId } });
     const target = await makeUser();
     const staleReq = { user: await reload(manager.userId), headers: {} };
     expect((await revoke(creator, manager.userId)).status).toBe(200);

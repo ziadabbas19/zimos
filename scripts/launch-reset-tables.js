@@ -41,6 +41,7 @@ const TABLES = {
   // ---- wiped -------------------------------------------------------------
   agent_commissions: wipe('commissions of agents (accounts that go) on store invoices'),
   agent_links: wipe('which agent earns on each store, from a code or set by hand (migration 725)'),
+  agent_link_requests: wipe("changes to a store's agent waiting for a creator's review (migration 743)"),
   ai_jobs: wipe(STORE),
   ai_usage: wipe(STORE),
   analytics_events: wipe(STORE),

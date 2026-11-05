@@ -504,9 +504,26 @@ module.exports = {
       agentId: Joi.alternatives().try(uuid, Joi.string().valid('none')).optional(),
       state: Joi.string().valid(...REFERRAL_CODE_STATES).optional(),
       audience: Joi.string().valid(...REFERRAL_AUDIENCES).optional(),
+      // Where it stands with a creator's review (migration 742).
+      approval: Joi.string().valid('pending', 'approved', 'rejected').optional(),
       limit: Joi.number().integer().min(1).max(200).default(50),
       offset: Joi.number().integer().min(0).default(0),
     }),
+  },
+  // An account's own codes: never another agent, and never switching itself on.
+  createOwnReferralCode: { body: referralCodeBody },
+  updateOwnReferralCode: {
+    params: Joi.object({ codeId: uuid.required() }),
+    body: Joi.object({ ...referralCodeFields, ...referralCodeV2Fields }).min(1),
+  },
+  // Anything the reviewer changed on the way; nothing is fine.
+  approveReferralCode: {
+    params: Joi.object({ codeId: uuid.required() }),
+    body: Joi.object({ ...referralCodeFields, ...referralCodeV2Fields }).default({}),
+  },
+  rejectReferralCode: {
+    params: Joi.object({ codeId: uuid.required() }),
+    body: Joi.object({ reason: Joi.string().trim().max(1000).allow('', null) }).default({}),
   },
   referralCodeParams: { params: Joi.object({ codeId: uuid.required() }) },
   listCodeRedemptions: {
@@ -557,6 +574,19 @@ module.exports = {
   endAgentLink: {
     params: Joi.object({ linkId: uuid.required() }),
     body: Joi.object({ note: Joi.string().trim().max(1000).allow('', null).optional() }),
+  },
+  // A change to a store's agent from anyone but a creator (migration 743).
+  listAgentLinkRequests: {
+    query: Joi.object({
+      status: Joi.string().valid('pending', 'approved', 'rejected').default('pending'),
+      limit: Joi.number().integer().min(1).max(200).default(50),
+      offset: Joi.number().integer().min(0).default(0),
+    }),
+  },
+  agentLinkRequestParams: { params: Joi.object({ requestId: uuid.required() }) },
+  rejectAgentLinkRequest: {
+    params: Joi.object({ requestId: uuid.required() }),
+    body: Joi.object({ reason: Joi.string().trim().max(1000).allow('', null) }).default({}),
   },
   // The code string is fixed once created (merchants and print use it).
   updateReferralCode: {

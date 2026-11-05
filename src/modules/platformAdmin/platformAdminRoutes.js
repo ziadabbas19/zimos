@@ -182,9 +182,10 @@ router.delete('/admins/:userId', can(P.ADMINS_MANAGE), validate(schemas.revokeAd
 // --- Agents, referral codes and the commission ledger ------------------------
 // The ledger is informational only: nothing here pays anyone. Its one write is
 // an admin marking a row paid by hand. An agent reads their own slice through
-// /my/*, which is scoped to req.user and never takes an agent id.
+// /my/*, which is scoped to req.user and never takes an agent id. Adding an agent
+// is its own permission, a creator's unless given.
 router.get('/agents', can(P.AGENTS_VIEW), controller.listAgents);
-router.post('/agents', can(P.AGENTS_MANAGE), validate(schemas.createAgent), controller.createAgent);
+router.post('/agents', can(P.AGENTS_CREATE), validate(schemas.createAgent), controller.createAgent);
 router.get('/agents/:agentId', can(P.AGENTS_VIEW), validate(schemas.agentParams), controller.getAgent);
 router.post('/agents/:agentId/codes', can(P.AGENTS_MANAGE), validate(schemas.createReferralCode), controller.createReferralCode);
 router.patch('/referral-codes/:codeId', can(P.AGENTS_MANAGE), validate(schemas.updateReferralCode), controller.updateReferralCode);
@@ -198,15 +199,26 @@ router.post('/referral-codes', can(P.AGENTS_MANAGE), validate(schemas.createStan
 router.post('/referral-codes/simulate', can(P.AGENTS_VIEW), validate(schemas.simulateReferralCode), controller.simulateReferralCode);
 router.get('/referral-codes/:codeId', can(P.AGENTS_VIEW), validate(schemas.referralCodeParams), controller.getReferralCode);
 router.get('/referral-codes/:codeId/redemptions', can(P.AGENTS_VIEW), validate(schemas.listCodeRedemptions), controller.listCodeRedemptions);
+// A creator's review of a code its owner made or changed (migration 742).
+router.post('/referral-codes/:codeId/approve', can(P.REFERRAL_CODES_APPROVE), validate(schemas.approveReferralCode), controller.approveReferralCode);
+router.post('/referral-codes/:codeId/reject', can(P.REFERRAL_CODES_APPROVE), validate(schemas.rejectReferralCode), controller.rejectReferralCode);
 router.get('/workspaces/:workspaceId/referrals', can(P.AGENTS_VIEW), validate(schemas.workspaceReferrals), controller.getWorkspaceReferrals);
 router.get('/users/:userId/referrals', can(P.AGENTS_VIEW), validate(schemas.userReferrals), controller.getUserReferrals);
 router.post('/workspaces/:workspaceId/agent-links', can(P.AGENTS_MANAGE), validate(schemas.createAgentLink), controller.createAgentLink);
 router.patch('/agent-links/:linkId', can(P.AGENTS_MANAGE), validate(schemas.updateAgentLink), controller.updateAgentLink);
 router.post('/agent-links/:linkId/end', can(P.AGENTS_MANAGE), validate(schemas.endAgentLink), controller.endAgentLink);
+// A change to a store's agent from anyone but a creator waits here (migration 743).
+router.get('/agent-link-requests', can(P.AGENTS_VIEW), validate(schemas.listAgentLinkRequests), controller.listAgentLinkRequests);
+router.post('/agent-link-requests/:requestId/approve', can(P.REFERRAL_CODES_APPROVE), validate(schemas.agentLinkRequestParams), controller.approveAgentLinkRequest);
+router.post('/agent-link-requests/:requestId/reject', can(P.REFERRAL_CODES_APPROVE), validate(schemas.rejectAgentLinkRequest), controller.rejectAgentLinkRequest);
 router.get('/commissions', can(P.AGENTS_VIEW), validate(schemas.listCommissions), controller.listCommissions);
 router.post('/commissions/:commissionId/mark-paid', can(P.COMMISSIONS_MARK_PAID), validate(schemas.markCommissionPaid), controller.markCommissionPaid);
 router.get('/my/referrals', can(P.REFERRALS_VIEW_OWN), controller.getMyReferrals);
 router.get('/my/commissions', can(P.REFERRALS_VIEW_OWN), validate(schemas.listMyCommissions), controller.listMyCommissions);
+// An account's own codes: made and changed here, waiting for review, and nobody else's.
+router.post('/my/referral-codes', can(P.REFERRALS_VIEW_OWN), validate(schemas.createOwnReferralCode), controller.createOwnReferralCode);
+router.get('/my/referral-codes/:codeId', can(P.REFERRALS_VIEW_OWN), validate(schemas.referralCodeParams), controller.getOwnReferralCode);
+router.patch('/my/referral-codes/:codeId', can(P.REFERRALS_VIEW_OWN), validate(schemas.updateOwnReferralCode), controller.updateOwnReferralCode);
 
 // --- Support tickets ---------------------------------------------------------
 // The platform side of modules/support: the queue, replies, status/priority.

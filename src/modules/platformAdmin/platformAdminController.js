@@ -410,6 +410,15 @@ const listCodeRedemptions = asyncHandler(async (req, res) => {
   res.json(await redemptions.forCode(req.params.codeId, req.query));
 });
 
+// A creator's review of a code its owner made or changed (migration 742).
+const approveReferralCode = asyncHandler(async (req, res) => {
+  res.json({ code: await referralCodes.approveCode(req.params.codeId, req.body || {}, req) });
+});
+
+const rejectReferralCode = asyncHandler(async (req, res) => {
+  res.json({ code: await referralCodes.rejectCode(req.params.codeId, req.body || {}, req) });
+});
+
 const simulateReferralCode = asyncHandler(async (req, res) => {
   res.json(await referralCodeAdmin.simulate(req.body));
 });
@@ -422,16 +431,32 @@ const getUserReferrals = asyncHandler(async (req, res) => {
   res.json(await referralCodeAdmin.forUser(req.params.userId));
 });
 
+// 202 with { request } from anyone but a creator: it waits for review, and nothing has changed yet.
 const createAgentLink = asyncHandler(async (req, res) => {
-  res.status(201).json({ link: await agentLinks.createManual(req.params.workspaceId, req.body, req) });
+  const result = await agentLinks.createManual(req.params.workspaceId, req.body, req);
+  res.status(result.request ? 202 : 201).json(result);
 });
 
 const updateAgentLink = asyncHandler(async (req, res) => {
-  res.json({ link: await agentLinks.update(req.params.linkId, req.body, req) });
+  const result = await agentLinks.update(req.params.linkId, req.body, req);
+  res.status(result.request ? 202 : 200).json(result);
 });
 
 const endAgentLink = asyncHandler(async (req, res) => {
-  res.json({ link: await agentLinks.end(req.params.linkId, req.body || {}, req) });
+  const result = await agentLinks.end(req.params.linkId, req.body || {}, req);
+  res.status(result.request ? 202 : 200).json(result);
+});
+
+const listAgentLinkRequests = asyncHandler(async (req, res) => {
+  res.json(await agentLinks.listRequests(req.query));
+});
+
+const approveAgentLinkRequest = asyncHandler(async (req, res) => {
+  res.json(await agentLinks.approveRequest(req.params.requestId, req));
+});
+
+const rejectAgentLinkRequest = asyncHandler(async (req, res) => {
+  res.json(await agentLinks.rejectRequest(req.params.requestId, req.body || {}, req));
 });
 
 const listCommissions = asyncHandler(async (req, res) => {
@@ -449,6 +474,18 @@ const getMyReferrals = asyncHandler(async (req, res) => {
 
 const listMyCommissions = asyncHandler(async (req, res) => {
   res.json(await commissions.listCommissions({ ...req.query, agentId: req.user.id }, { forAgent: true }));
+});
+
+const createOwnReferralCode = asyncHandler(async (req, res) => {
+  res.status(201).json({ code: await referralCodes.createOwnCode(req.body, req) });
+});
+
+const getOwnReferralCode = asyncHandler(async (req, res) => {
+  res.json(await referralCodeAdmin.getOwnCode(req.params.codeId, req.user.id));
+});
+
+const updateOwnReferralCode = asyncHandler(async (req, res) => {
+  res.json({ code: await referralCodes.updateOwnCode(req.params.codeId, req.body, req) });
 });
 
 // --- Support tickets ---------------------------------------------------------
@@ -547,15 +584,23 @@ module.exports = {
   getReferralCode,
   listCodeRedemptions,
   simulateReferralCode,
+  approveReferralCode,
+  rejectReferralCode,
   getWorkspaceReferrals,
   getUserReferrals,
   createAgentLink,
   updateAgentLink,
   endAgentLink,
+  listAgentLinkRequests,
+  approveAgentLinkRequest,
+  rejectAgentLinkRequest,
   listCommissions,
   markCommissionPaid,
   getMyReferrals,
   listMyCommissions,
+  createOwnReferralCode,
+  getOwnReferralCode,
+  updateOwnReferralCode,
   listTickets,
   getTicket,
   replyTicket,

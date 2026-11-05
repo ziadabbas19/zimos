@@ -120,6 +120,12 @@ async function setPlatformRole(userId, roleKey = 'admin') {
   );
 }
 
+/** Adds keys to an account's set, as a creator does by hand: what no role holds by default. */
+async function addPlatformKeys(userId, keys) {
+  const user = await db.User.findByPk(userId);
+  await user.update({ platformPermissions: [...new Set([...user.platformPermissions, ...keys])] });
+}
+
 /** A fresh active account holding `roleKey`, with a ready Authorization header. */
 async function makePlatformUser(roleKey = 'admin', overrides = {}) {
   const auth = await registerAndActivate(overrides);
@@ -127,10 +133,20 @@ async function makePlatformUser(roleKey = 'admin', overrides = {}) {
   return { ...auth, H: { Authorization: `Bearer ${auth.accessToken}` } };
 }
 
+/** A creator's approval of a code someone else made, which waits for it otherwise. */
+async function approveReferralCode(codeId) {
+  const creator = await makePlatformUser('creator');
+  const res = await request(app).post(`/api/v1/admin/referral-codes/${codeId}/approve`).set(creator.H).send({});
+  if (res.status !== 200) throw new Error(`approveReferralCode failed: ${res.status} ${JSON.stringify(res.body)}`);
+  return res.body.code;
+}
+
 module.exports = {
   addMemberWithRole,
   confirmCodOrder,
   setPlatformRole,
+  addPlatformKeys,
+  approveReferralCode,
   makePlatformUser,
   app,
   request,

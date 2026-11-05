@@ -12,7 +12,7 @@
 // ledger written exactly as for `invoice.paid`. Only a payment recorded by
 // hand can be reversed.
 
-const { app, request, registerAndActivate, makePlatformUser } = require('../helpers/factories');
+const { app, request, registerAndActivate, addPlatformKeys, approveReferralCode, makePlatformUser } = require('../helpers/factories');
 const db = require('../../src/db/models');
 const env = require('../../src/config/env');
 const billingService = require('../../src/modules/billing/billingService');
@@ -48,10 +48,11 @@ const reverseUrl = (chargeId) => `/api/v1/admin/charges/${chargeId}/reverse-paym
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 async function newAgentWithCode(admin, code) {
+  await addPlatformKeys(admin.userId, ['agents.create']);
   const person = await registerAndActivate({ fullName: 'Agent Person' });
   const res = await request(app).post('/api/v1/admin/agents').set(admin.H).send({ email: person.email, firstCode: code });
   if (res.status !== 201) throw new Error(`agent: ${res.status} ${JSON.stringify(res.body)}`);
-  return { ...person, H: { Authorization: `Bearer ${person.accessToken}` }, code: res.body.code };
+  return { ...person, H: { Authorization: `Bearer ${person.accessToken}` }, code: await approveReferralCode(res.body.code.id) };
 }
 
 /** A merchant on Starter, created with `referralCode` if given. */

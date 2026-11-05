@@ -51,23 +51,27 @@ function stateWhere(state, now) {
   }
 }
 
-/** GET /admin/referral-codes — search (code or label), agent ('none' = no agent), state, audience. */
-async function listCodes({ q, agentId, state, audience, limit = 50, offset = 0 } = {}) {
+/** GET /admin/referral-codes — search (code or label), agent ('none' = no agent), state, audience, review. */
+async function listCodes({ q, agentId, state, audience, approval, limit = 50, offset = 0 } = {}) {
   const now = new Date();
   const where = { ...stateWhere(state, now) };
+  if (approval) where.approvalStatus = approval;
   if (agentId === 'none') where.agentId = null;
   else if (agentId) where.agentId = agentId;
   if (audience) where.audience = audience;
   const term = q && q.trim() ? `%${q.trim().replace(/[\\%_]/g, (c) => `\\${c}`)}%` : null;
   if (term) where[Op.or] = [{ code: { [Op.iLike]: term } }, { label: { [Op.iLike]: term } }];
   const take = Math.min(limit, LIST_LIMIT_MAX);
-  const { rows, count } = await db.ReferralCode.findAndCountAll({
-    where,
-    include: [AGENT],
-    order: [['createdAt', 'DESC'], ['id', 'ASC']],
-    limit: take,
-    offset,
-  });
+  const [{ rows, count }, pendingReview] = await Promise.all([
+    db.ReferralCode.findAndCountAll({
+      where,
+      include: [AGENT],
+      order: [['createdAt', 'DESC'], ['id', 'ASC']],
+      limit: take,
+      offset,
+    }),
+    db.ReferralCode.count({ where: { approvalStatus: 'pending' } }),
+  ]);
   const stats = await agents.codeStats(rows.map((c) => c.id));
   return {
     codes: rows.map((c) => ({
@@ -78,6 +82,23 @@ async function listCodes({ q, agentId, state, audience, limit = 50, offset = 0 }
     total: count,
     limit: take,
     offset,
+    pendingReview,
+    defaultCommissionRateBp: DEFAULT_COMMISSION_RATE_BP,
+    v2Enabled: referralCodes.v2Enabled(),
+  };
+}
+
+/** GET /admin/my/referral-codes/:id — the requester's own code; anyone else's answers as if it didn't exist. */
+async function getOwnCode(codeId, ownerId) {
+  const code = await db.ReferralCode.findOne({ where: { id: codeId, agentId: ownerId } });
+  if (!code) throw new NotFoundError('Referral code');
+  const stats = await agents.codeStats([code.id]);
+  return {
+    code: {
+      ...referralCodes.serializeCode(code),
+      merchantsReferred: stats.referred.get(code.id) || 0,
+      commission: stats.commission.get(code.id) || [],
+    },
     defaultCommissionRateBp: DEFAULT_COMMISSION_RATE_BP,
     v2Enabled: referralCodes.v2Enabled(),
   };
@@ -104,8 +125,12 @@ async function getCode(codeId) {
 async function forWorkspace(workspaceId) {
   const workspace = await db.Workspace.findByPk(workspaceId, { attributes: ['id'] });
   if (!workspace) throw new NotFoundError('Workspace');
-  const [used, links] = await Promise.all([redemptions.forWorkspace(workspaceId), agentLinks.listForWorkspace(workspaceId)]);
-  return { redemptions: used, links, openLink: links.find((l) => l.open) || null, v2Enabled: referralCodes.v2Enabled() };
+  const [used, links, linkRequests] = await Promise.all([
+    redemptions.forWorkspace(workspaceId),
+    agentLinks.listForWorkspace(workspaceId),
+    agentLinks.requestsForWorkspace(workspaceId),
+  ]);
+  return { redemptions: used, links, openLink: links.find((l) => l.open) || null, linkRequests, v2Enabled: referralCodes.v2Enabled() };
 }
 
 /** GET /admin/users/:id/referrals — every code entered on the stores this account owns. */
@@ -138,4 +163,4 @@ async function simulate({ planId, billingCycle, terms: schedule, commissionBasis
   return { plan: { id: plan.id, name: plan.name, currency: plan.currency }, ...result };
 }
 
-module.exports = { listCodes, getCode, forWorkspace, forUser, simulate };
+module.exports = { listCodes, getCode, getOwnCode, forWorkspace, forUser, simulate };
