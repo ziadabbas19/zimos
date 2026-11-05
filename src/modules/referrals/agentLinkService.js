@@ -7,6 +7,7 @@ const { recordAudit } = require('../audit/auditService');
 const { PLATFORM_ROLES, isCreator } = require('../../core/security/platformPermissions');
 const terms = require('./referralTerms');
 const { v2Enabled } = require('./referralPricing');
+const reviewNotifications = require('./referralReviewNotifications');
 
 /**
  * Which agent earns on a store's payments (agent_links, migration 725).
@@ -165,7 +166,9 @@ async function askFor(kind, workspaceId, agentLinkId, changes, req, transaction)
   }
   await auditRequest('agent_link.request', req, request, null, transaction);
   await request.reload({ include: REQUEST_INCLUDE, transaction });
-  return { request: (await withAgents([request]))[0] };
+  const [serialized] = await withAgents([request]);
+  await reviewNotifications.linkWaiting(serialized, req, transaction);
+  return { request: serialized };
 }
 
 const openLink = (workspaceId, transaction, lock = false) =>
@@ -391,7 +394,9 @@ async function closeRequest(request, status, reason, action, req, transaction) {
   await request.update({ status, reason, reviewedByUserId: req.user.id, reviewedAt: new Date() }, { transaction });
   await auditRequest(action, req, request, before, transaction);
   await request.reload({ include: REQUEST_INCLUDE, transaction });
-  return (await withAgents([request]))[0];
+  const [serialized] = await withAgents([request]);
+  await reviewNotifications.linkDecided(serialized, request.requestedByUserId, req, transaction);
+  return serialized;
 }
 
 /**

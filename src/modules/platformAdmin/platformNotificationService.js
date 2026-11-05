@@ -4,7 +4,7 @@ const { QueryTypes } = require('sequelize');
 const db = require('../../db/models');
 const logger = require('../../core/utils/logger');
 const { ValidationError } = require('../../core/errors/AppError');
-const { PLATFORM_PERMISSIONS: P, hasPlatformPermission } = require('../../core/security/platformPermissions');
+const { PLATFORM_PERMISSIONS: P, hasPlatformPermission, isCreator } = require('../../core/security/platformPermissions');
 
 /**
  * The console's notifications (migration 206): one row per event for every
@@ -23,6 +23,10 @@ const { PLATFORM_PERMISSIONS: P, hasPlatformPermission } = require('../../core/s
  * payments.record. Types an admin cannot see are left out of their list, their
  * unread count, marking read and their preferences. This is the only filter:
  * the routes open for any console account.
+ *
+ * A row can narrow that further (migration 744): recipient_user_ids keeps it to
+ * those accounts, so an agent is told about their own codes and nobody else's;
+ * hidden_from_user_ids keeps it from those accounts, a creator aside.
  *
  * Preferences: per type, shown in the console (default on) and by email
  * (default off). No email is sent yet; the email choice is only kept.
@@ -47,9 +51,14 @@ const TYPES = [
   'traffic_cap',
   // The platform or one store reached its daily SMS cap (migration 723, notifications/smsBudget.js).
   'sms_cap',
+  // A creator's review (migration 744, referrals/referralReviewNotifications): waiting, and decided.
+  'referral_code_review',
+  'referral_code_decided',
+  'agent_link_review',
+  'agent_link_decided',
 ];
 
-// The console permission of the page each type points at.
+// The console permission of the page each type points at; several when any of them will do.
 const TYPE_PERMISSION = Object.freeze({
   user_signup: P.WORKSPACES_VIEW,
   workspace_created: P.WORKSPACES_VIEW,
@@ -68,18 +77,34 @@ const TYPE_PERMISSION = Object.freeze({
   traffic_cap: P.WORKSPACES_VIEW,
   // SMS spent past a cap is an abuse signal, read with the risk pages' permission.
   sms_cap: P.RISK_VIEW,
+  referral_code_review: P.REFERRAL_CODES_APPROVE,
+  agent_link_review: P.REFERRAL_CODES_APPROVE,
+  // Each row of these two also names who it is for: a code's owner holds the first key, whoever changed it the second.
+  referral_code_decided: [P.REFERRALS_VIEW_OWN, P.AGENTS_MANAGE],
+  agent_link_decided: P.AGENTS_MANAGE,
 });
 
 /** The types this console account may be told about. */
-const visibleTypes = (user) => TYPES.filter((type) => hasPlatformPermission(user, TYPE_PERMISSION[type]));
+const visibleTypes = (user) => TYPES.filter((type) => [].concat(TYPE_PERMISSION[type]).some((key) => hasPlatformPermission(user, key)));
 
 const PAGE_MAX = 50;
 
-/** Writes one notification; a duplicate dedupe_key is skipped. Never throws. */
+/** A Postgres array literal for an optional list of ids; null when there is no list. */
+const uuidArray = (ids) => (ids ? `{${ids.join(',')}}` : null);
+
+/**
+ * Writes one notification; a duplicate dedupe_key is skipped, or with `refresh`
+ * updated in place and shown as new again (moved to the top, unread for everyone).
+ * `recipients` and `hiddenFrom`: see the header. Never throws.
+ */
 async function notify(fields, transaction = null) {
-  const sql = `INSERT INTO platform_notifications (type, title, body, link, data, actor_user_id, subject_user_id, workspace_id, dedupe_key)
-    VALUES (:type, :title, :body, :link, CAST(:data AS JSONB), :actorUserId, :subjectUserId, :workspaceId, :dedupeKey)
-    ON CONFLICT (dedupe_key) WHERE dedupe_key IS NOT NULL DO NOTHING`;
+  const refresh = Boolean(fields.refresh && fields.dedupeKey);
+  const onConflict = refresh
+    ? 'DO UPDATE SET title = EXCLUDED.title, body = EXCLUDED.body, link = EXCLUDED.link, data = EXCLUDED.data, actor_user_id = EXCLUDED.actor_user_id, hidden_from_user_ids = EXCLUDED.hidden_from_user_ids, created_at = NOW()'
+    : 'DO NOTHING';
+  const sql = `INSERT INTO platform_notifications (type, title, body, link, data, actor_user_id, subject_user_id, workspace_id, dedupe_key, recipient_user_ids, hidden_from_user_ids)
+    VALUES (:type, :title, :body, :link, CAST(:data AS JSONB), :actorUserId, :subjectUserId, :workspaceId, :dedupeKey, CAST(:recipients AS UUID[]), CAST(:hiddenFrom AS UUID[]))
+    ON CONFLICT (dedupe_key) WHERE dedupe_key IS NOT NULL ${onConflict}`;
   const replacements = {
     type: fields.type,
     title: String(fields.title).slice(0, 200),
@@ -90,16 +115,40 @@ async function notify(fields, transaction = null) {
     subjectUserId: fields.subjectUserId || null,
     workspaceId: fields.workspaceId || null,
     dedupeKey: fields.dedupeKey || null,
+    recipients: uuidArray(fields.recipients),
+    hiddenFrom: uuidArray(fields.hiddenFrom),
+  };
+  const write = async (t) => {
+    await db.sequelize.query(sql, { replacements, transaction: t });
+    if (refresh) {
+      await db.sequelize.query(
+        `DELETE FROM platform_notification_reads r USING platform_notifications n WHERE r.notification_id = n.id AND n.dedupe_key = :dedupeKey`,
+        { replacements, transaction: t }
+      );
+    }
   };
   try {
     if (transaction) {
       // A savepoint: a failed insert must not abort the caller's transaction.
-      await db.sequelize.transaction({ transaction }, (t) => db.sequelize.query(sql, { replacements, transaction: t }));
+      await db.sequelize.transaction({ transaction }, write);
+    } else if (refresh) {
+      await db.sequelize.transaction(write);
     } else {
-      await db.sequelize.query(sql, { replacements });
+      await write();
     }
   } catch (err) {
     logger.error(`[platform-notifications] ${fields.type} not written: ${err.message}`);
+  }
+}
+
+/** Removes the notification under a dedupe_key, when what it said no longer holds. Never throws. */
+async function withdraw(dedupeKey, transaction = null) {
+  const run = (t) => db.sequelize.query('DELETE FROM platform_notifications WHERE dedupe_key = :dedupeKey', { replacements: { dedupeKey }, transaction: t });
+  try {
+    if (transaction) await db.sequelize.transaction({ transaction }, run);
+    else await run();
+  } catch (err) {
+    logger.error(`[platform-notifications] ${dedupeKey} not withdrawn: ${err.message}`);
   }
 }
 
@@ -233,12 +282,17 @@ function decodeCursor(cursor) {
   return { at, id };
 }
 
+// Who a row is for, besides its type's permission (see the header).
+const AUDIENCE = `(n.recipient_user_ids IS NULL OR CAST(:userId AS UUID) = ANY(n.recipient_user_ids))
+  AND (:creator OR n.hidden_from_user_ids IS NULL OR NOT (CAST(:userId AS UUID) = ANY(n.hidden_from_user_ids)))`;
+const audienceOf = (user) => ({ userId: user.id, creator: isCreator(user) });
+
 /** null when nothing can match (no type shown, or the asked type is not one of them). */
-function filters(userId, shown, { type, unread, cursor }) {
+function filters(user, shown, { type, unread, cursor }) {
   const types = type ? shown.filter((t) => t === type) : shown;
   if (!types.length) return null;
-  const where = ['n.type IN (:types)'];
-  const replacements = { userId, types };
+  const where = ['n.type IN (:types)', AUDIENCE];
+  const replacements = { ...audienceOf(user), types };
   if (unread) where.push('r.notification_id IS NULL');
   if (cursor) {
     const c = decodeCursor(cursor);
@@ -249,12 +303,13 @@ function filters(userId, shown, { type, unread, cursor }) {
   return { where: where.join(' AND '), replacements };
 }
 
-const serialize = (row) => ({
+const serialize = (row, user) => ({
   id: row.id,
   type: row.type,
   title: row.title,
   body: row.body,
-  link: row.link,
+  // A code's page takes agents.view: its owner without that key reads it on My referrals.
+  link: row.type === 'referral_code_decided' && !hasPlatformPermission(user, P.AGENTS_VIEW) ? '/my-referrals' : row.link,
   data: row.data || {},
   actorUserId: row.actor_user_id,
   subjectUserId: row.subject_user_id,
@@ -268,7 +323,7 @@ async function list(user, { type, unread, cursor, limit = 20 } = {}) {
   const size = Math.min(Math.max(Number(limit) || 20, 1), PAGE_MAX);
   if (cursor) decodeCursor(cursor);
   const shown = await shownTypes(user);
-  const f = filters(user.id, shown, { type, unread, cursor });
+  const f = filters(user, shown, { type, unread, cursor });
   if (!f) return { notifications: [], nextCursor: null, unread: await unreadCount(user, shown) };
   const rows = await db.sequelize.query(
     `SELECT n.*, r.read_at, to_char(n.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS cursor_at FROM platform_notifications n
@@ -278,7 +333,7 @@ async function list(user, { type, unread, cursor, limit = 20 } = {}) {
   );
   const page = rows.slice(0, size);
   return {
-    notifications: page.map(serialize),
+    notifications: page.map((row) => serialize(row, user)),
     nextCursor: rows.length > size ? encodeCursor(page[page.length - 1]) : null,
     unread: await unreadCount(user, shown),
   };
@@ -286,7 +341,7 @@ async function list(user, { type, unread, cursor, limit = 20 } = {}) {
 
 /** GET /admin/notifications/unread-count — for the bell. */
 async function unreadCount(user, shown = null) {
-  const f = filters(user.id, shown || (await shownTypes(user)), { unread: true });
+  const f = filters(user, shown || (await shownTypes(user)), { unread: true });
   if (!f) return 0;
   const [row] = await db.sequelize.query(
     `SELECT COUNT(*)::int AS count FROM platform_notifications n
@@ -304,16 +359,16 @@ async function markRead(user, { ids, all }) {
     await db.sequelize.query(
       `INSERT INTO platform_notification_reads (user_id, notification_id)
        SELECT :userId, n.id FROM platform_notifications n
-       WHERE n.type IN (:types)
+       WHERE n.type IN (:types) AND ${AUDIENCE}
          AND NOT EXISTS (SELECT 1 FROM platform_notification_reads r WHERE r.user_id = :userId AND r.notification_id = n.id)
        ON CONFLICT DO NOTHING`,
-      { replacements: { userId: user.id, types } }
+      { replacements: { ...audienceOf(user), types } }
     );
   } else if (!all && ids && ids.length && types.length) {
     await db.sequelize.query(
       `INSERT INTO platform_notification_reads (user_id, notification_id)
-       SELECT :userId, n.id FROM platform_notifications n WHERE n.id IN (:ids) AND n.type IN (:types) ON CONFLICT DO NOTHING`,
-      { replacements: { userId: user.id, ids, types } }
+       SELECT :userId, n.id FROM platform_notifications n WHERE n.id IN (:ids) AND n.type IN (:types) AND ${AUDIENCE} ON CONFLICT DO NOTHING`,
+      { replacements: { ...audienceOf(user), ids, types } }
     );
   }
   return { unread: await unreadCount(user) };
@@ -347,4 +402,4 @@ async function savePrefs(user, prefs) {
   return getPrefs(user);
 }
 
-module.exports = { TYPES, TYPE_PERMISSION, visibleTypes, notify, onAudit, paymentFailed, sweepSubscriptions, list, unreadCount, markRead, getPrefs, savePrefs };
+module.exports = { TYPES, TYPE_PERMISSION, visibleTypes, notify, withdraw, onAudit, paymentFailed, sweepSubscriptions, list, unreadCount, markRead, getPrefs, savePrefs };

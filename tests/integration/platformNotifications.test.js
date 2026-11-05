@@ -110,7 +110,8 @@ describe('console notifications', () => {
     const a = await makePlatformUser('admin');
     const b = await makePlatformUser('admin');
     const prefs = await request(app).get('/api/v1/admin/notification-prefs').set(a.H);
-    expect(prefs.body.prefs).toHaveLength(notifications.TYPES.length);
+    // Everything but what waits for review, which takes referral_codes.approve.
+    expect(prefs.body.prefs.map((p) => p.type).sort()).toEqual(notifications.TYPES.filter((t) => !['referral_code_review', 'agent_link_review'].includes(t)).sort());
     expect(prefs.body.prefs.every((p) => p.enabled && !p.email)).toBe(true);
 
     const put = await request(app).put('/api/v1/admin/notification-prefs').set(a.H).send({ prefs: [{ type: 'user_signup', enabled: false, email: true }] });
@@ -212,13 +213,16 @@ describe('console notifications by permission', () => {
     expect((await request(app).get('/api/v1/admin/notifications?type=payment_proof_submitted').set(support.H)).body.notifications).toEqual([]);
     expect((await request(app).get('/api/v1/admin/notification-prefs').set(support.H)).body.prefs.map((p) => p.type).sort()).toEqual(['suggestion', 'support_ticket']);
 
-    // No keys, and an agent: the bell works and is empty.
-    for (const who of [await consoleUser([]), await makePlatformUser('agent')]) {
+    // No keys, and an agent: the bell works and is empty. An agent can only be told how their own codes' reviews went.
+    for (const [who, types] of [
+      [await consoleUser([]), []],
+      [await makePlatformUser('agent'), ['referral_code_decided']],
+    ]) {
       const empty = await request(app).get('/api/v1/admin/notifications').set(who.H);
       expect(empty.status).toBe(200);
       expect(empty.body).toMatchObject({ notifications: [], unread: 0 });
       expect((await request(app).get('/api/v1/admin/notifications/unread-count').set(who.H)).body.unread).toBe(0);
-      expect((await request(app).get('/api/v1/admin/notification-prefs').set(who.H)).body.prefs).toEqual([]);
+      expect((await request(app).get('/api/v1/admin/notification-prefs').set(who.H)).body.prefs.map((p) => p.type)).toEqual(types);
       expect((await request(app).post('/api/v1/admin/notifications/read').set(who.H).send({ all: true })).status).toBe(200);
     }
   });
