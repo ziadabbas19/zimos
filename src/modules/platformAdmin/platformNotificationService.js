@@ -5,6 +5,11 @@ const db = require('../../db/models');
 const logger = require('../../core/utils/logger');
 const { ValidationError } = require('../../core/errors/AppError');
 const { PLATFORM_PERMISSIONS: P, hasPlatformPermission, isCreator } = require('../../core/security/platformPermissions');
+const pushConfig = require('../notifications/push/pushConfig');
+
+// Device notifications for what is written here (migration 745); it reads this file, so it is required when used.
+// eslint-disable-next-line global-require
+const consolePush = () => require('./consolePush');
 
 /**
  * The console's notifications (migration 206): one row per event for every
@@ -28,7 +33,8 @@ const { PLATFORM_PERMISSIONS: P, hasPlatformPermission, isCreator } = require('.
  * those accounts, so an agent is told about their own codes and nobody else's;
  * hidden_from_user_ids keeps it from those accounts, a creator aside.
  *
- * Preferences: per type, shown in the console (default on) and by email
+ * Preferences: per type, shown in the console (default on), on the account's
+ * devices (default on, migration 745; consolePush.js sends them) and by email
  * (default off). No email is sent yet; the email choice is only kept.
  */
 
@@ -89,6 +95,9 @@ const visibleTypes = (user) => TYPES.filter((type) => [].concat(TYPE_PERMISSION[
 
 const PAGE_MAX = 50;
 
+// What reaches an account's devices when it never chose: everything its bell shows (consolePush.js).
+const PUSH_DEFAULT = true;
+
 /** A Postgres array literal for an optional list of ids; null when there is no list. */
 const uuidArray = (ids) => (ids ? `{${ids.join(',')}}` : null);
 
@@ -104,7 +113,8 @@ async function notify(fields, transaction = null) {
     : 'DO NOTHING';
   const sql = `INSERT INTO platform_notifications (type, title, body, link, data, actor_user_id, subject_user_id, workspace_id, dedupe_key, recipient_user_ids, hidden_from_user_ids)
     VALUES (:type, :title, :body, :link, CAST(:data AS JSONB), :actorUserId, :subjectUserId, :workspaceId, :dedupeKey, CAST(:recipients AS UUID[]), CAST(:hiddenFrom AS UUID[]))
-    ON CONFLICT (dedupe_key) WHERE dedupe_key IS NOT NULL ${onConflict}`;
+    ON CONFLICT (dedupe_key) WHERE dedupe_key IS NOT NULL ${onConflict}
+    RETURNING id, created_at AS "createdAt"`;
   const replacements = {
     type: fields.type,
     title: String(fields.title).slice(0, 200),
@@ -118,8 +128,11 @@ async function notify(fields, transaction = null) {
     recipients: uuidArray(fields.recipients),
     hiddenFrom: uuidArray(fields.hiddenFrom),
   };
+  // The row written (none when a duplicate key skipped it): its devices are told once the caller commits.
+  let written = null;
   const write = async (t) => {
-    await db.sequelize.query(sql, { replacements, transaction: t });
+    const [rows] = await db.sequelize.query(sql, { replacements, transaction: t });
+    written = (rows && rows[0]) || null;
     if (refresh) {
       await db.sequelize.query(
         `DELETE FROM platform_notification_reads r USING platform_notifications n WHERE r.notification_id = n.id AND n.dedupe_key = :dedupeKey`,
@@ -138,7 +151,9 @@ async function notify(fields, transaction = null) {
     }
   } catch (err) {
     logger.error(`[platform-notifications] ${fields.type} not written: ${err.message}`);
+    return;
   }
+  if (written) await consolePush().queueFor(written, transaction);
 }
 
 /** Removes the notification under a dedupe_key, when what it said no longer holds. Never throws. */
@@ -244,14 +259,16 @@ async function sweepSubscriptions() {
       s.workspace_id, ${key(prefix)}
     FROM subscriptions s JOIN workspaces w ON w.id = s.workspace_id
     WHERE ${where}
-    ON CONFLICT (dedupe_key) WHERE dedupe_key IS NOT NULL DO NOTHING`;
+    ON CONFLICT (dedupe_key) WHERE dedupe_key IS NOT NULL DO NOTHING
+    RETURNING id, created_at AS "createdAt"`;
   try {
-    await db.sequelize.query(
+    const [expiring] = await db.sequelize.query(
       insert('subscription_expiring', 'Subscription ends within 7 days', "s.status = 'active' AND s.current_period_end > NOW() AND s.current_period_end <= NOW() + INTERVAL '7 days'", 'expiring')
     );
-    await db.sequelize.query(
+    const [expired] = await db.sequelize.query(
       insert('subscription_expired', 'Subscription ended', "s.status IN ('active', 'past_due') AND s.current_period_end <= NOW() AND s.current_period_end > NOW() - INTERVAL '7 days'", 'expired')
     );
+    for (const row of [...(expiring || []), ...(expired || [])]) await consolePush().queueFor(row);
   } catch (err) {
     logger.error(`[platform-notifications] sweep failed: ${err.message}`);
   }
@@ -303,13 +320,15 @@ function filters(user, shown, { type, unread, cursor }) {
   return { where: where.join(' AND '), replacements };
 }
 
+/** Where a row opens for this account. A code's page takes agents.view: its owner without that key reads it on My referrals. */
+const linkFor = (row, user) => (row.type === 'referral_code_decided' && !hasPlatformPermission(user, P.AGENTS_VIEW) ? '/my-referrals' : row.link);
+
 const serialize = (row, user) => ({
   id: row.id,
   type: row.type,
   title: row.title,
   body: row.body,
-  // A code's page takes agents.view: its owner without that key reads it on My referrals.
-  link: row.type === 'referral_code_decided' && !hasPlatformPermission(user, P.AGENTS_VIEW) ? '/my-referrals' : row.link,
+  link: linkFor(row, user),
   data: row.data || {},
   actorUserId: row.actor_user_id,
   subjectUserId: row.subject_user_id,
@@ -376,30 +395,63 @@ async function markRead(user, { ids, all }) {
 
 /** GET /admin/notification-prefs — every type this admin may see, defaults filled in. */
 async function getPrefs(user) {
-  const rows = await db.sequelize.query('SELECT type, enabled, email FROM platform_notification_prefs WHERE user_id = :userId', {
+  const rows = await db.sequelize.query('SELECT type, enabled, email, push FROM platform_notification_prefs WHERE user_id = :userId', {
     replacements: { userId: user.id },
     type: QueryTypes.SELECT,
   });
   const saved = new Map(rows.map((r) => [r.type, r]));
   return {
-    prefs: visibleTypes(user).map((type) => ({ type, enabled: saved.has(type) ? saved.get(type).enabled : true, email: saved.has(type) ? saved.get(type).email : false })),
+    prefs: visibleTypes(user).map((type) => {
+      const row = saved.get(type);
+      return {
+        type,
+        enabled: row ? row.enabled : true,
+        email: row ? row.email : false,
+        push: row && row.push !== null ? row.push : PUSH_DEFAULT,
+      };
+    }),
     // No email is sent yet: the choice is kept for when it is.
     emailDelivery: false,
+    // Device notifications are sent (PUSH_ENABLED and a VAPID pair): the console shows their column.
+    pushDelivery: pushConfig.isOn(),
   };
 }
 
-/** PUT /admin/notification-prefs — { prefs: [{ type, enabled, email }] }. A type the admin may not see is kept, for if they are given it. */
+/**
+ * PUT /admin/notification-prefs — { prefs: [{ type, enabled, email, push }] }. A type the admin may not see is kept,
+ * for if they are given it. `push` left out keeps what was saved (a console from before it sends none).
+ */
 async function savePrefs(user, prefs) {
   await db.sequelize.transaction(async (transaction) => {
     for (const p of prefs) {
       await db.sequelize.query(
-        `INSERT INTO platform_notification_prefs (user_id, type, enabled, email, updated_at) VALUES (:userId, :type, :enabled, :email, NOW())
-         ON CONFLICT (user_id, type) DO UPDATE SET enabled = EXCLUDED.enabled, email = EXCLUDED.email, updated_at = NOW()`,
-        { replacements: { userId: user.id, type: p.type, enabled: p.enabled, email: Boolean(p.email) }, transaction }
+        `INSERT INTO platform_notification_prefs (user_id, type, enabled, email, push, updated_at) VALUES (:userId, :type, :enabled, :email, :push, NOW())
+         ON CONFLICT (user_id, type) DO UPDATE SET enabled = EXCLUDED.enabled, email = EXCLUDED.email,
+           push = COALESCE(EXCLUDED.push, platform_notification_prefs.push), updated_at = NOW()`,
+        {
+          replacements: { userId: user.id, type: p.type, enabled: p.enabled, email: Boolean(p.email), push: typeof p.push === 'boolean' ? p.push : null },
+          transaction,
+        }
       );
     }
   });
   return getPrefs(user);
 }
 
-module.exports = { TYPES, TYPE_PERMISSION, visibleTypes, notify, withdraw, onAudit, paymentFailed, sweepSubscriptions, list, unreadCount, markRead, getPrefs, savePrefs };
+module.exports = {
+  TYPES,
+  TYPE_PERMISSION,
+  PUSH_DEFAULT,
+  visibleTypes,
+  linkFor,
+  notify,
+  withdraw,
+  onAudit,
+  paymentFailed,
+  sweepSubscriptions,
+  list,
+  unreadCount,
+  markRead,
+  getPrefs,
+  savePrefs,
+};

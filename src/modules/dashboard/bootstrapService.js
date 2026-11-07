@@ -27,6 +27,7 @@ const homeShortcuts = require('./homeShortcuts');
  *   notifications       GET /workspaces/:id/notifications/summary
  *   shortcuts           GET /workspaces/:id/shortcuts    .shortcuts
  *   homeShortcuts       GET /workspaces/:id/home-shortcuts .homeShortcuts
+ *   mobileNav           GET /workspaces/:id/mobile-nav   .mobileNav
  *   confirmationCounts GET /workspaces/:id/confirmation-tasks/counts .counts
  *   inboxUnread         GET /workspaces/:id/inbox/conversations?status=open&unread=true&limit=1
  *
@@ -90,6 +91,7 @@ async function bootstrap(req) {
     shortcuts: tenant.membership.navShortcuts || [],
     // Worked out from what is read above: no query of its own.
     homeShortcuts: homeShortcuts.forMember(tenant, planFeatures),
+    mobileNav: homeShortcuts.mobileNavFor(tenant, planFeatures),
     confirmationCounts,
     inboxUnread,
   };

@@ -33,7 +33,7 @@ const schemas = {
   prefs: {
     body: Joi.object({
       prefs: Joi.array()
-        .items(Joi.object({ type: type.required(), enabled: Joi.boolean().required(), email: Joi.boolean().default(false) }))
+        .items(Joi.object({ type: type.required(), enabled: Joi.boolean().required(), email: Joi.boolean().default(false), push: Joi.boolean() }))
         .min(1)
         .max(notifications.TYPES.length)
         .required(),

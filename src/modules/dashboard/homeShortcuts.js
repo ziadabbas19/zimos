@@ -121,17 +121,45 @@ function allowedIds(tenant, planFeatures) {
  * a page comes back to the row when the member may open it again.
  */
 function forMember(tenant, planFeatures) {
-  const available = allowedIds(tenant, planFeatures);
+  return rowOf(tenant.membership.homeShortcuts, DEFAULT_HOME_SHORTCUTS, allowedIds(tenant, planFeatures), MAX_HOME_SHORTCUTS);
+}
+
+/**
+ * The answer for a row a person arranges (this one, the bottom bar below and the
+ * console's, platformAdmin/consoleShortcuts.js): `stored` as saved (null: never
+ * arranged), narrowed to `available`, the ids they may have on it now.
+ */
+function rowOf(stored, defaults, available, max) {
   const allowed = new Set(available);
-  const stored = tenant.membership.homeShortcuts;
   const customized = Array.isArray(stored);
   return {
     customized,
-    shortcuts: [...new Set(customized ? stored : DEFAULT_HOME_SHORTCUTS)].filter((id) => allowed.has(id)),
-    defaults: DEFAULT_HOME_SHORTCUTS.filter((id) => allowed.has(id)),
+    shortcuts: [...new Set(customized ? stored : defaults)].filter((id) => allowed.has(id)).slice(0, max),
+    defaults: defaults.filter((id) => allowed.has(id)),
     available,
-    max: MAX_HOME_SHORTCUTS,
+    max,
   };
+}
+
+/**
+ * The phone's bottom bar (memberships.mobile_nav, migration 746): the slots
+ * before "More", which always stays. Home and any page of the Home shortcuts'
+ * catalogue, under the same rules; four at most, so each slot keeps room for
+ * its label on a phone. A member who never arranged it gets the bar it always
+ * was: Today, Orders, Confirm, Products.
+ */
+const MOBILE_NAV_HOME = Object.freeze({ id: 'home', requires: [] });
+const MOBILE_NAV_IDS = Object.freeze([MOBILE_NAV_HOME.id, ...HOME_SHORTCUT_IDS]);
+const MAX_MOBILE_NAV = 4;
+const DEFAULT_MOBILE_NAV = Object.freeze(['home', 'orders', 'confirmation_queue', 'products']);
+
+function mobileNavAllowedIds(tenant, planFeatures) {
+  return [MOBILE_NAV_HOME.id, ...allowedIds(tenant, planFeatures)];
+}
+
+/** The body of GET /mobile-nav, and the bootstrap's part. */
+function mobileNavFor(tenant, planFeatures) {
+  return rowOf(tenant.membership.mobileNav, DEFAULT_MOBILE_NAV, mobileNavAllowedIds(tenant, planFeatures), MAX_MOBILE_NAV);
 }
 
 module.exports = {
@@ -141,4 +169,10 @@ module.exports = {
   MAX_HOME_SHORTCUTS,
   allowedIds,
   forMember,
+  rowOf,
+  MOBILE_NAV_IDS,
+  MAX_MOBILE_NAV,
+  DEFAULT_MOBILE_NAV,
+  mobileNavAllowedIds,
+  mobileNavFor,
 };

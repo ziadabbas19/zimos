@@ -109,6 +109,7 @@ const TABLES = {
   plan_trials: wipe('which plan trials each account has used, the creator\'s included (decided: wipe)'),
   platform_blocklist_entries: wipe('the platform-wide risk blocklist from before launch (decided: wipe)'),
   platform_notification_prefs: wipe("console admins' notification settings (accounts that go; the creator starts from the defaults)"),
+  platform_notification_pushes: wipe("which console notification already reached each admin's devices (migration 745); 3 days at most"),
   platform_notification_reads: wipe('which console notification each admin has read'),
   platform_notifications: wipe('console notifications about stores and accounts from before launch'),
   product_collections: wipe('store products'),

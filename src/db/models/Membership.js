@@ -27,6 +27,9 @@ module.exports = (sequelize, DataTypes) => {
       // 734, dashboard/homeShortcuts.js); null until they do. Theirs alone: the
       // team list never sends it (toJSON below).
       homeShortcuts: { type: DataTypes.JSONB, allowNull: true, field: 'home_shortcuts' },
+      // The phone's bottom bar as this member arranged it (migration 746,
+      // dashboard/homeShortcuts.js MOBILE_NAV); null until they do. Theirs alone, as above.
+      mobileNav: { type: DataTypes.JSONB, allowNull: true, field: 'mobile_nav' },
     },
     {
       tableName: 'memberships',
@@ -41,6 +44,7 @@ module.exports = (sequelize, DataTypes) => {
     const values = { ...this.get() };
     delete values.inviteTokenHash;
     delete values.homeShortcuts;
+    delete values.mobileNav;
     return values;
   };
 
