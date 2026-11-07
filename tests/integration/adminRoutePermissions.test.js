@@ -25,14 +25,21 @@ const ELSEWHERE = [['post', '/api/v1/billing/run-trial-check']];
 // third check below stops at the guard's own answer.
 const CALLS_THIRD_PARTIES = new Set(['POST /api/v1/admin/system/services/check']);
 
-// The account's own notifications: open to any console account, and filtered by
-// permission in platformNotificationService. Nothing else may use that guard.
+// The account's own notifications and its own shortcut rows: open to any console
+// account, and filtered by permission in platformNotificationService and
+// consoleShortcuts. Nothing else may use that guard.
 const ANY_CONSOLE_ACCOUNT = [
   'GET /api/v1/admin/notifications',
   'GET /api/v1/admin/notifications/unread-count',
   'POST /api/v1/admin/notifications/read',
   'GET /api/v1/admin/notification-prefs',
   'PUT /api/v1/admin/notification-prefs',
+  'GET /api/v1/admin/me/home-shortcuts',
+  'PUT /api/v1/admin/me/home-shortcuts',
+  'DELETE /api/v1/admin/me/home-shortcuts',
+  'GET /api/v1/admin/me/mobile-nav',
+  'PUT /api/v1/admin/me/mobile-nav',
+  'DELETE /api/v1/admin/me/mobile-nav',
 ];
 
 const SOME_ID = '00000000-0000-4000-8000-000000000000';

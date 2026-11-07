@@ -26,6 +26,8 @@ router.use('/users/:userId/two-factor', can(P.SUPPORT_MANAGE), (req, res, next) 
 router.use(require('../auth/twoFactorRecovery').adminRouter);
 // The console's notifications and each admin's notification settings.
 router.use(require('./platformNotificationRoutes'));
+// Each account's own shortcuts row and phone bottom bar (consoleShortcuts.js).
+router.use(require('./consoleShortcutRoutes'));
 // Merchants' suggestions: list, filter, status and reply (modules/suggestions).
 router.use(require('../suggestions/suggestionAdminRoutes'));
 // Marketing-site traffic (siteAnalytics/siteTrafficAdminRoutes).

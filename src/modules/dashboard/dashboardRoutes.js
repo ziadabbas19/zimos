@@ -32,6 +32,60 @@ const MAX_SHORTCUTS = 8;
 // A dashboard route: "/orders", "/analytics/web" — never a full URL.
 const route = Joi.string().max(100).pattern(/^\/[a-z0-9][a-z0-9\-/]*$/);
 
+// The phone's bottom bar (homeShortcuts.js, MOBILE_NAV): the member's own, as
+// their Home row below. Its slots come from the same catalogue, plus Home.
+const mobileNavBody = async (tenant) => ({
+  mobileNav: homeShortcuts.mobileNavFor(tenant, await planFeaturesFor(tenant.workspaceId)),
+});
+
+router.get(
+  '/mobile-nav',
+  ...member,
+  validate({ params }),
+  asyncHandler(async (req, res) => {
+    res.set('Cache-Control', 'private, no-store');
+    res.json(await mobileNavBody(req.tenant));
+  })
+);
+
+router.put(
+  '/mobile-nav',
+  authenticate,
+  validate({
+    params,
+    body: Joi.object({
+      shortcuts: Joi.array()
+        .items(Joi.string().valid(...homeShortcuts.MOBILE_NAV_IDS))
+        .max(homeShortcuts.MAX_MOBILE_NAV)
+        .unique()
+        .required(),
+    }),
+  }),
+  resolveTenant,
+  asyncHandler(async (req, res) => {
+    const { membership, workspaceId } = req.tenant;
+    const allowed = homeShortcuts.mobileNavAllowedIds(req.tenant, await planFeaturesFor(workspaceId));
+    const refused = req.body.shortcuts.filter((id) => !allowed.includes(id));
+    if (refused.length > 0) {
+      throw new AppError('HOME_SHORTCUT_NOT_ALLOWED', 'One of these shortcuts is not available to you in this store', 403, { ids: refused });
+    }
+    await membership.update({ mobileNav: req.body.shortcuts });
+    res.json(await mobileNavBody(req.tenant));
+  })
+);
+
+// Back to the default bar.
+router.delete(
+  '/mobile-nav',
+  ...member,
+  validate({ params }),
+  asyncHandler(async (req, res) => {
+    const { membership } = req.tenant;
+    if (membership.mobileNav !== null) await membership.update({ mobileNav: null });
+    res.json(await mobileNavBody(req.tenant));
+  })
+);
+
 router.get(
   '/search',
   ...member,
