@@ -20,7 +20,7 @@ const STALE_DAYS = 60;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 // Where the test notification opens, per app.
-const TEST_URL = { dashboard: '/settings?tab=notifications', console: '/' };
+const TEST_URL = { dashboard: '/settings?tab=notifications', console: '/notifications' };
 
 const hashEndpoint = (endpoint) => crypto.createHash('sha256').update(endpoint).digest('hex');
 

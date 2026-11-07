@@ -116,7 +116,8 @@ describe('console notifications', () => {
 
     const put = await request(app).put('/api/v1/admin/notification-prefs').set(a.H).send({ prefs: [{ type: 'user_signup', enabled: false, email: true }] });
     expect(put.status).toBe(200);
-    expect(put.body.prefs.find((p) => p.type === 'user_signup')).toEqual({ type: 'user_signup', enabled: false, email: true });
+    // push: device notifications (migration 745), on by default.
+    expect(put.body.prefs.find((p) => p.type === 'user_signup')).toEqual({ type: 'user_signup', enabled: false, email: true, push: true });
 
     const forA = await request(app).get('/api/v1/admin/notifications?limit=50').set(a.H);
     const forB = await request(app).get('/api/v1/admin/notifications?limit=50').set(b.H);

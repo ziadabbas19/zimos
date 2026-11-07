@@ -49,6 +49,8 @@ const PARAM_RULES = {
     const text = value.replace(/[\u0000-\u001f\u007f]+/g, ' ').trim().slice(0, 60);
     return text || null;
   },
+  // A referral code as the console shows it ("RAMADAN10"): letters, digits, - and _.
+  code: (value) => (typeof value === 'string' && /^[A-Za-z0-9_-]{1,40}$/.test(value) ? value : null),
 };
 
 const ORDER_PARAMS = { storeName: 'storeName', orderNumber: 'orderRef', amount: 'money', count: 'integer' };
@@ -61,6 +63,66 @@ const counted = (ar, arMany, en, enMany) => ({
   ar: { ...STORE_TITLE, body: ar, bare: ar, many: arMany },
   en: { ...STORE_TITLE, body: en, bare: en, many: enMany },
 });
+
+/**
+ * The console's (platformAdmin/consolePush.js): one per bell type, "console." and
+ * the type, a decided review by its decision. Never a merchant's or a store's
+ * name, an email or a reviewer's reason: the bell's own words open the page.
+ */
+const consoleText = (ar, en, { params = {}, bareAr = ar, bareEn = en } = {}) => ({
+  params,
+  ar: { title: 'Zimos', body: ar, bare: bareAr },
+  en: { title: 'Zimos', body: en, bare: bareEn },
+});
+const CODE = { code: 'code' };
+const CONSOLE_TEXTS = {
+  'console.user_signup': consoleText('تسجيل جديد على المنصة', 'A new sign-up on the platform'),
+  'console.workspace_created': consoleText('أُنشئ متجر جديد', 'A new store was created'),
+  'console.subscription_activated': consoleText('تم تفعيل اشتراك', 'A subscription was activated'),
+  'console.subscription_expiring': consoleText('اشتراك ينتهي خلال 7 أيام', 'A subscription ends within 7 days'),
+  'console.subscription_expired': consoleText('انتهى اشتراك', 'A subscription ended'),
+  'console.payment_proof_submitted': consoleText('إثبات دفع جديد بانتظار المراجعة', 'A new payment proof is waiting for review'),
+  'console.payment_failed': consoleText('فشل دفع اشتراك', 'A subscription payment failed'),
+  'console.support_ticket': consoleText('تذكرة دعم جديدة', 'A new support ticket'),
+  'console.referral_signup': consoleText('متجر استخدم الكود {code}', 'A store used the code {code}', {
+    params: CODE,
+    bareAr: 'متجر استخدم كود إحالة',
+    bareEn: 'A store used a referral code',
+  }),
+  'console.user_suspended': consoleText('تم إيقاف حساب', 'An account was suspended'),
+  'console.suggestion': consoleText('اقتراح جديد من تاجر', 'A new suggestion from a merchant'),
+  'console.wallet_fallback': consoleText('متجر انتقل إلى الدفع لكل طلب', 'A store moved to pay per order'),
+  'console.traffic_cap': consoleText('متجر تجاوز حده اليومي من بيانات الزيارات', 'A store went over its daily analytics limit'),
+  'console.sms_cap': consoleText('بلوغ الحد اليومي للرسائل النصية', 'The daily SMS cap was reached'),
+  'console.referral_code_review': consoleText('الكود {code} بانتظار المراجعة', 'Code {code} is waiting for review', {
+    params: CODE,
+    bareAr: 'كود إحالة بانتظار المراجعة',
+    bareEn: 'A referral code is waiting for review',
+  }),
+  'console.referral_code_approved': consoleText('تمت الموافقة على الكود {code}', 'Code {code} was approved', {
+    params: CODE,
+    bareAr: 'تمت الموافقة على كود إحالة',
+    bareEn: 'A referral code was approved',
+  }),
+  'console.referral_code_rejected': consoleText('رُفض الكود {code}', 'Code {code} was rejected', {
+    params: CODE,
+    bareAr: 'رُفض كود إحالة',
+    bareEn: 'A referral code was rejected',
+  }),
+  'console.referral_change_approved': consoleText('تمت الموافقة على تعديل الكود {code}', 'The change to code {code} was approved', {
+    params: CODE,
+    bareAr: 'تمت الموافقة على تعديل كود إحالة',
+    bareEn: 'A change to a referral code was approved',
+  }),
+  'console.referral_change_rejected': consoleText('رُفض تعديل الكود {code}', 'The change to code {code} was rejected', {
+    params: CODE,
+    bareAr: 'رُفض تعديل كود إحالة',
+    bareEn: 'A change to a referral code was rejected',
+  }),
+  'console.agent_link_review': consoleText('تعديل وكيل متجر بانتظار المراجعة', 'A store agent change is waiting for review'),
+  'console.agent_link_approved': consoleText('تمت الموافقة على تعديل وكيل متجر', 'A store agent change was approved'),
+  'console.agent_link_rejected': consoleText('رُفض تعديل وكيل متجر', 'A store agent change was rejected'),
+};
 
 // The dashboard's Arabic is Modern Standard Arabic. "{label}: {count}" keeps
 // the Arabic count out of number agreement.
@@ -105,6 +167,7 @@ const TEXTS = {
   'product.question': counted('سؤال جديد على منتج', 'أسئلة جديدة على المنتجات: {count}', 'A new question on a product', '{count} new questions on products'),
   'review.new': counted('تقييم جديد في انتظار موافقتك', 'تقييمات في انتظار موافقتك: {count}', 'A new review is waiting for your approval', '{count} reviews are waiting for your approval'),
   'message.undelivered': counted('رسالة إلى عميل لم تصل', 'رسائل لم تصل: {count}', 'A message to a customer was not delivered', '{count} messages were not delivered'),
+  ...CONSOLE_TEXTS,
 };
 
 const LOCALES = ['ar', 'en'];
