@@ -110,12 +110,20 @@ describe('a font pair ({ ar, en })', () => {
 });
 
 describe("the store's fonts (themeSettings.fonts)", () => {
-  it('accepts the primary faces and the header and products pairs, each optional', () => {
+  it('accepts the primary faces and the header, footer and products pairs, each optional', () => {
     expect(storeFontsProblems(undefined)).toEqual([]);
     expect(storeFontsProblems(null)).toEqual([]);
     expect(storeFontsProblems({})).toEqual([]);
     expect(storeFontsProblems({ primaryAr: arOnly, primaryEn: latinOnly, header: { ar: both }, products: { en: latinOnly } })).toEqual([]);
     expect(storeFontsProblems({ primaryAr: null, primaryEn: null, header: null, products: null })).toEqual([]);
+    expect(storeFontsProblems({ footer: { ar: arOnly, en: latinOnly } })).toEqual([]);
+    expect(storeFontsProblems({ footer: null })).toEqual([]);
+  });
+
+  it('checks the footer pair like the others', () => {
+    expect(storeFontsProblems({ footer: { ar: latinOnly } }).map((p) => p.field)).toEqual(['themeSettings.fonts.footer.ar']);
+    expect(storeFontsProblems({ footer: { en: 'font-family:evil' } }).map((p) => p.field)).toEqual(['themeSettings.fonts.footer.en']);
+    expect(storeFontsProblems({ footer: { css: 'x' } }).map((p) => p.field)).toEqual(['themeSettings.fonts.footer.css']);
   });
 
   it('names every problem: wrong script, unknown id, unknown key, bad shape', () => {
