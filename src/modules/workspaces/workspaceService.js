@@ -341,6 +341,13 @@ async function updateWorkspace({ workspaceId, patch }, req) {
         'themeSettings is too large'
       );
     }
+    // The store's fonts: catalog ids only, each for its script (fonts/fontValidation.js). A value
+    // saved before this check existed is left alone until it is changed.
+    const savedFonts = workspace.themeSettings && workspace.themeSettings.fonts;
+    if (blob.fonts !== undefined && JSON.stringify(blob.fonts) !== JSON.stringify(savedFonts)) {
+      const problems = require('../fonts/fontValidation').storeFontsProblems(blob.fonts);
+      if (problems.length > 0) throw new ValidationError(problems, 'Invalid store fonts');
+    }
     // A paid or withdrawn theme can't be switched on this way either (themes/themesCatalog.js).
     await require('../themes/themesCatalog').assertThemeAllowed(
       workspaceId,

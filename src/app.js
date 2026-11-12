@@ -305,6 +305,8 @@ v1.use('/billing', billingRoutes);
 v1.use('/plans', publicPlansRoutes);
 // The platform's public details (contact, social links, company, footer) — public, PLATFORM_SETTINGS_ENABLED.
 v1.use('/platform-settings', require('./modules/platformSettings/platformSettingsRoutes').publicRouter);
+// The font catalog a store's fonts are picked from — public, for the dashboard and the storefront (fonts/fontCatalog.js).
+v1.use('/fonts', require('./modules/fonts').router);
 // Courier status webhooks — public; the token in the path is the identity.
 v1.use('/webhooks/carriers', carrierWebhookRoutes);
 // Payment gateway callbacks — public; the token names the account, the HMAC
