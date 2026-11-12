@@ -1,6 +1,7 @@
 'use strict';
 
 const Joi = require('joi');
+const { fontPairSchema } = require('../fonts/fontValidation');
 
 /*
  * What a product carries beyond its basics (SPEC §7.1–7.4): how its options
@@ -48,6 +49,8 @@ const PAGE_SETTINGS_DEFAULTS = Object.freeze({
   hide_related_products: false,
   landing_page_id: null,
   countdown: null,
+  // This product's own font on its page, over the store's product font ({ ar, en } ids, fonts/fontValidation.js).
+  font: null,
 });
 
 const pageSettingsSchema = Joi.object({
@@ -65,6 +68,7 @@ const pageSettingsSchema = Joi.object({
   landing_page_id: Joi.string().uuid().allow(null),
   // A real deadline: once it passes the server sells at the compare-at price.
   countdown: Joi.object({ ends_at: Joi.date().iso().required() }).allow(null),
+  font: fontPairSchema,
 });
 
 const externalRefsSchema = Joi.array()

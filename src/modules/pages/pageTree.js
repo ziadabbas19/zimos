@@ -3,6 +3,7 @@
 const env = require('../../config/env');
 const { ValidationError } = require('../../core/errors/AppError');
 const { validateElementStyle, namedStyleProblems } = require('./elementStyle');
+const { fontPairProblems } = require('../fonts/fontValidation');
 const showcase = require('./showcaseElements');
 const builderExtras = require('./builderExtras');
 const xs = require('./xsElements');
@@ -372,6 +373,8 @@ function validateElement(el, field, errors, counter) {
   } else if (isPlainObject(el.settings)) {
     // The element's own look, per device, and its named style (elementStyle.js).
     validateElementStyle(el.settings, `${field}.settings`, errors);
+    // Its own font, over its section's and the page's (fonts/fontValidation.js).
+    errors.push(...fontPairProblems(el.settings.font, `${field}.settings.font`));
   }
 }
 
@@ -424,6 +427,10 @@ function validateSection(section, field, errors, counter) {
   if (section.type !== 'section') {
     errors.push({ field: `${field}.type`, message: 'A section node must have type "section"' });
   }
+  // The rest of a section's settings pass through untouched; its font is checked (fonts/fontValidation.js).
+  if (isPlainObject(section.settings)) {
+    errors.push(...fontPairProblems(section.settings.font, `${field}.settings.font`));
+  }
   if (!Array.isArray(section.rows)) {
     errors.push({ field: `${field}.rows`, message: 'A section must have a "rows" array' });
     return;
@@ -475,6 +482,9 @@ function validatePageTree(data, { requireContent = false, label = 'page' } = {})
   } else if (data.globalStyles !== undefined) {
     errors.push(...namedStyleProblems(data.globalStyles, 'data.globalStyles'));
   }
+
+  // The page's own font, under its sections' and elements' (fonts/fontValidation.js).
+  errors.push(...fontPairProblems(data.font, 'data.font'));
 
   // The page's product: what product bindings and product elements with no
   // product of their own read from (SPEC §9.4). "" means not chosen.
