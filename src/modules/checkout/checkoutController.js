@@ -195,6 +195,8 @@ const checkout = asyncHandler(async (req, res) => {
   if (!isOnline) {
     const { order, items: orderItems } = await orderService.createOrder(workspaceId, { ...orderBody, items }, req, {
       customFields,
+      // The store's cart rewards (modules/cartRewards); a funnel prices its own way.
+      cartRewards: !orderBody.funnelId,
       // A funnel with offers after its checkout (and the store's
       // funnel_upsell_merge on): nobody confirms the order until the shopper
       // is past them, so an accepted offer can still join it.
@@ -230,6 +232,7 @@ const checkout = asyncHandler(async (req, res) => {
     req,
     {
       customFields,
+      cartRewards: !orderBody.funnelId,
       awaitingPayment: {
         expiresAt: prepared.expiresAt,
         tokenHash: prepared.tokenHash,

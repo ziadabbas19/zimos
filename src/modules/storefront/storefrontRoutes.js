@@ -58,6 +58,8 @@ router.post('/store-reviews', reviewController.submissionGate, reviewLimiter, va
 router.get('/review-photos/:uploadId', validate(reviewSchemas.photo), reviewController.photo);
 // The combos a product's page shows (modules/combos, PRODUCT_COMBOS_ENABLED).
 router.use(require('../combos/comboRoutes').store);
+// The cart's reward tiers and trust lines (modules/cartRewards, CART_REWARDS_ENABLED).
+router.use(require('../cartRewards/cartRewardRoutes').store);
 // A product page's A/B test: which variant this visitor sees (catalog/productTests.js).
 router.use(require('../catalog/productTests').publicRouter);
 router.get('/collections', validate(schemas.workspaceParam), controller.listCollections);

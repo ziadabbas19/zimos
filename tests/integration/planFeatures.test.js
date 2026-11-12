@@ -63,10 +63,12 @@ describe('the feature catalogue', () => {
     const res = await request(app).get('/api/v1/admin/plans').set(admin.H);
     expect(res.status).toBe(200);
     const byKey = Object.fromEntries(res.body.featureCatalog.map((f) => [f.key, f]));
-    expect(Object.keys(byKey)).toHaveLength(16);
+    expect(Object.keys(byKey)).toHaveLength(17);
     expect(byKey.multi_warehouse.available).toBe(false);
     // Combos exist only while PRODUCT_COMBOS_ENABLED is on (off here).
     expect(byKey.combos.available).toBe(false);
+    // Cart rewards exist only while CART_REWARDS_ENABLED is on (off here).
+    expect(byKey.cart_rewards.available).toBe(false);
     for (const k of ['custom_domain', 'funnels', 'whatsapp_confirmation', 'abandoned_cart', 'api_access', 'staff_accounts', 'advanced_analytics', 'visitor_insights', 'remove_branding', 'priority_support', 'loyalty', 'reviews', 'about_gallery', 'advanced_coupons']) {
       expect(byKey[k].available).toBe(true);
     }

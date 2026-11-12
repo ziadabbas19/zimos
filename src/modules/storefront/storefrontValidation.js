@@ -86,6 +86,12 @@ module.exports = {
         .optional(),
       // Quoted for a funnel's checkout: the funnel's shipping group applies.
       funnelId: uuid.optional(),
+      // The checkout's choices, read only for cart rewards (modules/cartRewards): the code it
+      // weighs the reward against, and what the delivery costs (pickup, a zone, an option).
+      discountCode: Joi.string().trim().max(100).allow('', null).optional(),
+      deliveryMethod: Joi.string().valid('delivery', 'pickup').allow(null).optional(),
+      deliveryZoneId: uuid.allow(null).optional(),
+      shippingOption: Joi.string().max(40).allow('', null).optional(),
     }),
   },
   workspaceParam: { params: Joi.object({ workspaceId: workspaceIdParam }) },

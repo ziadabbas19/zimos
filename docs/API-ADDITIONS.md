@@ -327,6 +327,29 @@ device (`push/pushDigest.js`). Off: nothing of it, and the bell is as before.
   `line_discount_amount` and listed as `{ kind: 'combo' }` in `discountsSnapshot`. Editing the
   items of an order holding a combo answers 409 `ORDER_HAS_COMBO`.
 
+### Cart rewards — `/cart-rewards` (CART_REWARDS_ENABLED, off by default)
+- **Migration 747:** `cart_reward_settings` (one row per store: `enabled`,
+  `allow_coupon_stacking`, `tiers`, `trust_items`). Nothing is added to `orders`.
+- **Staff** (discounts.manage): `GET|PUT /cart-rewards`. A tier is
+  `{ thresholdAmount, type: percent | fixed | free_shipping, value, label: { ar, en } | null }`
+  (max 6; percent 1–100; thresholds rising within each kind, discounts and free
+  shipping apart); trust lines `{ text: { ar, en }, enabled }` (max 4).
+- **Storefront:** `GET /store/:ws/cart-rewards` (tiers with their names, trust lines
+  switched on; `null` while not in force). `POST /store/:ws/shipping-quote` adds
+  `rewards` (progress, the reward applied, the code or automatic discount against it,
+  notes, what the shopper saves) and takes optional `discountCode`, `deliveryMethod`,
+  `deliveryZoneId`, `shippingOption`. A free-shipping reward makes the quote's
+  `amount`/`options` the free ones.
+- **Order:** priced by the server only (`cartRewards/cartRewardCheckout.price`, shared
+  with the quote): the single best of the highest discount tier, a free-shipping tier
+  (worth the fee) and the code / automatic discount, unless the store combines them
+  (the code then on the subtotal after the reward). Kept as `{ kind: 'cart_reward' }`
+  in `discountsSnapshot`; its discount is in `discountAmount`, a code's redemption
+  keeps only the code's part. Not given to staff, funnel or add-on orders, nor to an
+  order in a currency other than the store's. An items edit keeps the reward as given.
+- **Plan feature** `cart_rewards` (offered only while the flag is on), refused like
+  the four below with `GROWTH_REQUIRE_PLAN_FEATURE`.
+
 ### Story gallery page element — `story_gallery`
 Up to 24 `{ src, title, description }` from the media library on any page
 (the About page); plain text only; `title`/`description` are translated by

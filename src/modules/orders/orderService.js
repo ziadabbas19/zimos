@@ -142,9 +142,13 @@ async function priceLine(workspaceId, line, transaction, { forSale = true } = {}
   const listUnit = testPrice !== undefined ? testPrice : effective.priceAmount;
   const unitPriceAmount = fieldsDelta ? Number(listUnit) + fieldsDelta : listUnit;
   const lineTotal = unitPriceAmount * quantity;
+  // Sold below its list (compare-at) price: a coupon may leave such lines out (discounts/discountRules.js).
+  const onSale = effective.compareAtAmount !== null && effective.compareAtAmount !== undefined && Number(effective.compareAtAmount) > Number(listUnit);
   return {
-    // Sold below its list (compare-at) price: a coupon may leave such lines out (discounts/discountRules.js).
-    onSale: effective.compareAtAmount !== null && effective.compareAtAmount !== undefined && Number(effective.compareAtAmount) > Number(listUnit),
+    onSale,
+    // The list price on the same footing as unitPriceAmount (priced extras included), for what the shopper
+    // saves (cartRewards/cartRewardCheckout.lineSavings); null when not on sale. Never stored.
+    compareAtUnitAmount: onSale ? Number(effective.compareAtAmount) + fieldsDelta : null,
     productId: variant.productId,
     productName: variant.product.name,
     variantId: variant.id,
@@ -172,7 +176,9 @@ async function priceLine(workspaceId, line, transaction, { forSale = true } = {}
 // in it sets its own shipping price, also when a line joins later or its items are edited.
 function couponShipsFree(order) {
   return Boolean(order.shippingSnapshot && order.shippingSnapshot.freeShippingGranted === true) &&
-    (order.discountsSnapshot || []).some((d) => d && d.kind !== 'bundle' && d.type === 'free_shipping');
+    ((order.discountsSnapshot || []).some((d) => d && d.kind !== 'bundle' && d.type === 'free_shipping') ||
+      // A cart reward's free shipping holds the same way (modules/cartRewards).
+      require('../cartRewards/cartRewardRules').placedRewardShipsFree(order.discountsSnapshot));
 }
 
 function productShippingRule(product, units) {
@@ -280,6 +286,9 @@ async function createOrder(workspaceId, payload, req, options = {}) {
     // { method, tokenHash }: a storefront order paid with one of the store's
     // manual methods (manualPayments) — unpaid, confirmed only once approved.
     manualPayment = null,
+    // The store's cart rewards apply (modules/cartRewards): the storefront's own
+    // checkout only — never a staff order, a funnel or an add-on order.
+    cartRewards = false,
   } = options;
   const { items, contact, paymentMethod, discountCode, funnelId, websiteId, notes } = payload;
   // Store pickup (shipping/storePickup.js): no address and no shipping fee, whatever was sent.
@@ -524,7 +533,11 @@ async function createOrder(workspaceId, payload, req, options = {}) {
     // A free-shipping code: every line ships free, and the order keeps it when a
     // line joins later or its items are edited (freeShippingGranted below).
     // A VIP tier with free shipping (modules/vipTiers) sets this on the checkout's payload: the same as such a code.
-    const couponFreeShipping = Boolean(discountRecord && discountRecord.type === 'free_shipping') || payload[Symbol.for('zimos.freeShipping')] === true;
+    const vipFreeShipping = payload[Symbol.for('zimos.freeShipping')] === true;
+    let couponFreeShipping = Boolean(discountRecord && discountRecord.type === 'free_shipping') || vipFreeShipping;
+    // The lines' own shipping rules, before a free-shipping code touches them: what free shipping is worth (cart rewards, below).
+    const ownShippingRules = pricedLines.map((l) => l.shippingRule);
+    const shipsFree = (rule) => (rule ? { ...rule, mode: 'free', extraAmount: null } : rule);
     if (couponFreeShipping) {
       for (const line of pricedLines) if (line.shippingRule) line.shippingRule = { ...line.shippingRule, mode: 'free', extraAmount: null };
     }
@@ -538,29 +551,76 @@ async function createOrder(workspaceId, payload, req, options = {}) {
     const zone =
       !req.user && !shippingOverride && !pickup ? await deliveryZones.resolveForCheckout(workspaceId, payload.deliveryZoneId, transaction) : null;
     deliveryZones.assertZoneMinimum(zone, subtotal);
+
+    // The delivery for these lines' shipping rules: the destination's price, the
+    // shopper's option, a zone's fee, nothing for pickup.
+    const priceDelivery = async (productLines, freeByCode) => {
+      const shipping = await calculateShippingAmount(workspaceId, {
+        country: shippingAddress ? shippingAddress.country : null,
+        region: shippingAddress ? shippingAddress.province : null,
+        subtotal,
+        totalQuantity,
+        // A free-shipping code beats an offer's own shipping price; an add-on's does not.
+        offerShippingOverride: freeByCode && !shippingOverride ? null : offerShippingOverride,
+        weightLines: pricedLines.map((l) => ({ quantity: l.quantity, units: l.weightUnits })),
+        productLines,
+        funnelId: payload.funnelId || null,
+        transaction,
+      });
+      // The shopper's choice among the store's shipping options (shipping/shippingOptions.js).
+      const chosenShipping =
+        pickup || zone ? null : await require('../shipping/shippingOptions').choose(workspaceId, payload.shippingOption, shipping, transaction);
+      // A zone's fee replaces the destination price; a store-wide rule that makes shipping free (or an offer's own price) still wins.
+      const zoneAmount = zone ? (DESTINATION_INDEPENDENT.includes(shipping.rule) ? shipping.amount : zone.feeAmount) : null;
+      const shippingAmount = pickup ? 0 : zone ? zoneAmount : chosenShipping ? chosenShipping.amount : shipping.amount;
+      return { shipping, chosenShipping, shippingAmount };
+    };
+
+    // Cart rewards (modules/cartRewards): the store's spend thresholds, weighed
+    // against the code or automatic discount by what each saves — the same
+    // decision the shipping quote showed the shopper (cartRewardCheckout.price).
+    let reward = null;
+    let rewardDiscount = 0;
+    let rewardFreeShipping = false;
+    const rewardSettings = cartRewards ? await require('../cartRewards/cartRewardService').activeSettings(workspaceId, { transaction }) : null;
+    if (rewardSettings && rewardSettings.currency === pricedLines[0].currency) {
+      // What the delivery costs without and with free shipping (a VIP tier's free shipping stays either way).
+      const full = await priceDelivery(vipFreeShipping ? ownShippingRules.map(shipsFree) : ownShippingRules, vipFreeShipping);
+      const free = await priceDelivery(ownShippingRules.map(shipsFree), true);
+      const decision = await require('../cartRewards/cartRewardCheckout').price(rewardSettings, {
+        lines: pricedLines,
+        subtotal,
+        coupon: discountRecord ? { discount: discountRecord, amount: discountAmount } : null,
+        fees: { full: Number(full.shippingAmount), free: Number(free.shippingAmount) },
+        transaction,
+      });
+      reward = decision.reward;
+      rewardDiscount = decision.rewardDiscount;
+      rewardFreeShipping = decision.freeShipping;
+      if (discountRecord && !decision.keepCoupon) {
+        // The reward saves more: the code (or automatic discount) is left out of this order, unredeemed.
+        if (couponFreeShipping && !vipFreeShipping) pricedLines.forEach((line, i) => (line.shippingRule = ownShippingRules[i]));
+        couponFreeShipping = vipFreeShipping;
+        discountRecord = null;
+        discountAmount = 0;
+        discountsSnapshot = [];
+      } else if (discountRecord && decision.couponAmount !== discountAmount) {
+        // Stacked: the code's amount on the subtotal after the reward's discount.
+        discountAmount = decision.couponAmount;
+        discountsSnapshot = discountsSnapshot.map((d) => (d && d.discountId === discountRecord.id ? { ...d, amount: discountAmount } : d));
+      }
+      if (rewardFreeShipping) for (const line of pricedLines) line.shippingRule = shipsFree(line.shippingRule);
+    }
+
     // Kept apart from the coupon: the bundle's saving is already in the line totals.
     discountsSnapshot = [...bundleSnapshots, ...discountsSnapshot];
 
     // Always priced, even without an address (amount 0 then): the weight
     // and tier are stored on the order either way.
-    const shipping = await calculateShippingAmount(workspaceId, {
-      country: shippingAddress ? shippingAddress.country : null,
-      region: shippingAddress ? shippingAddress.province : null,
-      subtotal,
-      totalQuantity,
-      // A free-shipping code beats an offer's own shipping price; an add-on's does not.
-      offerShippingOverride: couponFreeShipping && !shippingOverride ? null : offerShippingOverride,
-      weightLines: pricedLines.map((l) => ({ quantity: l.quantity, units: l.weightUnits })),
-      productLines: pricedLines.map((l) => l.shippingRule),
-      funnelId: payload.funnelId || null,
-      transaction,
-    });
-    // The shopper's choice among the store's shipping options (shipping/shippingOptions.js).
-    const chosenShipping =
-      pickup || zone ? null : await require('../shipping/shippingOptions').choose(workspaceId, payload.shippingOption, shipping, transaction);
-    // A zone's fee replaces the destination price; a store-wide rule that makes shipping free (or an offer's own price) still wins.
-    const zoneAmount = zone ? (DESTINATION_INDEPENDENT.includes(shipping.rule) ? shipping.amount : zone.feeAmount) : null;
-    const shippingAmount = pickup ? 0 : zone ? zoneAmount : chosenShipping ? chosenShipping.amount : shipping.amount;
+    const { shipping, chosenShipping, shippingAmount } = await priceDelivery(
+      pricedLines.map((l) => l.shippingRule),
+      couponFreeShipping || rewardFreeShipping
+    );
     const etaMinutes = pickup
       ? null
       : (zone && zone.etaMinutes) ||
@@ -569,8 +629,13 @@ async function createOrder(workspaceId, payload, req, options = {}) {
     const { taxAmount } = await calculateTax(workspaceId, {
       country: shippingAddress ? shippingAddress.country : null,
       region: shippingAddress ? shippingAddress.province : null,
-      // Taxed on what the shopper pays: the code's or automatic discount comes off first.
-      lines: await taxableLines(pricedLines, discountAmount, discountRecord, transaction),
+      // Taxed on what the shopper pays: the reward's and the code's or automatic discount come off first.
+      lines: await taxableLines(
+        rewardDiscount ? require('../cartRewards/cartRewardCheckout').linesAfterReward(pricedLines, rewardDiscount) : pricedLines,
+        discountAmount,
+        discountRecord,
+        transaction
+      ),
       shippingAmount,
       transaction,
     });
@@ -583,7 +648,12 @@ async function createOrder(workspaceId, payload, req, options = {}) {
       discountAmount += shippingDiscount;
     }
 
-    const totalAmount = subtotal - discountAmount + shippingAmount + taxAmount;
+    // The reward the order was given, kept with its name and what it saved, so the order page,
+    // the invoice, the reports and any later edit read the same thing (cartRewards/cartRewardRules.snapshotEntry).
+    if (reward) discountsSnapshot = [...discountsSnapshot, require('../cartRewards/cartRewardRules').snapshotEntry(reward)];
+    // `discountAmount` stays the code's (or automatic discount's) own, for its redemption; the order's holds the reward's too.
+    const orderDiscountAmount = discountAmount + rewardDiscount;
+    const totalAmount = subtotal - orderDiscountAmount + shippingAmount + taxAmount;
 
     const order = await db.Order.create(
       {
@@ -596,7 +666,7 @@ async function createOrder(workspaceId, payload, req, options = {}) {
         paymentMethod,
         currency: pricedLines[0].currency,
         subtotalAmount: subtotal,
-        discountAmount,
+        discountAmount: orderDiscountAmount,
         shippingAmount,
         taxAmount,
         totalAmount,
@@ -630,8 +700,8 @@ async function createOrder(workspaceId, payload, req, options = {}) {
           ...(zone ? { zone: { id: zone.id, name: zone.name, feeAmount: zone.feeAmount, etaMinutes: zone.etaMinutes } } : {}),
           // The estimated delivery time the customer was shown: the zone's, else the store's.
           ...(etaMinutes ? { etaMinutes } : {}),
-          // Free shipping a free-shipping code gave: kept when a line joins later or the items are edited.
-          ...(couponFreeShipping ? { freeShippingGranted: true } : {}),
+          // Free shipping a free-shipping code or a cart reward gave: kept when a line joins later or the items are edited.
+          ...(couponFreeShipping || rewardFreeShipping ? { freeShippingGranted: true } : {}),
         },
         ...(awaitingPayment
           ? {
@@ -865,13 +935,16 @@ async function addLineToOpenOrder(workspaceId, order, lineInput, { isUpsell = fa
   let placed = null;
   const redemption = await db.DiscountRedemption.findOne({ where: { orderId: order.id }, transaction });
   const discountRules = require('../discounts/discountRules');
+  // A cart reward's discount stays what the order was given (modules/cartRewards); a code next to it works on what is left.
+  const rewardPart = require('../cartRewards/cartRewardRules').placedRewardDiscount(discountsSnapshot);
+  const afterReward = (rows) => (rewardPart ? require('../cartRewards/cartRewardCheckout').linesAfterReward(rows, rewardPart) : rows);
   if (redemption) {
     // The code as the order was placed with it (its snapshot's rules), not as it stands now.
     const discount = discountRules.asPlaced(await db.Discount.findByPk(redemption.discountId, { transaction }), discountsSnapshot);
     placed = discount;
     if (discount) {
       // A product- or collection-limited code still covers only its lines.
-      discountAmount = await discountService.amountForLines(discount, lines, transaction);
+      discountAmount = await discountService.amountForLines(discount, afterReward(lines), transaction);
       discountsSnapshot = discountsSnapshot.map((d) => (d.code === discount.code ? { ...d, amount: discountAmount } : d));
     }
   } else {
@@ -896,7 +969,7 @@ async function addLineToOpenOrder(workspaceId, order, lineInput, { isUpsell = fa
     country: address ? address.country : null,
     region: address ? address.province : null,
     // Taxed on what the shopper pays: the order's discount comes off first.
-    lines: await taxableLines(lines, discountAmount, placed, transaction),
+    lines: await taxableLines(redemption && placed ? afterReward(lines) : lines, discountAmount, placed, transaction),
     shippingAmount,
     transaction,
   });
@@ -904,6 +977,8 @@ async function addLineToOpenOrder(workspaceId, order, lineInput, { isUpsell = fa
   if (redemption && placed) {
     discountAmount += discountRules.placedShippingPart(discountsSnapshot, shippingAmount);
     await redemption.update({ amountAllocated: discountAmount }, { transaction });
+    // The order's discount holds the reward's part too.
+    discountAmount += rewardPart;
   }
   const totalAmount = subtotal - discountAmount + shippingAmount + taxAmount;
 
