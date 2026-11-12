@@ -29,9 +29,9 @@ describe('GET /api/v1/fonts', () => {
 });
 
 describe("PATCH /workspaces/:id — themeSettings.fonts", () => {
-  it('saves catalog fonts for the store, its header and its products', async () => {
+  it('saves catalog fonts for the store, its header, its footer and its products', async () => {
     const { wid, H } = await setup();
-    const fonts = { primaryAr: 'cairo', primaryEn: 'inter', header: { ar: 'reem-kufi', en: null }, products: { en: 'lora' } };
+    const fonts = { primaryAr: 'cairo', primaryEn: 'inter', header: { ar: 'reem-kufi', en: null }, footer: { ar: 'amiri', en: 'lora' }, products: { en: 'lora' } };
     const res = await patchTheme(H, wid, { primaryColor: '#123456', fonts });
     expect(res.status).toBe(200);
     const saved = await db.Workspace.findByPk(wid);
@@ -46,6 +46,7 @@ describe("PATCH /workspaces/:id — themeSettings.fonts", () => {
       { primaryAr: 'Comic Sans MS' },
       { primaryEn: 'amiri' },
       { header: { ar: 'inter' } },
+      { footer: { en: 'amiri' } },
       { products: { en: 'x;}body{display:none}' } },
       { primaryAr: 'cairo', css: 'font-family:evil' },
     ]) {

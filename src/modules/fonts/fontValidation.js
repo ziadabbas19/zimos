@@ -55,7 +55,7 @@ function fontPairProblems(pair, field) {
   return problems;
 }
 
-const STORE_PAIRS = ['header', 'products'];
+const STORE_PAIRS = ['header', 'footer', 'products'];
 
 /** The problems with `themeSettings.fonts`; none for null or absent. */
 function storeFontsProblems(fonts, field = 'themeSettings.fonts') {
@@ -70,7 +70,7 @@ function storeFontsProblems(fonts, field = 'themeSettings.fonts') {
     } else if (STORE_PAIRS.includes(key)) {
       problems.push(...fontPairProblems(value, at));
     } else {
-      problems.push({ field: at, message: `Unknown key "${key}" — use primaryAr, primaryEn, header or products` });
+      problems.push({ field: at, message: `Unknown key "${key}" — use primaryAr, primaryEn, header, footer or products` });
     }
   }
   return problems;
