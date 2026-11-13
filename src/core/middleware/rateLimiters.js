@@ -703,8 +703,30 @@ const deliveryWebhookLimiter = [
   }),
 ];
 
+/*
+ * Email campaigns (modules/emailCampaigns). The staff routes are counted per
+ * signed-in user and store on top of the general limiter: writes (create,
+ * edit, preview, send, schedule, cancel) by the minute, test emails by the
+ * hour — each one is a real email from the platform's address. The public
+ * one-click unsubscribe (List-Unsubscribe-Post) is counted per client IP.
+ */
+function createEmailCampaignLimiters({ writesPerMinute, testsPerHour, unsubscribesPerMinute, skip: skipAll = () => false }) {
+  const staffKey = (req) => `${userOrIpKey(req)}:${req.params && req.params.workspaceId ? req.params.workspaceId : '-'}`;
+  const bucket = (windowMs, limit, prefix, keyGenerator) =>
+    rateLimit({ windowMs, limit, standardHeaders: true, legacyHeaders: false, skip: skipAll, keyGenerator: (req) => `${prefix}:${keyGenerator(req)}`, handler });
+  return {
+    writes: bucket(60 * 1000, writesPerMinute, 'campaign-write', staffKey),
+    tests: bucket(60 * 60 * 1000, testsPerHour, 'campaign-test', staffKey),
+    unsubscribe: bucket(60 * 1000, unsubscribesPerMinute, 'campaign-unsubscribe', (req) => ipKeyGenerator(clientIp(req) || '')),
+  };
+}
+
+const emailCampaignLimiters = createEmailCampaignLimiters({ writesPerMinute: 60, testsPerHour: 10, unsubscribesPerMinute: 30, skip });
+
 module.exports = {
   generalLimiter,
+  createEmailCampaignLimiters,
+  emailCampaignLimiters,
   deliveryWebhookLimiter,
   carrierWebhookLimiter,
   paymentWebhookLimiter,

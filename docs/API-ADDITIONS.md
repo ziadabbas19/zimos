@@ -350,6 +350,49 @@ device (`push/pushDigest.js`). Off: nothing of it, and the bell is as before.
 - **Plan feature** `cart_rewards` (offered only while the flag is on), refused like
   the four below with `GROWTH_REQUIRE_PLAN_FEATURE`.
 
+### Orders and products reports — `/analytics/reports/{orders,products}-overview` (STORE_FEATURES `order_product_reports`)
+- Mounted with the other reports (analytics.view); 404 FEATURE_UNAVAILABLE until
+  `STORE_FEATURES` names `order_product_reports`. Aggregated in SQL
+  (`analytics/orderProductReports.js`); no new index (orders `(workspace_id,
+  created_at)`, `shipments(order_id)`, `order_items(order_id|product_id)` exist).
+- The orders are the Orders page's for those dates: archived and test orders left
+  out, each under its `orderStage` stage, so `byStatus` equals `GET /orders/pipeline`.
+- `GET /orders-overview?from&to&compare&unit` → KPIs (orders, revenue,
+  averageOrderValue, cancellationRate, returnRate, deliveryRate) with the previous
+  period, the trend, and breakdowns by status, governorate, payment method, courier.
+- `GET /orders-overview/orders?…&status&governorate&paymentMethod&carrier&cursor` —
+  the orders behind the numbers (`''` = none); the customer's name only for a
+  teammate with orders.view and only on an order not locked. `GET
+  /orders-overview/export` the same as CSV (≤ 10,000 rows).
+- `GET /products-overview` → top by revenue and units, lowest sellers, products with
+  no sales, low / out of stock, and every product's units, revenue, share, orders,
+  returned units and stock. `GET /products-overview/:productId/trend`, `GET
+  /products-overview/export` (CSV).
+
+### Email campaigns — `/email-campaigns` (EMAIL_CAMPAIGNS_ENABLED, off by default)
+- **Migration 748:** `email_campaigns`, `email_campaign_recipients` (UNIQUE
+  `(campaign_id, email)`), `plans.max_campaign_emails_per_month` (null = unlimited;
+  existing plans 0).
+- **Staff** (discounts.manage; plan key `email_campaigns` with
+  `GROWTH_REQUIRE_PLAN_FEATURE`): `GET /overview`, `GET /products`, `POST /audience`,
+  `POST /preview`, `POST /test`, `GET|POST /`, `GET|PATCH|DELETE /:id`, `POST
+  /:id/{send,schedule,unschedule,cancel}`, `GET /:id/recipients`.
+- **Audience:** customers with `marketing_consent`, an address, not opted out (email
+  or WhatsApp STOP), suppressed, blocked, blacklisted or locked; all, a saved segment,
+  RFM groups (with `rfm`) or orders / spend rules.
+- **Quota:** the plan's emails per Cairo month, checked whole when sending starts
+  (422 `EMAIL_QUOTA_EXCEEDED`); `EMAIL_CAMPAIGNS_STORE_DAILY_CAP` a Cairo day per store.
+- **Sending:** the `notifications` queue (`email_campaigns.send_batch`) and a minute
+  tick (`email_campaigns.tick`); see `emailCampaigns/campaignSender.js` for retries and
+  the never-twice rules. `List-Unsubscribe` + `List-Unsubscribe-Post` on every email.
+- **Public:** `POST /api/v1/email-campaigns/unsubscribe?t=` (one-click), `GET` the same
+  redirects to the store's `/unsubscribe` page; `POST /store/:ws/marketing/unsubscribe`
+  also takes campaign tokens (`c1.`).
+- **Reports:** the Brevo webhook (`/webhooks/email/brevo`, `BREVO_WEBHOOK_TOKEN`) also
+  applies delivered / bounce / spam / opened / click events to campaign emails; it
+  answers while either `DELIVERY_STATUS_ENABLED` or `EMAIL_CAMPAIGNS_ENABLED` is on.
+- **Checkout:** `marketingConsent: true` gives the order's customer consent.
+
 ### Story gallery page element — `story_gallery`
 Up to 24 `{ src, title, description }` from the media library on any page
 (the About page); plain text only; `title`/`description` are translated by

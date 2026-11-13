@@ -118,6 +118,25 @@ if (secretProblems.length > 0) {
 // A comma-separated env var as a list of lower-cased, trimmed entries. Unset
 // uses the fallback; set but empty is an empty list. Under NODE_ENV=test the
 // fallback always wins, so a dev .env can't change what the suite sees.
+// Email campaigns' provider (env.emailCampaigns): the one named, else the one
+// the platform's other emails use (brevo), else the log. Tests: always the log.
+function campaignProvider() {
+  if (process.env.NODE_ENV === 'test') return 'log';
+  const named = (process.env.EMAIL_CAMPAIGNS_PROVIDER || '').trim().toLowerCase();
+  if (named) return named;
+  return (process.env.EMAIL_PROVIDER || '').trim().toLowerCase() === 'brevo' ? 'brevo' : 'log';
+}
+
+// The campaigns' From address: EMAIL_CAMPAIGNS_FROM_ADDRESS, else no-reply@ the
+// domain the platform already sends from.
+function campaignFromAddress() {
+  const named = (process.env.EMAIL_CAMPAIGNS_FROM_ADDRESS || '').trim();
+  if (named) return named;
+  const platform = (process.env.EMAIL_FROM_ADDRESS || '').trim();
+  const domain = platform.includes('@') ? platform.split('@').pop() : (process.env.PLATFORM_ROOT_DOMAIN || 'zimos.test').trim();
+  return `no-reply@${domain}`;
+}
+
 function csvList(raw, fallback) {
   const value = raw === undefined || process.env.NODE_ENV === 'test' ? fallback : raw;
   return String(value)
@@ -484,6 +503,27 @@ const env = {
   // off; a test that needs it sets it here.
   cartRewards: {
     enabled: process.env.NODE_ENV !== 'test' && process.env.CART_REWARDS_ENABLED === 'true',
+  },
+
+  // Email campaigns: a store emails its own customers who agreed to marketing
+  // (modules/emailCampaigns). Off unless EMAIL_CAMPAIGNS_ENABLED is exactly
+  // "true": every campaign route answers 404, nothing is queued or sent, the
+  // checkout ignores the consent box and the unsubscribe link reads as before.
+  // Under NODE_ENV=test it starts off and sends through the log provider.
+  //   provider        brevo | log. Unset: brevo while EMAIL_PROVIDER is brevo, else log
+  //                   (writes a line per email and sends nothing).
+  //   fromAddress     the sending address; unset, no-reply@ the domain of EMAIL_FROM_ADDRESS
+  //                   (else of PLATFORM_ROOT_DOMAIN). The store's name is the sender name.
+  //   storeDailyCap   emails one store may hand to the provider a day (Cairo time); the
+  //                   rest wait for the next day, so one store can't hurt the shared sender.
+  //   ratePerMinute   how fast one campaign goes out; batchSize per batch job.
+  emailCampaigns: {
+    enabled: process.env.NODE_ENV !== 'test' && process.env.EMAIL_CAMPAIGNS_ENABLED === 'true',
+    provider: campaignProvider(),
+    fromAddress: campaignFromAddress(),
+    storeDailyCap: intInRange(process.env.EMAIL_CAMPAIGNS_STORE_DAILY_CAP, 1000, 1, 1000000),
+    ratePerMinute: intInRange(process.env.EMAIL_CAMPAIGNS_RATE_PER_MINUTE, 600, 1, 100000),
+    batchSize: intInRange(process.env.EMAIL_CAMPAIGNS_BATCH_SIZE, 50, 1, 500),
   },
 
   // The prepaid balance and the pay-per-order plan (billing/walletService).

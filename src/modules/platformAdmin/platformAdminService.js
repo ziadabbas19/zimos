@@ -63,6 +63,8 @@ function serializePlan(p) {
     // Limits (null = unlimited), checked when a store or funnel is created.
     maxStores: p.maxStores,
     maxFunnelsPerMonth: p.maxFunnelsPerMonth,
+    // Email campaigns a store may send a month (migration 748); null = unlimited, 0 = none.
+    maxCampaignEmailsPerMonth: p.maxCampaignEmailsPerMonth === undefined ? 0 : p.maxCampaignEmailsPerMonth,
     // On the marketing site and at sign-up, in this order.
     isPublic: p.isPublic,
     displayOrder: p.displayOrder,
@@ -247,6 +249,7 @@ async function savePlan(input, req) {
   // Sent: written (null clears a limit). Left out: kept as it is.
   if (input.maxStores !== undefined) fields.maxStores = input.maxStores;
   if (input.maxFunnelsPerMonth !== undefined) fields.maxFunnelsPerMonth = input.maxFunnelsPerMonth;
+  if (input.maxCampaignEmailsPerMonth !== undefined) fields.maxCampaignEmailsPerMonth = input.maxCampaignEmailsPerMonth;
   if (input.isPublic !== undefined) fields.isPublic = input.isPublic;
   if (input.displayOrder !== undefined) fields.displayOrder = input.displayOrder;
   if (input.perOrderFee !== undefined) fields.perOrderFeeAmount = input.perOrderFee;

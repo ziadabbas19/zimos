@@ -124,4 +124,4 @@ router.get('/customers/:customerId', validate({ params: Joi.object({ ...ws, cust
   res.json({ rfm: r ? row(r) : null });
 }));
 
-module.exports = { router, LABELS };
+module.exports = { router, LABELS, SCORED };

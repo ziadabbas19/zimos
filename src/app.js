@@ -240,6 +240,10 @@ v1.use('/workspaces/:workspaceId/reviews', reviewRoutes);
 v1.use('/workspaces/:workspaceId/combos', require('./modules/combos/comboRoutes').staff);
 // Cart rewards: spend thresholds that unlock a discount or free shipping (modules/cartRewards, CART_REWARDS_ENABLED).
 v1.use('/workspaces/:workspaceId/cart-rewards', require('./modules/cartRewards/cartRewardRoutes').staff);
+// Email campaigns: a store emails its customers who agreed to marketing (modules/emailCampaigns, EMAIL_CAMPAIGNS_ENABLED).
+v1.use('/workspaces/:workspaceId/email-campaigns', require('./modules/emailCampaigns/campaignRoutes').staff);
+// Their one-click unsubscribe (List-Unsubscribe-Post): public, no sign-in, the signed token is the proof.
+v1.use('/email-campaigns', require('./modules/emailCampaigns/campaignRoutes').public);
 v1.use('/workspaces/:workspaceId/fraud', fraudRoutes);
 v1.use('/workspaces/:workspaceId/support', supportRoutes);
 v1.use('/workspaces/:workspaceId/billing', workspaceBillingRoutes);

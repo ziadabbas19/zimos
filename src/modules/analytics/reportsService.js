@@ -900,6 +900,14 @@ async function exportReport(workspaceId, query = {}) {
 }
 
 module.exports = {
+  // Shared with the orders and products reports (orderProductReports.js).
+  resolveWindow,
+  previousWindow,
+  autoUnit,
+  context,
+  csvCell,
+  SHIPPED_STAGES,
+  SHIPMENT_JOIN,
   getSalesReport,
   getProductsReport,
   getDeliveryReport,

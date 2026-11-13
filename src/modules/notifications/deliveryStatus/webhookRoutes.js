@@ -6,7 +6,7 @@ const asyncHandler = require('express-async-handler');
 const env = require('../../../config/env');
 const logger = require('../../../core/utils/logger');
 const { AppError, AuthenticationError } = require('../../../core/errors/AppError');
-const { requireDeliveryStatus } = require('./gate');
+const { requireDeliveryStatus, deliveryStatusOn } = require('./gate');
 const events = require('./providerEvents');
 
 /**
@@ -81,17 +81,27 @@ function verifyTwilio(req) {
 const MAX_EVENTS = 1000;
 
 const router = Router();
-// Off (DELIVERY_STATUS_ENABLED unset): 404, as before the feature.
-router.use(requireDeliveryStatus);
+
+// Off (DELIVERY_STATUS_ENABLED unset): 404, as before the feature. The Brevo
+// route also serves the campaign emails' reports (EMAIL_CAMPAIGNS_ENABLED,
+// emailCampaigns/campaignEvents.js): with only campaigns on, it reads
+// campaign events and leaves the store's other emails exactly as before.
+const campaignsOn = () => Boolean(env.emailCampaigns.enabled);
+const requireEmailReports = (req, res, next) => (deliveryStatusOn() || campaignsOn() ? next() : requireDeliveryStatus(req, res, next));
 
 router.post(
   '/email/brevo',
+  requireEmailReports,
   asyncHandler(async (req, res) => {
     verifyBrevo(req);
     const list = (Array.isArray(req.body) ? req.body : [req.body]).slice(0, MAX_EVENTS);
     const counts = {};
     for (const e of list) {
-      const outcome = await events.brevoEvent(e);
+      let outcome = deliveryStatusOn() ? await events.brevoEvent(e) : 'unknown';
+      // Not one of the store's other emails: perhaps a campaign email (opens and clicks are only these).
+      if (campaignsOn() && (outcome === 'unknown' || outcome === 'ignored')) {
+        outcome = (await require('../../emailCampaigns/campaignEvents').brevoEvent(e)) || outcome;
+      }
       counts[outcome] = (counts[outcome] || 0) + 1;
     }
     logger.info(`[deliveryStatus] brevo webhook: ${JSON.stringify(counts)}`);
@@ -101,6 +111,7 @@ router.post(
 
 router.post(
   '/sms/twilio',
+  requireDeliveryStatus,
   asyncHandler(async (req, res) => {
     verifyTwilio(req);
     const outcome = await events.twilioStatus(req.body || {});

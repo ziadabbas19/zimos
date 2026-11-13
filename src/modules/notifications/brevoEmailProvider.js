@@ -13,7 +13,7 @@ const RETRY_DELAYS = env.isTest ? [0, 0, 0] : [0, 1000, 3000];
 // Per attempt. Without it a hung Brevo connection hangs the send indefinitely.
 const SEND_TIMEOUT_MS = 10_000;
 
-function buildPayload({ to, subject, html, text, fromAddress, fromName, replyTo }) {
+function buildPayload({ to, subject, html, text, fromAddress, fromName, replyTo, headers, tags }) {
   return {
     sender: { email: fromAddress, name: fromName },
     // A store's order emails: the customer's reply goes to the store (notifications/orderEmailSender.js).
@@ -22,6 +22,9 @@ function buildPayload({ to, subject, html, text, fromAddress, fromName, replyTo 
     subject,
     htmlContent: html,
     textContent: text,
+    // A campaign email's List-Unsubscribe headers and its tag (emailCampaigns/campaignProviders.js).
+    ...(headers && Object.keys(headers).length ? { headers } : {}),
+    ...(Array.isArray(tags) && tags.length ? { tags } : {}),
   };
 }
 
@@ -55,15 +58,16 @@ async function sendOnce(payload, apiKey) {
   return res.json().catch(() => ({}));
 }
 
-async function sendEmail({ to, subject, html, text, fromName: senderName, replyTo }) {
+async function sendEmail({ to, subject, html, text, fromName: senderName, replyTo, fromAddress: ownAddress, headers, tags, retry = true }) {
   const { apiKey, fromAddress, fromName } = env.notifications.brevo;
-  if (!apiKey || !fromAddress) {
+  if (!apiKey || !(ownAddress || fromAddress)) {
     throw new Error('Brevo email provider is not configured (BREVO_API_KEY / EMAIL_FROM_ADDRESS)');
   }
 
   // A store's email to its own customer goes out under the store's name (same sending address).
-  const payload = buildPayload({ to, subject, html, text, fromAddress, fromName: senderName || fromName, replyTo });
-  const { value, attempts } = await withRetry(() => sendOnce(payload, apiKey), { delays: RETRY_DELAYS });
+  // A campaign names its own address and headers, and retries on its own schedule (`retry: false`).
+  const payload = buildPayload({ to, subject, html, text, fromAddress: ownAddress || fromAddress, fromName: senderName || fromName, replyTo, headers, tags });
+  const { value, attempts } = await withRetry(() => sendOnce(payload, apiKey), { delays: retry ? RETRY_DELAYS : [0] });
 
   return { messageId: value.messageId || null, attempts };
 }

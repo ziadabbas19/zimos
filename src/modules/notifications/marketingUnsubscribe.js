@@ -23,6 +23,9 @@ const { recordAudit } = require('../audit/auditService');
  * (offers/engagement.js).
  *
  *   POST /store/:workspaceId/marketing/unsubscribe { token } → { ok, storeName }
+ *
+ * With EMAIL_CAMPAIGNS_ENABLED it also takes a campaign email's token
+ * (`c1.…`, emailCampaigns/campaignUnsubscribe.js): the same page serves both.
  */
 
 const signingKey = crypto.createHash('sha256').update(`marketing-unsubscribe:${env.jwt.accessSecret}`).digest();
@@ -93,7 +96,13 @@ router.post(
   '/marketing/unsubscribe',
   validate({ body: Joi.object({ token: Joi.string().max(500).required() }) }),
   asyncHandler(async (req, res) => {
-    await unsubscribe(req.publicWorkspace, req.body.token);
+    // A campaign email's link (emailCampaigns/campaignTokens.js, `c1.`): its own token, same page.
+    const campaigns = require('../emailCampaigns/campaignTokens');
+    if (env.emailCampaigns.enabled && campaigns.isCampaignToken(req.body.token)) {
+      await require('../emailCampaigns/campaignUnsubscribe').unsubscribeByToken(req.body.token, { workspaceId: req.publicWorkspace.id, via: 'link' });
+    } else {
+      await unsubscribe(req.publicWorkspace, req.body.token);
+    }
     res.json({ ok: true, storeName: req.publicWorkspace.name });
   })
 );

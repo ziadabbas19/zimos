@@ -247,4 +247,6 @@ module.exports = {
   snapshotEntry,
   placedRewardDiscount,
   placedRewardShipsFree,
+  // Shared with the campaign emails' product prices (emailCampaigns/campaignContent.js).
+  formatAmount,
 };
