@@ -418,6 +418,35 @@ device (`push/pushDigest.js`). Off: nothing of it, and the bell is as before.
   `audience_too_large`. `GET /overview` → `quota.campaigns` and
   `quota.recipientsPerCampaign`. The console plan body takes both fields.
 
+### Cart sheet behaviour (every store, no flag, no plan key)
+- **Settings:** `workspaces.settings.cart_sheet`, sent whole through `PATCH
+  /workspaces/:ws` (`website.edit`, like the other store settings; `null` = the
+  defaults): `enabled` (false = no sheet, the cart is a page), `openOn.{addToCart
+  (false), cartIcon (true), quickOrder (false)}`, `presentation` (`auto` |
+  `bottom_sheet` | `side_drawer` | `popup`, default `auto`), `speed` (`fast` |
+  `normal` | `none`, default `fast`). Unknown values 422; unknown keys dropped.
+  Audited as `workspace.update` on the Workspace, so the storefront cache and the
+  edge copies are dropped.
+- **Storefront:** `GET /store/:ws` → `cartSheet` (the settings, defaults filled in,
+  plus `trustItems`: the lines under the checkout button switched on in the cart
+  rewards settings, served whether or not rewards are on). Same for every shopper.
+- A cart rewards save (`CartRewardSettings`) now drops the store's cache too.
+
+### Cart rewards bar look and icons (migration 750)
+- `cart_reward_settings.bar_appearance` JSONB NULL: `{ mode: inherit | custom,
+  custom: { shape: thin | thick | segmented, corners: rounded | square, fillColor,
+  trackColor (#rrggbb or null = the theme's), marker: circle | rounded_square |
+  none, markerSize: sm | md | lg, showAmounts, reachedPop, showMessage,
+  messageAlign: start | center } | null }`. NULL = `inherit` (the bar as it was).
+- `PUT /cart-rewards` takes `appearance` (left out = kept) and `tiers[].icon`
+  (`gift | truck | percent | tag | star | heart | crown | bolt | check`, null = by
+  kind). In `custom` mode the fill against the track must reach 3:1 (422
+  `VALIDATION_ERROR`, detail on `appearance.custom.fillColor`/`trackColor` naming
+  the pair and the ratio); not checked while `inherit`, whose custom values stay
+  saved. `GET` also answers `appearance`, `tiers[].shownIcon` and `cartSpeed`.
+- `GET /store/:ws/cart-rewards` → `appearance` (`{ mode: 'inherit' }` or the custom
+  look) and `tiers[].icon`; the quote's `rewards.tiers[].icon` too.
+
 ### Story gallery page element — `story_gallery`
 Up to 24 `{ src, title, description }` from the media library on any page
 (the About page); plain text only; `title`/`description` are translated by
