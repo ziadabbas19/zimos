@@ -182,6 +182,8 @@ const TABLES = {
   product_combo_items: wipe('store combos (each product in one, migration 733)'),
   product_combos: wipe(STORE),
   cart_reward_settings: wipe(STORE),
+  email_campaigns: wipe(STORE),
+  email_campaign_recipients: wipe('store email campaigns (each address one was sent to, migration 748)'),
   carrier_region_map: wipe("courier region mappings: the shared ones set in the console before launch and each store's own; without them a courier is matched by name"),
   catalog_imports: wipe(STORE),
   cod_settlement_lines: wipe(STORE),
