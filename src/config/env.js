@@ -476,6 +476,16 @@ const env = {
     enabled: process.env.NODE_ENV !== 'test' && process.env.PRODUCT_COMBOS_ENABLED === 'true',
   },
 
+  // Cart rewards: spend thresholds that unlock a discount or free shipping,
+  // shown as a progress bar in the store's cart (modules/cartRewards). Off
+  // unless CART_REWARDS_ENABLED is exactly "true": the settings routes and the
+  // public config answer 404, the shipping quote carries no `rewards` and the
+  // checkout prices orders exactly as before. Under NODE_ENV=test it starts
+  // off; a test that needs it sets it here.
+  cartRewards: {
+    enabled: process.env.NODE_ENV !== 'test' && process.env.CART_REWARDS_ENABLED === 'true',
+  },
+
   // The prepaid balance and the pay-per-order plan (billing/walletService).
   // Off unless exactly "true"; off charges no order fee, offers no plan with
   // a fee and takes no top-up, as before it existed. Under NODE_ENV=test it
@@ -547,7 +557,7 @@ const env = {
   },
 
   // GROWTH_REQUIRE_PLAN_FEATURE=true: reviews, the About page's gallery,
-  // combos and the coupons' advanced controls need the plan's key of the
+  // combos, cart rewards and the coupons' advanced controls need the plan's key of the
   // same name — refused only while PLAN_FEATURE_ENFORCEMENT is on too
   // (billing/growthFeatures.js). Off (the default): as before. Under
   // NODE_ENV=test it starts off; a test sets it.

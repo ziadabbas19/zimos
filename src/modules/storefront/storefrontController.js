@@ -91,6 +91,11 @@ const shippingQuote = asyncHandler(async (req, res) => {
     items: await require('../catalog/productTests').pinPrices(workspaceId, items, testVisitor),
     // A funnel's checkout: priced with the funnel's shipping group (funnels/funnelShipping.js).
     funnelId: req.body.funnelId || null,
+    // The checkout's choices, for cart rewards (modules/cartRewards): only read while they are in force.
+    discountCode: req.body.discountCode || null,
+    deliveryMethod: req.body.deliveryMethod || null,
+    deliveryZoneId: req.body.deliveryZoneId || null,
+    shippingOption: req.body.shippingOption || null,
   });
   res.json({ quote });
 });

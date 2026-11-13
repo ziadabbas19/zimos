@@ -64,6 +64,8 @@ const FEATURE_CATALOG = Object.freeze(
     { key: 'about_gallery', available: true, label: { en: 'About page photo gallery', ar: 'معرض صور صفحة من نحن' } },
     // Exists only while PRODUCT_COMBOS_ENABLED is on (modules/combos).
     { key: 'combos', available: env.combos.enabled, label: { en: 'Product combos', ar: 'باقات المنتجات' } },
+    // Exists only while CART_REWARDS_ENABLED is on (modules/cartRewards).
+    { key: 'cart_rewards', available: env.cartRewards.enabled, label: { en: 'Cart rewards', ar: 'مكافآت السلة' } },
     // Migration 730's controls and the coupon report; plain codes and
     // automatic discounts stay on every plan.
     { key: 'advanced_coupons', available: true, label: { en: 'Advanced coupons', ar: 'كوبونات متقدمة' } },

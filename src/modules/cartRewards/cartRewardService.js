@@ -1,0 +1,148 @@
+'use strict';
+
+const db = require('../../db/models');
+const env = require('../../config/env');
+const { ValidationError } = require('../../core/errors/AppError');
+const { recordAudit } = require('../audit/auditService');
+const growth = require('../billing/growthFeatures');
+const rules = require('./cartRewardRules');
+
+/*
+ * A store's cart rewards settings (cart_reward_settings, migration 747) and
+ * whether they are in force.
+ *
+ * In force (activeSettings) only while all of these hold:
+ *   - CART_REWARDS_ENABLED is on (env.cartRewards.enabled);
+ *   - the store holds the plan's `cart_rewards`, while the growth gate is on
+ *     (billing/growthFeatures.js: GROWTH_REQUIRE_PLAN_FEATURE with
+ *     PLAN_FEATURE_ENFORCEMENT); off, every plan has it;
+ *   - the merchant switched the section on and listed at least one tier.
+ * Otherwise the quote carries no rewards and the checkout gives none: orders
+ * are priced exactly as before. A store without a row has the section off.
+ */
+
+const flagOn = () => env.cartRewards.enabled === true;
+
+const blank = (value) => typeof value !== 'string' || value.trim() === '';
+
+function cleanLabel(label) {
+  if (!label) return null;
+  const ar = blank(label.ar) ? null : label.ar.trim();
+  const en = blank(label.en) ? null : label.en.trim();
+  return ar || en ? { ar, en } : null;
+}
+
+function cleanTier(tier) {
+  const out = { thresholdAmount: Number(tier.thresholdAmount), type: tier.type, label: cleanLabel(tier.label) };
+  if (tier.type !== 'free_shipping') out.value = Number(tier.value);
+  return out;
+}
+
+async function storeCurrency(workspaceId, transaction) {
+  const workspace = await db.Workspace.findByPk(workspaceId, { attributes: ['id', 'defaultCurrency'], transaction });
+  return (workspace && workspace.defaultCurrency) || 'EGP';
+}
+
+/** The settings as the dashboard edits them; each tier also says its automatic label. */
+function serialize(row, currency) {
+  const tiers = rules.sortTiers((row && row.tiers) || []);
+  return {
+    enabled: Boolean(row && row.enabled),
+    allowCouponStacking: Boolean(row && row.allowCouponStacking),
+    currency,
+    tiers: tiers.map((tier) => ({ ...cleanTier(tier), autoLabel: rules.autoLabel(tier, currency) })),
+    trustItems: ((row && row.trustItems) || []).map((item) => ({
+      text: { ar: (item.text && item.text.ar) || '', en: (item.text && item.text.en) || '' },
+      enabled: item.enabled !== false,
+    })),
+  };
+}
+
+async function getSettings(workspaceId) {
+  const row = await db.CartRewardSettings.findByPk(workspaceId);
+  return serialize(row, await storeCurrency(workspaceId));
+}
+
+/**
+ * Saves the whole section. Thresholds must rise within each kind of reward
+ * (422 VALIDATION_ERROR naming the tier); a trust line needs some text.
+ * Stored lowest threshold first.
+ */
+async function saveSettings(workspaceId, data, req) {
+  const errors = [...rules.tierErrors(data.tiers)];
+  data.trustItems.forEach((item, index) => {
+    if (blank(item.text.ar) && blank(item.text.en)) errors.push({ field: `trustItems.${index}.text`, message: 'Write the line in at least one language' });
+  });
+  if (data.enabled && data.tiers.length === 0) errors.push({ field: 'tiers', message: 'Add at least one reward before switching the bar on' });
+  if (errors.length) throw new ValidationError(errors, 'Invalid body');
+
+  const tiers = rules.sortTiers(data.tiers.map(cleanTier));
+  const trustItems = data.trustItems.map((item) => ({
+    text: { ar: blank(item.text.ar) ? '' : item.text.ar.trim(), en: blank(item.text.en) ? '' : item.text.en.trim() },
+    enabled: item.enabled !== false,
+  }));
+
+  return db.sequelize.transaction(async (transaction) => {
+    const currency = await storeCurrency(workspaceId, transaction);
+    const row = await db.CartRewardSettings.findByPk(workspaceId, { transaction, lock: transaction.LOCK.UPDATE });
+    const before = row ? serialize(row, currency) : null;
+    const values = { enabled: data.enabled, allowCouponStacking: data.allowCouponStacking, tiers, trustItems };
+    const saved = row ? await row.update(values, { transaction }) : await db.CartRewardSettings.create({ workspaceId, ...values }, { transaction });
+    const after = serialize(saved, currency);
+    await recordAudit({
+      workspaceId,
+      actorUserId: req.user.id,
+      action: 'cart_rewards.update',
+      entityType: 'CartRewardSettings',
+      entityId: workspaceId,
+      before,
+      after,
+      req,
+      transaction,
+    });
+    return after;
+  });
+}
+
+/**
+ * The settings the shopper's cart and checkout are priced with, or null when
+ * cart rewards are not in force for this store (see the top of this file).
+ * { allowCouponStacking, tiers (lowest first), trustItems, currency }.
+ */
+async function activeSettings(workspaceId, { transaction } = {}) {
+  if (!flagOn()) return null;
+  const row = await db.CartRewardSettings.findByPk(workspaceId, { transaction });
+  if (!row || !row.enabled || !Array.isArray(row.tiers) || row.tiers.length === 0) return null;
+  if (await growth.locked(workspaceId, 'cart_rewards', { transaction })) return null;
+  return {
+    allowCouponStacking: Boolean(row.allowCouponStacking),
+    tiers: rules.sortTiers(row.tiers.map(cleanTier)),
+    trustItems: row.trustItems || [],
+    currency: await storeCurrency(workspaceId, transaction),
+  };
+}
+
+/**
+ * What the storefront shows before it has a quote (GET /store/:id/cart-rewards):
+ * the tiers with their names, the trust lines switched on, and whether a code
+ * adds to the reward. null when not in force.
+ */
+async function publicConfig(workspaceId) {
+  const settings = await activeSettings(workspaceId);
+  if (!settings) return null;
+  return {
+    currency: settings.currency,
+    allowCouponStacking: settings.allowCouponStacking,
+    tiers: settings.tiers.map((tier) => ({
+      thresholdAmount: tier.thresholdAmount,
+      type: tier.type,
+      value: tier.type === 'free_shipping' ? null : tier.value,
+      label: rules.labelOf(tier, settings.currency),
+    })),
+    trustItems: settings.trustItems
+      .filter((item) => item.enabled !== false && item.text && (!blank(item.text.ar) || !blank(item.text.en)))
+      .map((item) => ({ text: { ar: item.text.ar || '', en: item.text.en || '' } })),
+  };
+}
+
+module.exports = { flagOn, getSettings, saveSettings, activeSettings, publicConfig, serialize };

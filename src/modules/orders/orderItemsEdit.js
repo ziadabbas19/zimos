@@ -188,19 +188,23 @@ async function apply(workspaceId, orderId, requested, req, transaction) {
   let placed = null;
   const redemption = await db.DiscountRedemption.findOne({ where: { orderId: order.id }, transaction });
   const discountRules = require('../discounts/discountRules');
+  // A cart reward's discount stays what the order was given (modules/cartRewards), never above the new
+  // subtotal; a code next to it works on what is left.
+  const rewardPart = Math.min(subtotal, require('../cartRewards/cartRewardRules').placedRewardDiscount(discountsSnapshot));
+  const afterReward = (rows) => (rewardPart ? require('../cartRewards/cartRewardCheckout').linesAfterReward(rows, rewardPart) : rows);
   if (redemption) {
     // The code as the order was placed with it (its snapshot's rules), not as it stands now.
     const discount = discountRules.asPlaced(await db.Discount.findByPk(redemption.discountId, { transaction }), discountsSnapshot);
     placed = discount;
     if (discount) {
       // A product- or collection-limited code still covers only its lines.
-      discountAmount = await discountService.amountForLines(discount, lines, transaction);
+      discountAmount = await discountService.amountForLines(discount, afterReward(lines), transaction);
       discountsSnapshot = discountsSnapshot.map((d) => (d.code === discount.code ? { ...d, amount: discountAmount } : d));
     }
   } else {
     placed = await orderService.placedDiscount(order, transaction);
   }
-  discountAmount = Math.min(discountAmount, subtotal);
+  discountAmount = Math.min(discountAmount, subtotal - (redemption && placed ? rewardPart : 0));
 
   const address = order.shippingAddressSnapshot || null;
   // Shipping the merchant typed in by hand stays as typed.
@@ -226,7 +230,7 @@ async function apply(workspaceId, orderId, requested, req, transaction) {
     country: address ? address.country : null,
     region: address ? address.province : null,
     // Taxed on what the shopper pays: the order's discount comes off first.
-    lines: await taxableLines(lines, discountAmount, placed, transaction),
+    lines: await taxableLines(redemption && placed ? afterReward(lines) : lines, discountAmount, placed, transaction),
     shippingAmount,
     transaction,
   });
@@ -234,6 +238,8 @@ async function apply(workspaceId, orderId, requested, req, transaction) {
   if (redemption && placed) {
     discountAmount += discountRules.placedShippingPart(discountsSnapshot, shippingAmount);
     await redemption.update({ amountAllocated: discountAmount }, { transaction });
+    // The order's discount holds the reward's part too.
+    discountAmount += rewardPart;
   }
   const totalAmount = subtotal - discountAmount + shippingAmount + taxAmount;
 
