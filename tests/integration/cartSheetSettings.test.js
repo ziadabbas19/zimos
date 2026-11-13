@@ -158,3 +158,22 @@ describe('the lines under the cart’s checkout button', () => {
     expect((await s.shown()).trustItems).toEqual([{ text: { ar: 'شحن سريع', en: 'Fast delivery' } }]);
   });
 });
+
+describe('“you saved” for every store', () => {
+  it('the quote says what the lines sell below their compare-at price, rewards or not', async () => {
+    env.cartRewards.enabled = false;
+    const s = await store();
+    // EGP 100 a piece, listed at EGP 150.
+    await db.ProductVariant.update({ compareAtAmount: 15000 }, { where: { id: s.variant.id } });
+    const res = await request(app)
+      .post(`/api/v1/store/${s.ws}/shipping-quote`)
+      .send({ governorate: 'القاهرة (Cairo)', items: [{ variantId: s.variant.id, quantity: 2 }] });
+    expect(res.status).toBe(200);
+    expect(res.body.quote.rewards).toBeUndefined();
+    expect(res.body.quote.lineSavingsAmount).toBe(10000);
+
+    await db.ProductVariant.update({ compareAtAmount: null }, { where: { id: s.variant.id } });
+    const plain = await request(app).post(`/api/v1/store/${s.ws}/shipping-quote`).send({ items: [{ variantId: s.variant.id, quantity: 2 }] });
+    expect(plain.body.quote.lineSavingsAmount).toBe(0);
+  });
+});

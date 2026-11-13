@@ -25,6 +25,8 @@ const { DESTINATION_INDEPENDENT, RULES, settingsPriceShipping } = require('./shi
  *   configured           the store prices shipping at all. When false every
  *                        order is charged 0 and the storefront keeps its
  *                        "confirmed on the call" line, as it always has.
+ *   lineSavingsAmount    Σ (compare-at − price) × quantity, plus bundle and
+ *                        combo savings: the cart sheet's "you saved", every store
  *   rewards              cart rewards (modules/cartRewards), only while they
  *                        are in force for the store and not in a funnel: the
  *                        bar's tiers, the reward these items get against the
@@ -91,6 +93,10 @@ async function quote(workspaceId, { country, region, items, funnelId = null, dis
     freeShipping: shipping.freeShipping,
     destinationRequired: !DESTINATION_INDEPENDENT.includes(shipping.rule),
     configured: await pricesShipping(workspaceId, shipping),
+    // What these lines sell below their compare-at price, plus what bundles and
+    // combos took off them: the cart's "you saved", for every store whether or
+    // not it gives rewards (the rewards' `savedAmount` adds the reward and code).
+    lineSavingsAmount: require('../cartRewards/cartRewardCheckout').lineSavings(lines),
   };
 
   // Cart rewards: not in a funnel's checkout, which prices its own way.
