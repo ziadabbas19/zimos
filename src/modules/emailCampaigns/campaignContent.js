@@ -77,9 +77,13 @@ function paragraphs(text, { align, color }) {
 
 function buttonHtml({ label, url, color, align }) {
   const ink = inkOn(color);
-  return `<table role="presentation" cellpadding="0" cellspacing="0" border="0" align="${align === 'center' ? 'center' : align}" style="margin:8px 0 20px">
+  // The outer cell places the button (td align moves a nested table in every client; a margin on it wouldn't).
+  return `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:8px 0 20px">
+<tr><td align="${align}">
+<table role="presentation" cellpadding="0" cellspacing="0" border="0">
 <tr><td bgcolor="${color}" style="background:${color};border-radius:8px;mso-padding-alt:14px 28px">
 <a href="${escapeHtml(url)}" style="display:inline-block;padding:14px 28px;font-family:${FONT};font-size:16px;font-weight:bold;line-height:1.2;color:${ink};text-decoration:none;border-radius:8px">${escapeHtml(label)}</a>
+</td></tr></table>
 </td></tr></table>`;
 }
 
