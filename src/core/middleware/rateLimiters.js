@@ -723,10 +723,31 @@ function createEmailCampaignLimiters({ writesPerMinute, testsPerHour, unsubscrib
 
 const emailCampaignLimiters = createEmailCampaignLimiters({ writesPerMinute: 60, testsPerHour: 10, unsubscribesPerMinute: 30, skip });
 
+/*
+ * The public footer and popup signup (POST /store/:workspaceId/email-signup,
+ * emailCampaigns/signupService.js): a few a minute from one address, and a
+ * ceiling a minute for one store whatever the addresses, so a script can't
+ * fill a store's list. Mounted after resolvePublicWorkspace, so the store is
+ * its real id however it was reached.
+ */
+function createEmailSignupLimiters({ perIpPerMinute, perStorePerMinute, skip: skipAll = () => false }) {
+  const storeOf = (req) => (req.tenant && req.tenant.workspaceId) || (req.params && req.params.workspaceId) || '-';
+  const bucket = (limit, prefix, keyGenerator) =>
+    rateLimit({ windowMs: 60 * 1000, limit, standardHeaders: true, legacyHeaders: false, skip: skipAll, keyGenerator: (req) => `${prefix}:${keyGenerator(req)}`, handler });
+  return {
+    perIp: bucket(perIpPerMinute, 'email-signup-ip', (req) => `${storeOf(req)}:${ipKeyGenerator(parseIp(clientIp(req)) || clientIp(req) || 'unknown')}`),
+    perStore: bucket(perStorePerMinute, 'email-signup-store', storeOf),
+  };
+}
+
+const emailSignupLimiters = createEmailSignupLimiters({ perIpPerMinute: 5, perStorePerMinute: 120, skip });
+
 module.exports = {
   generalLimiter,
   createEmailCampaignLimiters,
   emailCampaignLimiters,
+  createEmailSignupLimiters,
+  emailSignupLimiters,
   deliveryWebhookLimiter,
   carrierWebhookLimiter,
   paymentWebhookLimiter,

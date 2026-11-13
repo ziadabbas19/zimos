@@ -9,12 +9,14 @@ const { resolveTenant } = require('../../core/middleware/tenantContext');
 const { requirePermission } = require('../../core/middleware/rbac');
 const { PERMISSIONS } = require('../../core/security/permissions');
 const { NotFoundError } = require('../../core/errors/AppError');
-const { emailCampaignLimiters: limit } = require('../../core/middleware/rateLimiters');
+const { emailCampaignLimiters: limit, emailSignupLimiters: signupLimit } = require('../../core/middleware/rateLimiters');
 const { requireGrowthFeature } = require('../billing/growthFeatures');
 const service = require('./campaignService');
 const unsubscribe = require('./campaignUnsubscribe');
 const tokens = require('./campaignTokens');
 const { schemas } = require('./campaignValidation');
+const signup = require('./signupService');
+const signupSettings = require('./signupSettings');
 
 /*
  * Email campaigns (EMAIL_CAMPAIGNS_ENABLED; off, every route here answers 404).
@@ -37,12 +39,20 @@ const { schemas } = require('./campaignValidation');
  *   POST   /:campaignId/unschedule   back to a draft
  *   POST   /:campaignId/cancel       stop a scheduled or sending campaign
  *   GET    /:campaignId/recipients   who it went to, and what happened (?status)
+ *   GET    /signup                   where shoppers sign up: the settings, the
+ *                                    subscribers by source (signupService.js)
+ *   PUT    /signup                   the settings, whole (signupSettings.js)
  *
  * Public, no sign-in, /api/v1/email-campaigns/unsubscribe?t=<token>:
  *   POST  the one-click unsubscribe mail apps make from the List-Unsubscribe
  *         header (RFC 8058); GET sends a person to the store's own page.
  * The store's page itself posts to /store/:id/marketing/unsubscribe
  * (notifications/marketingUnsubscribe.js), which reads these tokens too.
+ *
+ * Public, /api/v1/store/:workspaceId/email-signup (the `store` router, inside
+ * the public store routes): the footer and popup signup, { email, source,
+ * website }. Limited per address and per store; 404 while off, for a place
+ * switched off, or a plan without campaigns.
  */
 
 const gate = (req, res, next) => (service.flagOn() ? next() : next(new NotFoundError('Email campaigns')));
@@ -61,6 +71,18 @@ staff.get(
 staff.post('/audience', limit.writes, validate(schemas.audience), asyncHandler(async (req, res) => res.json(await service.previewAudience(ws(req), req.body.audience))));
 staff.post('/preview', limit.writes, validate(schemas.preview), asyncHandler(async (req, res) => res.json({ preview: await service.preview(ws(req), req.body) })));
 staff.post('/test', limit.tests, validate(schemas.test), asyncHandler(async (req, res) => res.json(await service.sendTest(ws(req), req.body, req))));
+
+// Before '/:campaignId', so "signup" is never read as a campaign id.
+staff.get('/signup', validate(schemas.plain), asyncHandler(async (req, res) => res.json(await signup.view(ws(req)))));
+staff.put(
+  '/signup',
+  limit.writes,
+  validate({ ...schemas.plain, body: signupSettings.schema }),
+  asyncHandler(async (req, res) => {
+    await signupSettings.save(ws(req), req.body, req);
+    res.json(await signup.view(ws(req)));
+  })
+);
 
 staff.get('/', validate(schemas.list), asyncHandler(async (req, res) => res.json(await service.list(ws(req), req.query))));
 staff.post('/', limit.writes, validate(schemas.create), asyncHandler(async (req, res) => res.status(201).json({ campaign: await service.create(ws(req), req.body, req) })));
@@ -103,4 +125,21 @@ pub.get(
   })
 );
 
-module.exports = { staff, public: pub };
+const store = Router({ mergeParams: true });
+store.post(
+  '/email-signup',
+  gate,
+  signupLimit.perIp,
+  signupLimit.perStore,
+  validate({
+    body: Joi.object({
+      email: Joi.string().trim().lowercase().email().max(254).required(),
+      source: Joi.string().valid('footer', 'popup').required(),
+      // A honeypot: people never see it, bots fill it in.
+      website: Joi.string().max(500).allow('', null),
+    }),
+  }),
+  asyncHandler(async (req, res) => res.json(await signup.subscribe(req.publicWorkspace, req.body)))
+);
+
+module.exports = { staff, public: pub, store };
