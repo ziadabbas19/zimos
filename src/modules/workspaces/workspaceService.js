@@ -214,6 +214,8 @@ const MERCHANT_SETTINGS_KEYS = [
   'store_seo',
   // Replaced whole: the store's extra languages (modules/translations).
   'store_languages',
+  // Replaced whole: how the store's cart opens (storefront/cartSheet.js).
+  'cart_sheet',
 ];
 
 // The keys above that price delivery; changing them takes shipping.manage.
