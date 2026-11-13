@@ -37,6 +37,11 @@ module.exports = (sequelize, DataTypes) => {
       // Email campaigns one store may send a month, Cairo time (migration 748,
       // emailCampaigns/campaignQuota). null = unlimited; 0 (what existing plans got) = none.
       maxCampaignEmailsPerMonth: { type: DataTypes.INTEGER, allowNull: true, defaultValue: 0, field: 'max_campaign_emails_per_month' },
+      // Campaigns one store may send or schedule a Cairo month, and the largest
+      // audience one campaign may have (migration 749, emailCampaigns/campaignQuota).
+      // null = unlimited, what existing plans got.
+      maxCampaignsPerMonth: { type: DataTypes.INTEGER, allowNull: true, field: 'max_campaigns_per_month' },
+      maxRecipientsPerCampaign: { type: DataTypes.INTEGER, allowNull: true, field: 'max_recipients_per_campaign' },
     },
     { tableName: 'plans' }
   );
