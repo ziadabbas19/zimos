@@ -183,11 +183,24 @@ async function schedule(workspaceId, campaignId, scheduledAt, req, { now = new D
   // Checked now as well as when the time comes: a merchant hears about it today, not on the day.
   const count = await audience.count(workspaceId, row.audience);
   if (count === 0) throw new AppError('NO_RECIPIENTS', 'No customer in this audience can receive marketing emails', 422);
+  const limits = await quota.planLimits(workspaceId);
+  const tooLarge = quota.overAudienceLimit(limits.recipients, count);
+  if (tooLarge) throw tooLarge;
   const refusal = quota.overQuota(await quota.monthly(workspaceId, { now: at }), count);
   if (refusal) throw refusal;
-  await row.update({ status: 'scheduled', scheduledAt: at, failureReason: null });
-  await recordAudit({ workspaceId, actorUserId: req.user.id, action: 'email_campaign.schedule', entityType: 'EmailCampaign', entityId: row.id, after: { scheduledAt: at }, req });
-  return serialize(row);
+  // A scheduled campaign holds its place in the month it goes out: counted under the store's lock,
+  // so two schedules at once can't both take the last one.
+  const scheduled = await db.sequelize.transaction(async (transaction) => {
+    await quota.lockStore(workspaceId, transaction);
+    const locked = await load(workspaceId, campaignId, { transaction, lock: transaction.LOCK.UPDATE });
+    if (!EDITABLE.has(locked.status)) throw new AppError('CAMPAIGN_LOCKED', `A ${locked.status} campaign can't be scheduled`, 409);
+    const tooMany = quota.overCampaignLimit(await quota.campaignsMonthly(workspaceId, { now: at, excludeId: locked.id, max: limits.campaigns, transaction }));
+    if (tooMany) throw tooMany;
+    await locked.update({ status: 'scheduled', scheduledAt: at, failureReason: null }, { transaction });
+    return locked;
+  });
+  await recordAudit({ workspaceId, actorUserId: req.user.id, action: 'email_campaign.schedule', entityType: 'EmailCampaign', entityId: scheduled.id, after: { scheduledAt: at }, req });
+  return serialize(scheduled);
 }
 
 async function unschedule(workspaceId, campaignId, req) {

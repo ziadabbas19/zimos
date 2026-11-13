@@ -61,6 +61,15 @@ const planBody = Joi.object({
   maxCampaignEmailsPerMonth: Joi.number().integer().min(0).max(10000000).allow(null).optional().messages({
     'number.min': 'Campaign emails per month cannot be negative',
   }),
+  // Campaigns one store may send or schedule a month, and the largest audience
+  // of one campaign (emailCampaigns/campaignQuota.js, migration 749). null =
+  // unlimited; left out, kept as it is.
+  maxCampaignsPerMonth: Joi.number().integer().min(0).max(100000).allow(null).optional().messages({
+    'number.min': 'Campaigns per month cannot be negative',
+  }),
+  maxRecipientsPerCampaign: Joi.number().integer().min(1).max(10000000).allow(null).optional().messages({
+    'number.min': 'Recipients per campaign must be at least 1, or unlimited',
+  }),
   // Shown on the marketing site and offered at sign-up.
   isPublic: Joi.boolean().optional(),
   displayOrder: Joi.number().integer().min(0).max(10000).optional(),

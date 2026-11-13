@@ -393,6 +393,31 @@ device (`push/pushDigest.js`). Off: nothing of it, and the bell is as before.
   answers while either `DELIVERY_STATUS_ENABLED` or `EMAIL_CAMPAIGNS_ENABLED` is on.
 - **Checkout:** `marketingConsent: true` gives the order's customer consent.
 
+### Email signup placement and campaign limits (EMAIL_CAMPAIGNS_ENABLED, migration 749)
+- **Settings:** `workspaces.settings.email_signup` — `checkout` (on by default),
+  `quickOrder`, `cart` (`{ enabled, preTicked }`), `footer` (`{ enabled }`), `popup`
+  (`{ enabled, trigger: delay | exit_intent, delaySeconds 3–120 }`), `text.{ar,en}`
+  (`label`, `privacy`, `incentive`; null = the storefront's default). Staff `GET|PUT
+  /email-campaigns/signup` (same gate as the campaigns) answers `{ settings, stats:
+  { subscribers, bySource }, checkoutEmailField }`. A save is audited on the
+  Workspace, so the storefront cache and the edge copies are dropped.
+- **Storefront:** `GET /store/:ws` → `emailSignup` (each place on, null for one off;
+  null altogether while off or without the plan key). `POST /store/:ws/email-signup`
+  `{ email, source: footer | popup, website }` answers `{ ok: true }` for any valid
+  address (honeypot included); 404 for a place off. Limited per IP and per store.
+- **Consent:** one writer (`emailCampaigns/consent.js`). A known address updates the
+  store's customers; an unknown one becomes an `email_subscribers` row (no phone
+  needed), reached by "everyone subscribed" campaigns until a customer has the
+  address. The source goes to `customers.marketing_consent_source` /
+  `email_subscribers.source`. Checkout: `marketingConsentSource` (`checkout` |
+  `quick_order` | `cart`, default `checkout`), honoured only while that place is on.
+- **Limits:** `plans.max_campaigns_per_month` and `plans.max_recipients_per_campaign`
+  (null = unlimited; existing plans null). 422 `CAMPAIGN_LIMIT_REACHED` (details: max,
+  used, resetsAt) and `AUDIENCE_TOO_LARGE` (details: audienceSize, max) on send and
+  schedule; a scheduled campaign failing either at its start gets `campaign_limit` /
+  `audience_too_large`. `GET /overview` → `quota.campaigns` and
+  `quota.recipientsPerCampaign`. The console plan body takes both fields.
+
 ### Story gallery page element — `story_gallery`
 Up to 24 `{ src, title, description }` from the media library on any page
 (the About page); plain text only; `title`/`description` are translated by

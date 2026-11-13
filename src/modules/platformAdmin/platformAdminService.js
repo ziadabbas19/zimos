@@ -65,6 +65,9 @@ function serializePlan(p) {
     maxFunnelsPerMonth: p.maxFunnelsPerMonth,
     // Email campaigns a store may send a month (migration 748); null = unlimited, 0 = none.
     maxCampaignEmailsPerMonth: p.maxCampaignEmailsPerMonth === undefined ? 0 : p.maxCampaignEmailsPerMonth,
+    // Campaigns a month and the largest audience of one (migration 749); null = unlimited.
+    maxCampaignsPerMonth: p.maxCampaignsPerMonth === undefined ? null : p.maxCampaignsPerMonth,
+    maxRecipientsPerCampaign: p.maxRecipientsPerCampaign === undefined ? null : p.maxRecipientsPerCampaign,
     // On the marketing site and at sign-up, in this order.
     isPublic: p.isPublic,
     displayOrder: p.displayOrder,
@@ -250,6 +253,8 @@ async function savePlan(input, req) {
   if (input.maxStores !== undefined) fields.maxStores = input.maxStores;
   if (input.maxFunnelsPerMonth !== undefined) fields.maxFunnelsPerMonth = input.maxFunnelsPerMonth;
   if (input.maxCampaignEmailsPerMonth !== undefined) fields.maxCampaignEmailsPerMonth = input.maxCampaignEmailsPerMonth;
+  if (input.maxCampaignsPerMonth !== undefined) fields.maxCampaignsPerMonth = input.maxCampaignsPerMonth;
+  if (input.maxRecipientsPerCampaign !== undefined) fields.maxRecipientsPerCampaign = input.maxRecipientsPerCampaign;
   if (input.isPublic !== undefined) fields.isPublic = input.isPublic;
   if (input.displayOrder !== undefined) fields.displayOrder = input.displayOrder;
   if (input.perOrderFee !== undefined) fields.perOrderFeeAmount = input.perOrderFee;
