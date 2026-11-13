@@ -12,9 +12,9 @@ const tokens = require('./campaignTokens');
  * make from the List-Unsubscribe header), or because the provider reported a
  * spam complaint or an unsubscribe. Each time:
  *   - the recipient row is marked (and the campaign's count moves, once);
- *   - the address is added to marketing_opt_outs, which every campaign
- *     (campaignAudience.js), the abandoned-cart email and the automations
- *     (automations/marketingGuard.js) leave out from then on;
+ *   - the address (and the customer's phone) is added to marketing_opt_outs,
+ *     which every campaign (campaignAudience.js), the abandoned-cart email and
+ *     the automations (automations/marketingGuard.js) leave out from then on;
  *   - the customer's marketing consent goes false.
  * Running it twice changes nothing more. Only the customer opting in again
  * (the newsletter, the checkout box, their account) brings them back.
@@ -30,9 +30,23 @@ async function unsubscribeRecipient(row, { via }) {
        UPDATE email_campaigns SET unsubscribed_count = unsubscribed_count + 1, updated_at = NOW() WHERE id IN (SELECT campaign_id FROM r)`,
       { replacements: { id: row.id }, transaction }
     );
-    const taken = await db.MarketingOptOut.count({ where: { workspaceId, email }, transaction });
-    if (!taken) await db.MarketingOptOut.create({ workspaceId, email, source: 'email', word: via === 'complaint' ? 'complaint' : 'unsubscribe' }, { transaction });
     const customerId = row.customerId || null;
+    // One stop covers both channels, as the abandoned-cart email's link does (notifications/marketingUnsubscribe.js):
+    // the address, and the customer's phone when there is one.
+    const customer = customerId ? await db.Customer.findOne({ where: { id: customerId, workspaceId }, attributes: ['id', 'phoneNormalized'], transaction }) : null;
+    const phoneNormalized = customer && customer.phoneNormalized ? customer.phoneNormalized : null;
+    const word = via === 'complaint' ? 'complaint' : 'unsubscribe';
+    const emailTaken = await db.MarketingOptOut.count({ where: { workspaceId, email }, transaction });
+    if (phoneNormalized) {
+      const [optOut] = await db.MarketingOptOut.findOrCreate({
+        where: { workspaceId, phoneNormalized },
+        defaults: { workspaceId, phoneNormalized, email: emailTaken ? null : email, source: 'email', word },
+        transaction,
+      });
+      if (!emailTaken && !optOut.email) await optOut.update({ email }, { transaction });
+    } else if (!emailTaken) {
+      await db.MarketingOptOut.create({ workspaceId, email, source: 'email', word }, { transaction });
+    }
     if (customerId) {
       await db.Customer.update({ marketingConsent: false }, { where: { id: customerId, workspaceId, marketingConsent: true }, transaction });
     }

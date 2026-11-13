@@ -545,6 +545,8 @@ describe('unsubscribing', () => {
     const out = await db.Customer.findOne({ where: { workspaceId: s.ws, email: 'out@example.com' } });
     expect(out.marketingConsent).toBe(false);
     expect(await db.MarketingOptOut.count({ where: { workspaceId: s.ws, email: 'out@example.com' } })).toBe(1);
+    // The phone too: one stop covers WhatsApp marketing as well, as the page says.
+    expect(await db.MarketingOptOut.count({ where: { workspaceId: s.ws, phoneNormalized: out.phoneNormalized } })).toBe(1);
 
     sent.length = 0;
     const next = await s.draft({ name: 'Next' });
