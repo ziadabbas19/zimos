@@ -60,6 +60,8 @@ router.get('/review-photos/:uploadId', validate(reviewSchemas.photo), reviewCont
 router.use(require('../combos/comboRoutes').store);
 // The cart's reward tiers and trust lines (modules/cartRewards, CART_REWARDS_ENABLED).
 router.use(require('../cartRewards/cartRewardRoutes').store);
+// The footer and popup signup for the store's marketing emails (modules/emailCampaigns, EMAIL_CAMPAIGNS_ENABLED).
+router.use(require('../emailCampaigns/campaignRoutes').store);
 // A product page's A/B test: which variant this visitor sees (catalog/productTests.js).
 router.use(require('../catalog/productTests').publicRouter);
 router.get('/collections', validate(schemas.workspaceParam), controller.listCollections);

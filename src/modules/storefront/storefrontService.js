@@ -160,6 +160,11 @@ async function getStorefront(workspaceId) {
     // (REVIEWS_PUBLIC_SUBMISSION_ENABLED): the storefront shows its forms only then.
     // Neither while the plan lacks `reviews` (billing/growthFeatures.js).
     reviews: await storeReviewsState(w.id),
+    // Where shoppers may sign up for the store's marketing emails, each place
+    // switched on (null for one that is off), or null altogether while
+    // EMAIL_CAMPAIGNS_ENABLED is off or the plan lacks email_campaigns
+    // (emailCampaigns/signupSettings.js). The same for every shopper.
+    emailSignup: await require('../emailCampaigns/signupSettings').publicView(w),
     // The browser ad-pixel IDs; the rest of settings stays private.
     ...(await publicTracking(w.id)),
   };

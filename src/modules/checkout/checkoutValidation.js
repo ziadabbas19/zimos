@@ -74,6 +74,9 @@ module.exports = {
       // "Email me offers" at checkout (modules/emailCampaigns, EMAIL_CAMPAIGNS_ENABLED; ignored while off).
       // Only true gives consent; false or absent changes nothing.
       marketingConsent: Joi.boolean().optional(),
+      // Which box gave it (emailCampaigns/signupSettings.js): the checkout page's, a product
+      // page's quick order form, or the cart's carried to checkout. Absent: the checkout page.
+      marketingConsentSource: Joi.string().valid('checkout', 'quick_order', 'cart').optional(),
       // Gift wrap / gift message (modules/giftOptions).
       gift: Joi.object({ wrap: Joi.boolean(), message: Joi.string().trim().max(500).allow(''), hidePrices: Joi.boolean() }).optional(),
       // The autosaved session (POST /checkout-sessions) this checkout came

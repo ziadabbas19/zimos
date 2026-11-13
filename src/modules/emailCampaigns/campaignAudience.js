@@ -20,6 +20,13 @@ const orderLock = require('../orders/orderLock');
  * (contacts/segmentRules.js), RFM groups (modules/rfm) or orders / spend rules.
  * One row per address (two customers sharing one email get one email).
  *
+ * "Everyone subscribed" also reaches the lightweight subscribers of the
+ * footer and popup signups (email_subscribers, migration 749) whose address
+ * no customer of the store has: once a customer has it, the customer's own
+ * consent is the one that counts. The rules, segments and RFM groups read
+ * orders, so they reach customers only. Each row carries where its consent
+ * came from (`source`, null when unknown), for the Signup placement numbers.
+ *
  * The same SQL counts the audience before sending and lists it when sending
  * starts, so the number the merchant saw is the number queued (give or take
  * whoever opted out in between).
@@ -78,11 +85,24 @@ async function build(workspaceId, audience = { type: 'all' }) {
   const ctes = [withStats ? stats : null, withRfm ? `rfm AS MATERIALIZED (${SCORED})` : null].filter(Boolean);
   const joins = [withStats ? 'LEFT JOIN stats s ON s.customer_id = c.id' : '', withRfm ? 'JOIN rfm r ON r.customer_id = c.id' : ''].join(' ');
   // One row per address: the customer seen first keeps it.
-  const sql = `${ctes.length ? `WITH ${ctes.join(', ')}` : ''}
-    SELECT DISTINCT ON (lower(trim(c.email))) c.id AS customer_id, lower(trim(c.email)) AS email
+  const customers = `${ctes.length ? `WITH ${ctes.join(', ')}` : ''}
+    SELECT DISTINCT ON (lower(trim(c.email))) c.id AS customer_id, lower(trim(c.email)) AS email, c.marketing_consent_source AS source
       FROM customers c ${joins}
      WHERE ${conditions.join('\n       AND ')}
      ORDER BY lower(trim(c.email)), c.created_at, c.id`;
+  if (type && type !== 'all') return { sql: customers, replacements };
+  // Subscribers with no customer behind the address, under the same opt-out, suppression and block rules.
+  const sql = `SELECT * FROM (${customers}) cust
+    UNION ALL
+    SELECT NULL::uuid AS customer_id, s.email, s.source
+      FROM email_subscribers s
+     WHERE s.workspace_id = :workspaceId
+       AND s.marketing_consent = TRUE
+       AND s.email ~ ${EMAIL_SHAPE}
+       AND NOT EXISTS (SELECT 1 FROM customers c2 WHERE c2.workspace_id = s.workspace_id AND c2.email IS NOT NULL AND lower(trim(c2.email)) = s.email)
+       AND NOT EXISTS (SELECT 1 FROM marketing_opt_outs mo WHERE mo.workspace_id = s.workspace_id AND mo.email = s.email)
+       AND NOT EXISTS (SELECT 1 FROM email_suppressions es WHERE es.workspace_id = s.workspace_id AND es.email = s.email)
+       AND NOT EXISTS (SELECT 1 FROM blocked_entries be WHERE be.workspace_id = s.workspace_id AND be.type = 'email' AND be.value = s.email)`;
   return { sql, replacements };
 }
 
@@ -121,13 +141,21 @@ async function materialize(campaign, { transaction }) {
  * campaign started.) Null when it may, otherwise why not.
  */
 async function stillReachable(workspaceId, recipient, { transaction } = {}) {
+  // A subscriber (no customer id) consents by their own row, unless a customer
+  // with the address has come since: then that customer's consent counts.
   const [row] = await db.sequelize.query(
     `SELECT
         EXISTS (SELECT 1 FROM email_suppressions es WHERE es.workspace_id = :ws AND es.email = :email) AS suppressed,
         EXISTS (SELECT 1 FROM marketing_opt_outs mo WHERE mo.workspace_id = :ws AND (mo.email = :email
                 OR mo.phone_normalized = (SELECT c.phone_normalized FROM customers c WHERE c.id = :customerId))) AS opted_out,
         EXISTS (SELECT 1 FROM blocked_entries be WHERE be.workspace_id = :ws AND be.type = 'email' AND be.value = :email) AS blocked,
-        COALESCE((SELECT c.marketing_consent AND NOT c.is_blacklisted FROM customers c WHERE c.id = :customerId AND c.workspace_id = :ws), FALSE) AS consenting`,
+        CASE WHEN CAST(:customerId AS uuid) IS NOT NULL
+             THEN COALESCE((SELECT c.marketing_consent AND NOT c.is_blacklisted FROM customers c WHERE c.id = :customerId AND c.workspace_id = :ws), FALSE)
+             WHEN EXISTS (SELECT 1 FROM customers c WHERE c.workspace_id = :ws AND c.email IS NOT NULL AND lower(trim(c.email)) = :email)
+             THEN EXISTS (SELECT 1 FROM customers c WHERE c.workspace_id = :ws AND c.email IS NOT NULL AND lower(trim(c.email)) = :email
+                           AND c.marketing_consent AND NOT c.is_blacklisted)
+             ELSE COALESCE((SELECT s.marketing_consent FROM email_subscribers s WHERE s.workspace_id = :ws AND s.email = :email), FALSE)
+        END AS consenting`,
     { replacements: { ws: workspaceId, email: recipient.email, customerId: recipient.customerId || null }, type: QueryTypes.SELECT, transaction }
   );
   if (row.suppressed) return 'suppressed';

@@ -17,7 +17,8 @@ const tokens = require('./campaignTokens');
  *     the automations (automations/marketingGuard.js) leave out from then on;
  *   - the customer's marketing consent goes false.
  * Running it twice changes nothing more. Only the customer opting in again
- * (the newsletter, the checkout box, their account) brings them back.
+ * (the newsletter, a signup box or form of emailCampaigns/consent.js, their
+ * account) brings them back.
  */
 
 async function unsubscribeRecipient(row, { via }) {
@@ -53,6 +54,11 @@ async function unsubscribeRecipient(row, { via }) {
     // Any other customer row of the store with the same address leaves too.
     await db.sequelize.query(
       'UPDATE customers SET marketing_consent = FALSE, updated_at = NOW() WHERE workspace_id = :workspaceId AND lower(trim(email)) = :email AND marketing_consent = TRUE',
+      { replacements: { workspaceId, email }, transaction }
+    );
+    // …and a footer or popup subscriber with it (email_subscribers, migration 749).
+    await db.sequelize.query(
+      'UPDATE email_subscribers SET marketing_consent = FALSE, updated_at = NOW() WHERE workspace_id = :workspaceId AND email = :email AND marketing_consent = TRUE',
       { replacements: { workspaceId, email }, transaction }
     );
     await recordAudit({

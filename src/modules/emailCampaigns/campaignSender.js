@@ -16,8 +16,9 @@ const tokens = require('./campaignTokens');
  * Sending a campaign, in batches on the `notifications` queue:
  *
  *   start      draft / scheduled → sending: the audience becomes one queued
- *              row per address (campaignAudience.materialize) and the month's
- *              quota is checked against it, in one transaction under the
+ *              row per address (campaignAudience.materialize) and the plan's
+ *              limits are checked against it (the month's campaigns and
+ *              emails, the largest audience), in one transaction under the
  *              store's lock — refused whole when it doesn't fit.
  *   sendBatch  one job: claims up to EMAIL_CAMPAIGNS_BATCH_SIZE queued rows
  *              (FOR UPDATE SKIP LOCKED, so two workers never take the same
@@ -88,10 +89,19 @@ async function start(workspaceId, campaignId, { now = new Date() } = {}) {
     if (problem) {
       throw new AppError('CAMPAIGN_INCOMPLETE', problem === 'subject' ? 'Add a subject before sending' : 'Add some content before sending', 422, { field: problem });
     }
+    // The plan's three limits hold together (campaignQuota.js). This one's own
+    // place among the month's campaigns is left out: as a scheduled one it holds one.
+    const limits = await quota.planLimits(workspaceId, { transaction });
+    const campaigns = await quota.campaignsMonthly(workspaceId, { now, excludeId: row.id, max: limits.campaigns, transaction });
+    const tooMany = quota.overCampaignLimit(campaigns);
+    if (tooMany) throw tooMany;
     // The month as it stood before this campaign's rows: they are the ones being checked.
     const month = await quota.monthly(workspaceId, { now, transaction });
     const total = await audience.materialize(row, { transaction });
     if (total === 0) throw new AppError('NO_RECIPIENTS', 'No customer in this audience can receive marketing emails', 422);
+    // The live audience against the plan's largest: refused whole (the rows just made go with the transaction).
+    const tooLarge = quota.overAudienceLimit(limits.recipients, total);
+    if (tooLarge) throw tooLarge;
     const refusal = quota.overQuota(month, total);
     if (refusal) throw refusal;
     await row.update({ status: 'sending', startedAt: now, recipientsCount: total, failureReason: null, pausedUntil: null }, { transaction });
@@ -115,7 +125,16 @@ async function startScheduled(campaign, { now = new Date() } = {}) {
       logger.error(`[emailCampaigns] scheduled campaign ${campaign.id} waits: ${err.message}`);
       return;
     }
-    const reason = { EMAIL_QUOTA_EXCEEDED: 'quota_exceeded', NO_RECIPIENTS: 'no_recipients', CAMPAIGN_INCOMPLETE: 'incomplete', PLAN_FEATURE_REQUIRED: 'plan_feature' }[err.code] || 'start_failed';
+    const reason =
+      {
+        EMAIL_QUOTA_EXCEEDED: 'quota_exceeded',
+        NO_RECIPIENTS: 'no_recipients',
+        CAMPAIGN_INCOMPLETE: 'incomplete',
+        PLAN_FEATURE_REQUIRED: 'plan_feature',
+        // The audience grew past the plan's largest since it was scheduled: nothing is sent.
+        AUDIENCE_TOO_LARGE: 'audience_too_large',
+        CAMPAIGN_LIMIT_REACHED: 'campaign_limit',
+      }[err.code] || 'start_failed';
     await db.EmailCampaign.update(
       { status: 'failed', failureReason: reason, finishedAt: now },
       { where: { id: campaign.id, status: 'scheduled' } }

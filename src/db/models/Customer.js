@@ -17,6 +17,9 @@ module.exports = (sequelize, DataTypes) => {
       email: { type: DataTypes.STRING(255), allowNull: true },
       fullName: { type: DataTypes.STRING(200), allowNull: true, field: 'full_name' },
       marketingConsent: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false, field: 'marketing_consent' },
+      // Where the current marketing consent was given (migration 749, emailCampaigns/consent.js):
+      // checkout | quick_order | cart | footer | popup; null for one from elsewhere or from before.
+      marketingConsentSource: { type: DataTypes.STRING(20), allowNull: true, field: 'marketing_consent_source' },
       isBlacklisted: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false, field: 'is_blacklisted' },
       blacklistReason: { type: DataTypes.STRING(300), allowNull: true, field: 'blacklist_reason' },
       // When the current blacklisting started; null while not blacklisted.

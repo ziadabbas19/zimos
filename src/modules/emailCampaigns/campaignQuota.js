@@ -22,23 +22,43 @@ const { AppError } = require('../../core/errors/AppError');
  *            can't hurt the shared sender's reputation. Past it the campaign
  *            waits for the next day (campaignSender.js), it is not refused.
  *
- * Test emails to the merchant's own address count against neither (they are
- * rate-limited instead, core/middleware/rateLimiters.js).
+ *   campaigns  plans.max_campaigns_per_month (migration 749): campaigns a
+ *            store may send or schedule in a Cairo month, by the month it goes
+ *            out (scheduled_at while scheduled, started_at once started).
+ *            null = unlimited. A draft doesn't count; a scheduled campaign
+ *            does; cancelling one that never started, or one failing before
+ *            any email went out, gives its place back.
+ *   audience plans.max_recipients_per_campaign (migration 749): the largest
+ *            audience one campaign may have, checked against the live
+ *            audience when it is sent or scheduled, and again when a
+ *            scheduled one starts. Too large is refused whole, never cut
+ *            down. null = unlimited.
+ * All of them hold together: a campaign goes out only within every one.
+ *
+ * Test emails to the merchant's own address count against none of them (they
+ * are rate-limited instead, core/middleware/rateLimiters.js).
  */
 
 const TIME_ZONE = 'Africa/Cairo';
 const USED = "status IN ('queued', 'sending', 'sent', 'failed')";
 
-async function planLimit(workspaceId, { transaction } = {}) {
+const limitOf = (value) => (value === null || value === undefined ? null : Number(value));
+
+/** The store's plan's three limits (null = unlimited). No plan: no emails, the other two unset. */
+async function planLimits(workspaceId, { transaction } = {}) {
   const subscription = await db.Subscription.findOne({
     where: { workspaceId },
     attributes: ['id'],
-    include: [{ model: db.Plan, as: 'plan', attributes: ['id', 'maxCampaignEmailsPerMonth'] }],
+    include: [{ model: db.Plan, as: 'plan', attributes: ['id', 'maxCampaignEmailsPerMonth', 'maxCampaignsPerMonth', 'maxRecipientsPerCampaign'] }],
     transaction,
   });
-  if (!subscription || !subscription.plan) return 0;
-  const max = subscription.plan.maxCampaignEmailsPerMonth;
-  return max === null || max === undefined ? null : Number(max);
+  if (!subscription || !subscription.plan) return { emails: 0, campaigns: null, recipients: null };
+  const plan = subscription.plan;
+  return { emails: limitOf(plan.maxCampaignEmailsPerMonth), campaigns: limitOf(plan.maxCampaignsPerMonth), recipients: limitOf(plan.maxRecipientsPerCampaign) };
+}
+
+async function planLimit(workspaceId, options = {}) {
+  return (await planLimits(workspaceId, options)).emails;
 }
 
 /** { max (null = unlimited), used, remaining (null = unlimited), resetsAt } for this Cairo month. */
@@ -69,9 +89,60 @@ async function daily(workspaceId, { now = new Date(), transaction } = {}) {
   return { cap, used, remaining: Math.max(0, cap - used), resetsAt };
 }
 
+/**
+ * { max (null = unlimited), used, remaining, resetsAt }: campaigns counted in
+ * `now`'s Cairo month, leaving out `excludeId` (the campaign being checked,
+ * which may itself be counted as scheduled).
+ */
+async function campaignsMonthly(workspaceId, { now = new Date(), excludeId = null, max, transaction } = {}) {
+  const { start, resetsAt } = monthWindow(now, TIME_ZONE);
+  const [limit, [row]] = await Promise.all([
+    max === undefined ? planLimits(workspaceId, { transaction }).then((l) => l.campaigns) : Promise.resolve(max),
+    db.sequelize.query(
+      `SELECT count(*)::int AS n FROM email_campaigns
+        WHERE workspace_id = :workspaceId ${excludeId ? 'AND id <> :excludeId' : ''}
+          AND ((status = 'scheduled' AND scheduled_at >= :start AND scheduled_at < :end)
+            OR (started_at >= :start AND started_at < :end
+                AND (status IN ('sending', 'sent', 'cancelled') OR (status = 'failed' AND sent_count > 0))))`,
+      { replacements: { workspaceId, excludeId, start, end: resetsAt }, type: QueryTypes.SELECT, transaction }
+    ),
+  ]);
+  const used = row ? row.n : 0;
+  return { max: limit, used, remaining: limit === null ? null : Math.max(0, limit - used), resetsAt };
+}
+
 async function summary(workspaceId, opts = {}) {
-  const [month, day] = await Promise.all([monthly(workspaceId, opts), daily(workspaceId, opts)]);
-  return { monthly: month, daily: day };
+  const limits = await planLimits(workspaceId, opts);
+  const [month, day, campaigns] = await Promise.all([
+    monthly(workspaceId, opts),
+    daily(workspaceId, opts),
+    campaignsMonthly(workspaceId, { ...opts, max: limits.campaigns }),
+  ]);
+  return { monthly: month, daily: day, campaigns, recipientsPerCampaign: limits.recipients };
+}
+
+/** The refusal when one more campaign doesn't fit this month; null when it does. */
+function overCampaignLimit(month) {
+  if (month.max === null || month.used < month.max) return null;
+  return new AppError(
+    'CAMPAIGN_LIMIT_REACHED',
+    month.max === 0
+      ? 'Your plan does not include email campaigns this month'
+      : `Your plan allows ${month.max} campaigns a month and ${month.used} are already sent or scheduled this month`,
+    422,
+    { max: month.max, used: month.used, resetsAt: month.resetsAt }
+  );
+}
+
+/** The refusal when the audience is larger than one campaign may have; null when it isn't. */
+function overAudienceLimit(max, audienceSize) {
+  if (max === null || max === undefined || audienceSize <= max) return null;
+  return new AppError(
+    'AUDIENCE_TOO_LARGE',
+    `This campaign's audience is ${audienceSize} people and your plan allows up to ${max} per campaign. Narrow the audience with a segment or rules.`,
+    422,
+    { audienceSize, max }
+  );
 }
 
 /** The refusal when `needed` more addresses don't fit this month; null when they do. */
@@ -92,4 +163,4 @@ async function lockStore(workspaceId, transaction) {
   await db.sequelize.query('SELECT pg_advisory_xact_lock(hashtext(:key))', { replacements: { key: `email-campaigns:${workspaceId}` }, transaction });
 }
 
-module.exports = { TIME_ZONE, monthly, daily, summary, overQuota, lockStore, planLimit };
+module.exports = { TIME_ZONE, monthly, daily, summary, overQuota, lockStore, planLimit, planLimits, campaignsMonthly, overCampaignLimit, overAudienceLimit };
