@@ -53,4 +53,67 @@ router.get(
   })
 );
 
+// The orders report and the products report (orderProductReports.js), while
+// STORE_FEATURES names order_product_reports; otherwise 404 FEATURE_UNAVAILABLE.
+// The order table names customers only to a teammate who may see orders.
+const detailed = require('./orderProductReports');
+const { requireStoreFeature } = require('../../core/middleware/storeFeatures');
+const { PERMISSIONS } = require('../../core/security/permissions');
+
+const gated = requireStoreFeature('order_product_reports');
+const STAGE_KEYS = require('../orders/orderStage').STAGES;
+const ordersQuery = Joi.object({
+  ...range,
+  compare: Joi.string().valid('previous', 'year', 'none').optional(),
+  unit: Joi.string().valid(...reports.UNITS).optional(),
+});
+const tableQuery = Joi.object({
+  ...range,
+  status: Joi.string().valid(...STAGE_KEYS).optional(),
+  // '' = orders with none (no governorate on the address, not shipped yet).
+  governorate: Joi.string().trim().max(100).allow('').optional(),
+  paymentMethod: Joi.string().trim().max(40).optional(),
+  carrier: Joi.string().trim().max(60).allow('').optional(),
+  cursor: Joi.string().max(200).optional(),
+  limit: Joi.number().integer().min(1).max(100).optional(),
+});
+const withCustomers = (req) => req.tenant.hasPermission(PERMISSIONS.ORDERS_VIEW);
+const csv = (res, file) => {
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="${file.filename}"`);
+  res.send(file.body);
+};
+
+router.get('/orders-overview', gated, validate({ params, query: ordersQuery }), send('report', detailed.getOrdersReport));
+router.get(
+  '/orders-overview/orders',
+  gated,
+  validate({ params, query: tableQuery }),
+  asyncHandler(async (req, res) => res.json(await detailed.listOrders(req.tenant.workspaceId, req.query, { withCustomers: withCustomers(req) })))
+);
+router.get(
+  '/orders-overview/export',
+  gated,
+  validate({ params, query: tableQuery }),
+  asyncHandler(async (req, res) => csv(res, await detailed.exportOrders(req.tenant.workspaceId, req.query, { withCustomers: withCustomers(req) })))
+);
+router.get(
+  '/products-overview',
+  gated,
+  validate({ params, query: Joi.object({ ...range, limit: Joi.number().integer().min(1).max(50).optional() }) }),
+  send('report', detailed.getProductsReport)
+);
+router.get(
+  '/products-overview/export',
+  gated,
+  validate({ params, query: Joi.object(range) }),
+  asyncHandler(async (req, res) => csv(res, await detailed.exportProducts(req.tenant.workspaceId, req.query)))
+);
+router.get(
+  '/products-overview/:productId/trend',
+  gated,
+  validate({ params: params.keys({ productId: Joi.string().uuid().required() }), query: Joi.object(range) }),
+  asyncHandler(async (req, res) => res.json({ trend: await detailed.getProductTrend(req.tenant.workspaceId, req.params.productId, req.query) }))
+);
+
 module.exports = router;
