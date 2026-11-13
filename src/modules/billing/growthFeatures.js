@@ -5,7 +5,7 @@ const entitlements = require('./entitlementsService');
 const { requirePlanFeature } = require('./planFeatureGate');
 
 /*
- * GROWTH_REQUIRE_PLAN_FEATURE: five features the console turns on per plan
+ * GROWTH_REQUIRE_PLAN_FEATURE: six features the console turns on per plan
  * (featureCatalog.js). Like every plan gate they are refused only while
  * PLAN_FEATURE_ENFORCEMENT is on too; off (the default), nothing is read and
  * everything works as before. A key no plan lists is locked for every store,
@@ -26,6 +26,10 @@ const { requirePlanFeature } = require('./planFeatureGate');
  *    config, the shipping quote no `rewards` and the checkout gives none
  *    (cartRewards/cartRewardService.activeSettings). The settings stay stored.
  *    Orders already placed keep the reward they were given.
+ *  - email_campaigns: the staff routes refuse, and a scheduled campaign
+ *    whose time comes fails (plan_feature) instead of starting. One already
+ *    sending goes on; unsubscribe links keep working on every plan.
+ *    (emailCampaigns/campaignRoutes.js, campaignSender.startScheduled).
  *  - advanced_coupons: a coupon can't be created or changed with any of
  *    migration 730's controls set (discounts/advancedCoupons.js) and its
  *    report refuses. A coupon already saved with them keeps working as saved,
@@ -34,7 +38,7 @@ const { requirePlanFeature } = require('./planFeatureGate');
  *    dates and limits stay on every plan.
  */
 
-const KEYS = Object.freeze(['reviews', 'about_gallery', 'combos', 'cart_rewards', 'advanced_coupons']);
+const KEYS = Object.freeze(['reviews', 'about_gallery', 'combos', 'cart_rewards', 'email_campaigns', 'advanced_coupons']);
 
 const switchOn = () => env.growth.requirePlanFeature === true;
 const gateOn = () => switchOn() && env.planFeatures.enforcement === true;

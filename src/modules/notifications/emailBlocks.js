@@ -95,4 +95,4 @@ function renderBlocks(blocks, { fill, color = '#2563EB', lines = [], totals = {}
   return { html: html.join('\n'), text: text.join('\n\n') };
 }
 
-module.exports = { blocksSchema, renderBlocks, MAX_BLOCKS };
+module.exports = { blocksSchema, renderBlocks, MAX_BLOCKS, escapeHtml, safeUrl };

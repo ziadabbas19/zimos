@@ -48,7 +48,7 @@ async function creditProductTests(workspaceId, orderItems, visitorId, orderId) {
  */
 const checkout = asyncHandler(async (req, res) => {
   const cartToken = req.headers['x-cart-token'];
-  const { item, extraItems, orderBumps, checkoutSessionId, paymentProvider, returnUrl, orderBump, formFields, manualPaymentMethodId, gift, giftCardCode: cardCode, useStoreCredit, loyaltyPoints, referralCode, ...orderBody } = req.body;
+  const { item, extraItems, orderBumps, checkoutSessionId, paymentProvider, returnUrl, orderBump, formFields, manualPaymentMethodId, gift, giftCardCode: cardCode, useStoreCredit, loyaltyPoints, referralCode, marketingConsent, ...orderBody } = req.body;
   const workspace = req.publicWorkspace;
   const workspaceId = req.tenant.workspaceId;
 
@@ -210,6 +210,8 @@ const checkout = asyncHandler(async (req, res) => {
     await require('../giftOptions').recordOnOrder(order, giftChoice);
     await require('../customerReferrals').recordOnOrder(order, referral);
     await require('../holidayMode').markOrder(workspace, order);
+    // "Email me offers" ticked (emailCampaigns/consent.js; ignored while EMAIL_CAMPAIGNS_ENABLED is off).
+    await require('../emailCampaigns/consent').recordCheckoutConsent(order, marketingConsent);
     await creditProductTests(workspaceId, orderItems, testVisitor, order.id);
     await afterOrderCompleted(workspaceId, order, context);
     // The card pays what it can now, as a captured payment; a card spent meanwhile leaves the order as it is.
@@ -245,6 +247,7 @@ const checkout = asyncHandler(async (req, res) => {
   await require('../giftOptions').recordOnOrder(order, giftChoice);
   await require('../customerReferrals').recordOnOrder(order, referral);
   await require('../holidayMode').markOrder(workspace, order);
+  await require('../emailCampaigns/consent').recordCheckoutConsent(order, marketingConsent);
   await creditProductTests(workspaceId, orderItems, testVisitor, order.id);
 
   const attempt = await online.startAttempt(order, {

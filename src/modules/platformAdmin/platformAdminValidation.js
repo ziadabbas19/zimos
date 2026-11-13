@@ -56,6 +56,11 @@ const planBody = Joi.object({
   maxFunnelsPerMonth: Joi.number().integer().min(0).max(100000).allow(null).optional().messages({
     'number.min': 'Max funnels per month cannot be negative',
   }),
+  // Email campaigns one store may send a month (emailCampaigns/campaignQuota.js). null = unlimited;
+  // left out, kept as it is.
+  maxCampaignEmailsPerMonth: Joi.number().integer().min(0).max(10000000).allow(null).optional().messages({
+    'number.min': 'Campaign emails per month cannot be negative',
+  }),
   // Shown on the marketing site and offered at sign-up.
   isPublic: Joi.boolean().optional(),
   displayOrder: Joi.number().integer().min(0).max(10000).optional(),

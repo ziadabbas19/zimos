@@ -71,6 +71,9 @@ module.exports = {
       loyaltyPoints: Joi.number().integer().min(1).max(100000000).optional(),
       // A friend's invite code (modules/customerReferrals).
       referralCode: Joi.string().trim().max(16).optional(),
+      // "Email me offers" at checkout (modules/emailCampaigns, EMAIL_CAMPAIGNS_ENABLED; ignored while off).
+      // Only true gives consent; false or absent changes nothing.
+      marketingConsent: Joi.boolean().optional(),
       // Gift wrap / gift message (modules/giftOptions).
       gift: Joi.object({ wrap: Joi.boolean(), message: Joi.string().trim().max(500).allow(''), hidePrices: Joi.boolean() }).optional(),
       // The autosaved session (POST /checkout-sessions) this checkout came

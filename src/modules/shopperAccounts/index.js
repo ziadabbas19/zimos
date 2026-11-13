@@ -66,6 +66,8 @@ async function updateMe(customer, body) {
   }
   if (body.marketingConsent !== undefined) changes.marketingConsent = body.marketingConsent;
   await customer.update(changes);
+  // Turned on here: an earlier unsubscribe of the address is lifted too (emailCampaigns/consent.js; nothing while off).
+  if (body.marketingConsent === true) await require('../emailCampaigns/consent').recordAccountConsent(customer);
   return me(customer);
 }
 

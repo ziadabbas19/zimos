@@ -34,6 +34,9 @@ module.exports = (sequelize, DataTypes) => {
       // How far below zero the balance may go, minor units. null = the fixed
       // overdraft and the old refusal (walletService).
       walletDebtLimitAmount: { type: DataTypes.BIGINT, allowNull: true, field: 'wallet_debt_limit_amount' },
+      // Email campaigns one store may send a month, Cairo time (migration 748,
+      // emailCampaigns/campaignQuota). null = unlimited; 0 (what existing plans got) = none.
+      maxCampaignEmailsPerMonth: { type: DataTypes.INTEGER, allowNull: true, defaultValue: 0, field: 'max_campaign_emails_per_month' },
     },
     { tableName: 'plans' }
   );

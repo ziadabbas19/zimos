@@ -66,6 +66,9 @@ const FEATURE_CATALOG = Object.freeze(
     { key: 'combos', available: env.combos.enabled, label: { en: 'Product combos', ar: 'باقات المنتجات' } },
     // Exists only while CART_REWARDS_ENABLED is on (modules/cartRewards).
     { key: 'cart_rewards', available: env.cartRewards.enabled, label: { en: 'Cart rewards', ar: 'مكافآت السلة' } },
+    // Exists only while EMAIL_CAMPAIGNS_ENABLED is on (modules/emailCampaigns). How many
+    // emails a month is the plan's max_campaign_emails_per_month, not this key.
+    { key: 'email_campaigns', available: env.emailCampaigns.enabled, label: { en: 'Email campaigns', ar: 'حملات البريد الإلكتروني' } },
     // Migration 730's controls and the coupon report; plain codes and
     // automatic discounts stay on every plan.
     { key: 'advanced_coupons', available: true, label: { en: 'Advanced coupons', ar: 'كوبونات متقدمة' } },
