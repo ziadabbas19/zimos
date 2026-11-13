@@ -20,7 +20,7 @@ afterEach(() => {
 });
 
 const bearer = (t) => ({ Authorization: `Bearer ${t}` });
-const DEFAULTS = { enabled: true, openOn: { addToCart: false, cartIcon: true, quickOrder: false }, presentation: 'auto', speed: 'fast' };
+const DEFAULTS = { enabled: true, openOn: { addToCart: true, cartIcon: true, quickOrder: false }, presentation: 'auto', speed: 'fast' };
 
 async function store() {
   const ctx = await setupWorkspaceWithProduct({ price: 10000, stock: 10 });
@@ -38,7 +38,7 @@ describe('cart sheet settings', () => {
 
   it('saves what the merchant picks, whole, and serves it with the store', async () => {
     const s = await store();
-    const chosen = { enabled: true, openOn: { addToCart: true, cartIcon: false, quickOrder: true }, presentation: 'popup', speed: 'none' };
+    const chosen = { enabled: true, openOn: { addToCart: false, cartIcon: false, quickOrder: true }, presentation: 'popup', speed: 'none' };
     const res = await s.patch({ settings: { cart_sheet: chosen } });
     expect(res.status).toBe(200);
     expect(res.body.workspace.settings.cart_sheet).toEqual(chosen);

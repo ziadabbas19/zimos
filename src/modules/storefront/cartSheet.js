@@ -12,7 +12,7 @@ const db = require('../../db/models');
  *   enabled        false: no sheet at all, the cart is a page of its own
  *                  (the merchant's "off for all")
  *   openOn         which taps open it:
- *     addToCart      right after a product is added (off unless switched on)
+ *     addToCart      right after a product is added (on unless switched off)
  *     cartIcon       the cart icon in the header and the phone toolbar (on)
  *     quickOrder     a product page's "Order now": the sheet with that
  *                    product, its totals and the quick order form (off)
@@ -54,7 +54,7 @@ const trustItem = Joi.object({
 const schema = Joi.object({
   enabled: Joi.boolean().default(true),
   openOn: Joi.object({
-    addToCart: Joi.boolean().default(false),
+    addToCart: Joi.boolean().default(true),
     cartIcon: Joi.boolean().default(true),
     quickOrder: Joi.boolean().default(false),
   }).default(),

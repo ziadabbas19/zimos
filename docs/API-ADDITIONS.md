@@ -422,7 +422,7 @@ device (`push/pushDigest.js`). Off: nothing of it, and the bell is as before.
 - **Settings:** `workspaces.settings.cart_sheet`, sent whole through `PATCH
   /workspaces/:ws` (`website.edit`, like the other store settings; `null` = the
   defaults): `enabled` (false = no sheet, the cart is a page), `openOn.{addToCart
-  (false), cartIcon (true), quickOrder (false)}`, `presentation` (`auto` |
+  (true), cartIcon (true), quickOrder (false)}`, `presentation` (`auto` |
   `bottom_sheet` | `side_drawer` | `popup`, default `auto`), `speed` (`fast` |
   `normal` | `none`, default `fast`). Unknown values 422; unknown keys dropped.
   Audited as `workspace.update` on the Workspace, so the storefront cache and the
