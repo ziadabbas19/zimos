@@ -52,7 +52,7 @@ const customSchema = Joi.object({
   corners: Joi.string()
     .valid(...CORNERS)
     .default('rounded'),
-  // null: the theme's (the fill is the theme's success colour, the track its line colour).
+  // null: the theme's (the fill is the store's accent, the track its line colour).
   fillColor: hex.allow(null).default(null),
   trackColor: hex.allow(null).default(null),
   marker: Joi.string()
@@ -107,10 +107,17 @@ function publicView(stored) {
 /*
  * The theme's colours a "match the store theme" side stands for, in the
  * storefront's light look (apps/storefront/src/app/globals.css): the fill is
- * --color-success, the track --color-line. Keep in step with the frontend's
+ * the store's accent (--color-primary: its primaryColor, else the default
+ * accent), the track --color-line. Keep in step with the frontend's
  * cart-rewards/appearance.ts.
  */
-const THEME = Object.freeze({ fill: '#357150', track: '#dcdace' });
+const THEME = Object.freeze({ fill: '#1f5d5b', track: '#dcdace' });
+
+/** The store's accent in its light look: its own colour, or the storefront's default. */
+function accentOf(themeSettings) {
+  const own = themeSettings && typeof themeSettings === 'object' ? themeSettings.primaryColor : null;
+  return typeof own === 'string' && /^#[0-9a-fA-F]{6}$/.test(own.trim()) ? own.trim().toLowerCase() : THEME.fill;
+}
 const MIN_RATIO = 3;
 
 function channel(value) {
@@ -144,10 +151,10 @@ const round2 = (n) => Math.floor(n * 100) / 100;
  *   - a reached marker's icon against the fill it sits on (the icon is black
  *     or white, whichever reads better, so this holds by construction).
  */
-function contrastProblems(custom) {
+function contrastProblems(custom, theme = {}) {
   const out = [];
   if (!custom) return out;
-  const fill = custom.fillColor || THEME.fill;
+  const fill = custom.fillColor || theme.fill || THEME.fill;
   const track = custom.trackColor || THEME.track;
   if (custom.fillColor || custom.trackColor) {
     const ratio = contrastRatio(fill, track);
@@ -189,6 +196,7 @@ module.exports = {
   customSchema,
   defaultIcon,
   iconOf,
+  accentOf,
   read,
   normalize,
   publicView,

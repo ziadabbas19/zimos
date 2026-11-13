@@ -177,3 +177,74 @@ describe('“you saved” for every store', () => {
     expect(plain.body.quote.lineSavingsAmount).toBe(0);
   });
 });
+
+describe('the trust lines, saved with the cart behavior (every store)', () => {
+  const lines = [
+    { text: { ar: 'دفع عند الاستلام', en: 'Cash on delivery' }, enabled: true },
+    { text: { ar: '', en: 'Hidden one' }, enabled: false },
+    { text: { ar: 'استرجاع خلال 14 يوم', en: '' } },
+  ];
+  const staff = (s, token = s.auth.accessToken) => request(app).get(`/api/v1/workspaces/${s.ws}/cart-sheet`).set(bearer(token));
+
+  it('are saved through the store settings and shown, switched-on ones only, with no flag and no plan', async () => {
+    env.cartRewards.enabled = false;
+    const s = await store();
+    const res = await s.patch({ settings: { cart_sheet: { trustItems: lines } } });
+    expect(res.status).toBe(200);
+    expect((await s.shown()).trustItems).toEqual([{ text: { ar: 'دفع عند الاستلام', en: 'Cash on delivery' } }, { text: { ar: 'استرجاع خلال 14 يوم', en: '' } }]);
+    const view = (await staff(s)).body.cartSheet;
+    expect(view.trustItemsFrom).toBe('cart_sheet');
+    expect(view.trustItems).toEqual([
+      { text: { ar: 'دفع عند الاستلام', en: 'Cash on delivery' }, enabled: true },
+      { text: { ar: '', en: 'Hidden one' }, enabled: false },
+      { text: { ar: 'استرجاع خلال 14 يوم', en: '' }, enabled: true },
+    ]);
+  });
+
+  it('refuses more than four, an empty one and one too long', async () => {
+    const s = await store();
+    const one = { text: { ar: 'سطر', en: 'Line' } };
+    for (const trustItems of [[one, one, one, one, one], [{ text: { ar: ' ', en: '' } }], [{ text: { ar: 'س'.repeat(81), en: '' } }], [{ enabled: true }]]) {
+      const res = await s.patch({ settings: { cart_sheet: { trustItems } } });
+      expect(res.status).toBe(422);
+    }
+    expect((await staff(s)).body.cartSheet.trustItems).toEqual([]);
+  });
+
+  it('read from the cart rewards settings, where they were kept before, until the store saves its own', async () => {
+    env.cartRewards.enabled = true;
+    const s = await store();
+    const old = await request(app)
+      .put(`/api/v1/workspaces/${s.ws}/cart-rewards`)
+      .set(bearer(s.auth.accessToken))
+      .send({ enabled: false, tiers: [], trustItems: [{ text: { ar: 'شحن سريع', en: 'Fast delivery' }, enabled: true }] });
+    expect(old.status).toBe(200);
+    expect((await staff(s)).body.cartSheet).toMatchObject({ trustItemsFrom: 'cart_rewards', trustItems: [{ text: { ar: 'شحن سريع', en: 'Fast delivery' }, enabled: true }] });
+    expect((await s.shown()).trustItems).toEqual([{ text: { ar: 'شحن سريع', en: 'Fast delivery' } }]);
+
+    // A rewards save that sends no lines (today's dashboard) leaves them where they are: nothing lost.
+    const again = await request(app).put(`/api/v1/workspaces/${s.ws}/cart-rewards`).set(bearer(s.auth.accessToken)).send({ enabled: false, tiers: [] });
+    expect(again.status).toBe(200);
+    expect(again.body.cartRewards.trustItems).toEqual([{ text: { ar: 'شحن سريع', en: 'Fast delivery' }, enabled: true }]);
+    expect((await s.shown()).trustItems).toEqual([{ text: { ar: 'شحن سريع', en: 'Fast delivery' } }]);
+
+    // Saved with the cart behavior: those win, an empty list too; the old ones are left untouched.
+    await s.patch({ settings: { cart_sheet: { trustItems: [{ text: { ar: '', en: 'Open the parcel first' } }] } } });
+    expect((await s.shown()).trustItems).toEqual([{ text: { ar: '', en: 'Open the parcel first' } }]);
+    await s.patch({ settings: { cart_sheet: { trustItems: [] } } });
+    expect((await s.shown()).trustItems).toEqual([]);
+    expect((await staff(s)).body.cartSheet.trustItemsFrom).toBe('cart_sheet');
+    const row = await db.CartRewardSettings.findByPk(s.ws);
+    expect(row.trustItems).toEqual([{ text: { ar: 'شحن سريع', en: 'Fast delivery' }, enabled: true }]);
+  });
+
+  it('the staff view is any member’s to read and no other store’s', async () => {
+    const s = await store();
+    const other = await store();
+    const accountant = await addMemberWithRole(s.auth.accessToken, s.ws, 'accountant');
+    const mine = await staff(s, accountant.accessToken);
+    expect(mine.status).toBe(200);
+    expect(mine.body.cartSheet).toMatchObject({ enabled: true, presentation: 'auto', speed: 'fast', trustItems: [] });
+    expect([403, 404]).toContain((await staff(other, s.auth.accessToken)).status);
+  });
+});

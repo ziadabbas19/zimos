@@ -427,9 +427,18 @@ device (`push/pushDigest.js`). Off: nothing of it, and the bell is as before.
   `normal` | `none`, default `fast`). Unknown values 422; unknown keys dropped.
   Audited as `workspace.update` on the Workspace, so the storefront cache and the
   edge copies are dropped.
+- **Trust lines** (the lines under the checkout button) live here now:
+  `cart_sheet.trustItems`, up to 4 `{ text: { ar, en }, enabled }` (80 chars, text
+  in one language at least). Until a store saves them here they are read from
+  `cart_reward_settings.trust_items`, where the rewards page kept them (nothing is
+  copied or deleted); once saved here (an empty list too) these win. `PUT
+  /cart-rewards` takes `trustItems` as optional: left out, the old ones stay.
+- **Staff:** `GET /workspaces/:ws/cart-sheet` (any member) → `{ cartSheet: { enabled,
+  openOn, presentation, speed, trustItems (with `enabled`), trustItemsFrom:
+  cart_sheet | cart_rewards } }`.
 - **Storefront:** `GET /store/:ws` → `cartSheet` (the settings, defaults filled in,
-  plus `trustItems`: the lines under the checkout button switched on in the cart
-  rewards settings, served whether or not rewards are on). Same for every shopper.
+  plus the trust lines switched on, whether or not the store gives rewards). Same
+  for every shopper. `GET /store/:ws/cart-rewards` → `trustItems` is the same list.
 - A cart rewards save (`CartRewardSettings`) now drops the store's cache too.
 
 ### Cart rewards bar look and icons (migration 750)
@@ -440,7 +449,8 @@ device (`push/pushDigest.js`). Off: nothing of it, and the bell is as before.
   messageAlign: start | center } | null }`. NULL = `inherit` (the bar as it was).
 - `PUT /cart-rewards` takes `appearance` (left out = kept) and `tiers[].icon`
   (`gift | truck | percent | tag | star | heart | crown | bolt | check`, null = by
-  kind). In `custom` mode the fill against the track must reach 3:1 (422
+  kind). In `custom` mode the fill against the track must reach 3:1 (a fill left
+  to the theme is the store's accent, `themeSettings.primaryColor` or #1f5d5b) (422
   `VALIDATION_ERROR`, detail on `appearance.custom.fillColor`/`trackColor` naming
   the pair and the ratio); not checked while `inherit`, whose custom values stay
   saved. `GET` also answers `appearance`, `tiers[].shownIcon` and `cartSpeed`.

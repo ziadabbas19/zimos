@@ -17,7 +17,9 @@ const { schemas } = require('./cartRewardValidation');
  *
  * Staff, /api/v1/workspaces/:workspaceId/cart-rewards (discounts.manage, like the coupons):
  *   GET  /   the section as saved (a store that never saved it: off, no tiers)
- *   PUT  /   the whole section: { enabled, allowCouponStacking, tiers, trustItems }
+ *   PUT  /   the whole section: { enabled, allowCouponStacking, tiers, appearance };
+ *            `trustItems` is still taken from an older dashboard (the lines now
+ *            live with the store's cart behavior, storefront/cartSheet.js)
  * Storefront, /api/v1/store/:workspaceId/cart-rewards — the tiers and trust
  * lines the cart shows; { cartRewards: null } while not in force.
  * With GROWTH_REQUIRE_PLAN_FEATURE, the plan's `cart_rewards` too

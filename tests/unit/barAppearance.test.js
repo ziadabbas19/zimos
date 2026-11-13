@@ -36,6 +36,20 @@ describe('contrast', () => {
   });
 });
 
+describe('the store’s accent', () => {
+  it('is the store’s own colour, or the storefront’s default accent', () => {
+    expect(look.accentOf({ primaryColor: '#FFE066' })).toBe('#ffe066');
+    expect(look.accentOf({ primaryColor: 'red' })).toBe('#1f5d5b');
+    expect(look.accentOf(null)).toBe('#1f5d5b');
+  });
+
+  it('stands for a fill left to the theme in the contrast check', () => {
+    const custom = { ...look.CUSTOM_DEFAULTS, trackColor: '#ffffff' };
+    expect(look.contrastProblems(custom)).toEqual([]);
+    expect(look.contrastProblems(custom, { fill: '#ffe066' })[0]).toMatchObject({ field: 'appearance.custom.trackColor', pair: ['fill', 'track'] });
+  });
+});
+
 describe('icons and stored looks', () => {
   it('gives a reward its kind’s icon unless the merchant picked one', () => {
     expect(look.iconOf({ type: 'free_shipping' })).toBe('truck');

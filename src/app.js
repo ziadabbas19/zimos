@@ -240,6 +240,8 @@ v1.use('/workspaces/:workspaceId/reviews', reviewRoutes);
 v1.use('/workspaces/:workspaceId/combos', require('./modules/combos/comboRoutes').staff);
 // Cart rewards: spend thresholds that unlock a discount or free shipping (modules/cartRewards, CART_REWARDS_ENABLED).
 v1.use('/workspaces/:workspaceId/cart-rewards', require('./modules/cartRewards/cartRewardRoutes').staff);
+// How every store's cart opens, and the lines under its checkout button (storefront/cartSheet.js); written through PATCH /workspaces/:id.
+v1.use('/workspaces/:workspaceId/cart-sheet', require('./modules/storefront/cartSheetRoutes'));
 // Email campaigns: a store emails its customers who agreed to marketing (modules/emailCampaigns, EMAIL_CAMPAIGNS_ENABLED).
 v1.use('/workspaces/:workspaceId/email-campaigns', require('./modules/emailCampaigns/campaignRoutes').staff);
 // Their one-click unsubscribe (List-Unsubscribe-Post): public, no sign-in, the signed token is the proof.

@@ -172,6 +172,19 @@ describe('the bar’s look', () => {
     expect(fine.status).toBe(200);
   });
 
+  it('takes the store’s accent for a fill left to the theme', async () => {
+    const s = await store();
+    // The default accent (#1f5d5b) on a white track: fine.
+    expect((await s.put({ ...s.base, appearance: { mode: 'custom', custom: { ...TODAY, trackColor: '#ffffff' } } })).status).toBe(200);
+    // A pale yellow accent on the same white track: refused, naming the theme's side.
+    const theme = await request(app).patch(`/api/v1/workspaces/${s.ws}`).set(bearer(s.auth.accessToken)).send({ themeSettings: { primaryColor: '#ffe066' } });
+    expect(theme.status).toBe(200);
+    const pale = await s.put({ ...s.base, appearance: { mode: 'custom', custom: { ...TODAY, trackColor: '#ffffff' } } });
+    expect(pale.status).toBe(422);
+    expect(pale.body.error.details[0]).toMatchObject({ field: 'appearance.custom.trackColor' });
+    expect(pale.body.error.details[0].message).toMatch(/fill \(theme\) and the track \(#ffffff\)/);
+  });
+
   it('needs discounts.manage, never touches another store’s, and drops the store’s cache on save', async () => {
     const s = await store();
     const other = await store();

@@ -45,7 +45,10 @@ const schemas = {
       enabled: Joi.boolean().required(),
       allowCouponStacking: Joi.boolean().default(false),
       tiers: Joi.array().items(tier).max(MAX_TIERS).default([]),
-      trustItems: Joi.array().items(trustItem).max(MAX_TRUST_ITEMS).default([]),
+      // The lines under the checkout button moved to the store's cart behavior
+      // (storefront/cartSheet.js). Left out (today's dashboard), the ones kept
+      // here are left as they are; still taken from an older dashboard.
+      trustItems: Joi.array().items(trustItem).max(MAX_TRUST_ITEMS).optional(),
       // The bar's look (barAppearance.js). Left out (a dashboard from before
       // it), the look already saved is kept.
       appearance: appearance.schema.optional(),

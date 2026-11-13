@@ -86,28 +86,37 @@ async function getSettings(workspaceId) {
  */
 async function saveSettings(workspaceId, data, req) {
   const errors = [...rules.tierErrors(data.tiers)];
-  data.trustItems.forEach((item, index) => {
+  (data.trustItems || []).forEach((item, index) => {
     if (blank(item.text.ar) && blank(item.text.en)) errors.push({ field: `trustItems.${index}.text`, message: 'Write the line in at least one language' });
   });
   if (data.enabled && data.tiers.length === 0) errors.push({ field: 'tiers', message: 'Add at least one reward before switching the bar on' });
   // The bar's look: its colours are checked for contrast only while it is the
   // one in use (custom); kept while the store inherits its theme's.
   const look = data.appearance === undefined ? undefined : appearance.normalize(data.appearance);
-  if (look && look.mode === 'custom') errors.push(...appearance.contrastProblems(look.custom));
+  if (look && look.mode === 'custom') {
+    // A side left to the theme stands for the store's accent (its light look).
+    const store = await db.Workspace.findByPk(workspaceId, { attributes: ['id', 'themeSettings'] });
+    errors.push(...appearance.contrastProblems(look.custom, { fill: appearance.accentOf(store && store.themeSettings) }));
+  }
   if (errors.length) throw new ValidationError(errors, 'Invalid body');
 
   const tiers = rules.sortTiers(data.tiers.map(cleanTier));
-  const trustItems = data.trustItems.map((item) => ({
-    text: { ar: blank(item.text.ar) ? '' : item.text.ar.trim(), en: blank(item.text.en) ? '' : item.text.en.trim() },
-    enabled: item.enabled !== false,
-  }));
+  const trustItems =
+    data.trustItems === undefined
+      ? undefined
+      : data.trustItems.map((item) => ({
+          text: { ar: blank(item.text.ar) ? '' : item.text.ar.trim(), en: blank(item.text.en) ? '' : item.text.en.trim() },
+          enabled: item.enabled !== false,
+        }));
 
   return db.sequelize.transaction(async (transaction) => {
     const workspace = await storeOf(workspaceId, transaction);
     const currency = (workspace && workspace.defaultCurrency) || 'EGP';
     const row = await db.CartRewardSettings.findByPk(workspaceId, { transaction, lock: transaction.LOCK.UPDATE });
     const before = row ? serialize(row, currency, cartSpeedOf(workspace)) : null;
-    const values = { enabled: data.enabled, allowCouponStacking: data.allowCouponStacking, tiers, trustItems };
+    const values = { enabled: data.enabled, allowCouponStacking: data.allowCouponStacking, tiers };
+    // Sent (an older dashboard): kept here as before. Left out: what is here stays.
+    if (trustItems !== undefined) values.trustItems = trustItems;
     if (look !== undefined) values.barAppearance = look;
     const saved = row ? await row.update(values, { transaction }) : await db.CartRewardSettings.create({ workspaceId, ...values }, { transaction });
     const after = serialize(saved, currency, cartSpeedOf(workspace));
@@ -167,9 +176,8 @@ async function publicConfig(workspaceId) {
     })),
     // How the bar looks (barAppearance.js): { mode: 'inherit' } or the custom look.
     appearance: appearance.publicView(settings.appearance),
-    trustItems: settings.trustItems
-      .filter((item) => item.enabled !== false && item.text && (!blank(item.text.ar) || !blank(item.text.en)))
-      .map((item) => ({ text: { ar: item.text.ar || '', en: item.text.en || '' } })),
+    // The cart sheet's own lines (storefront/cartSheet.js), the same ones GET /store/:id gives.
+    trustItems: await require('../storefront/cartSheet').shownTrustItems(await db.Workspace.findByPk(workspaceId, { attributes: ['id', 'settings'] })),
   };
 }
 
