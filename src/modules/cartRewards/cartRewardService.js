@@ -6,6 +6,7 @@ const { ValidationError } = require('../../core/errors/AppError');
 const { recordAudit } = require('../audit/auditService');
 const growth = require('../billing/growthFeatures');
 const rules = require('./cartRewardRules');
+const appearance = require('./barAppearance');
 
 /*
  * A store's cart rewards settings (cart_reward_settings, migration 747) and
@@ -35,32 +36,47 @@ function cleanLabel(label) {
 function cleanTier(tier) {
   const out = { thresholdAmount: Number(tier.thresholdAmount), type: tier.type, label: cleanLabel(tier.label) };
   if (tier.type !== 'free_shipping') out.value = Number(tier.value);
+  // The merchant's icon for it (barAppearance.ICONS); null = by its kind.
+  out.icon = appearance.ICONS.includes(tier.icon) ? tier.icon : null;
   return out;
 }
 
+async function storeOf(workspaceId, transaction) {
+  return db.Workspace.findByPk(workspaceId, { attributes: ['id', 'defaultCurrency', 'settings'], transaction });
+}
+
 async function storeCurrency(workspaceId, transaction) {
-  const workspace = await db.Workspace.findByPk(workspaceId, { attributes: ['id', 'defaultCurrency'], transaction });
+  const workspace = await storeOf(workspaceId, transaction);
   return (workspace && workspace.defaultCurrency) || 'EGP';
 }
 
-/** The settings as the dashboard edits them; each tier also says its automatic label. */
-function serialize(row, currency) {
+/**
+ * The settings as the dashboard edits them; each tier also says its automatic
+ * label and the icon it shows. `cartSpeed` is the store's cart speed
+ * (storefront/cartSheet.js), which the bar's fill glides at: read only here,
+ * for the dashboard's preview.
+ */
+function serialize(row, currency, cartSpeed = 'fast') {
   const tiers = rules.sortTiers((row && row.tiers) || []);
   return {
     enabled: Boolean(row && row.enabled),
     allowCouponStacking: Boolean(row && row.allowCouponStacking),
     currency,
-    tiers: tiers.map((tier) => ({ ...cleanTier(tier), autoLabel: rules.autoLabel(tier, currency) })),
+    tiers: tiers.map((tier) => ({ ...cleanTier(tier), autoLabel: rules.autoLabel(tier, currency), shownIcon: appearance.iconOf(tier) })),
     trustItems: ((row && row.trustItems) || []).map((item) => ({
       text: { ar: (item.text && item.text.ar) || '', en: (item.text && item.text.en) || '' },
       enabled: item.enabled !== false,
     })),
+    appearance: appearance.read(row && row.barAppearance),
+    cartSpeed,
   };
 }
 
+const cartSpeedOf = (workspace) => require('../storefront/cartSheet').read(workspace && workspace.settings).speed;
+
 async function getSettings(workspaceId) {
-  const row = await db.CartRewardSettings.findByPk(workspaceId);
-  return serialize(row, await storeCurrency(workspaceId));
+  const [row, workspace] = await Promise.all([db.CartRewardSettings.findByPk(workspaceId), storeOf(workspaceId)]);
+  return serialize(row, (workspace && workspace.defaultCurrency) || 'EGP', cartSpeedOf(workspace));
 }
 
 /**
@@ -70,25 +86,40 @@ async function getSettings(workspaceId) {
  */
 async function saveSettings(workspaceId, data, req) {
   const errors = [...rules.tierErrors(data.tiers)];
-  data.trustItems.forEach((item, index) => {
+  (data.trustItems || []).forEach((item, index) => {
     if (blank(item.text.ar) && blank(item.text.en)) errors.push({ field: `trustItems.${index}.text`, message: 'Write the line in at least one language' });
   });
   if (data.enabled && data.tiers.length === 0) errors.push({ field: 'tiers', message: 'Add at least one reward before switching the bar on' });
+  // The bar's look: its colours are checked for contrast only while it is the
+  // one in use (custom); kept while the store inherits its theme's.
+  const look = data.appearance === undefined ? undefined : appearance.normalize(data.appearance);
+  if (look && look.mode === 'custom') {
+    // A side left to the theme stands for the store's accent (its light look).
+    const store = await db.Workspace.findByPk(workspaceId, { attributes: ['id', 'themeSettings'] });
+    errors.push(...appearance.contrastProblems(look.custom, { fill: appearance.accentOf(store && store.themeSettings) }));
+  }
   if (errors.length) throw new ValidationError(errors, 'Invalid body');
 
   const tiers = rules.sortTiers(data.tiers.map(cleanTier));
-  const trustItems = data.trustItems.map((item) => ({
-    text: { ar: blank(item.text.ar) ? '' : item.text.ar.trim(), en: blank(item.text.en) ? '' : item.text.en.trim() },
-    enabled: item.enabled !== false,
-  }));
+  const trustItems =
+    data.trustItems === undefined
+      ? undefined
+      : data.trustItems.map((item) => ({
+          text: { ar: blank(item.text.ar) ? '' : item.text.ar.trim(), en: blank(item.text.en) ? '' : item.text.en.trim() },
+          enabled: item.enabled !== false,
+        }));
 
   return db.sequelize.transaction(async (transaction) => {
-    const currency = await storeCurrency(workspaceId, transaction);
+    const workspace = await storeOf(workspaceId, transaction);
+    const currency = (workspace && workspace.defaultCurrency) || 'EGP';
     const row = await db.CartRewardSettings.findByPk(workspaceId, { transaction, lock: transaction.LOCK.UPDATE });
-    const before = row ? serialize(row, currency) : null;
-    const values = { enabled: data.enabled, allowCouponStacking: data.allowCouponStacking, tiers, trustItems };
+    const before = row ? serialize(row, currency, cartSpeedOf(workspace)) : null;
+    const values = { enabled: data.enabled, allowCouponStacking: data.allowCouponStacking, tiers };
+    // Sent (an older dashboard): kept here as before. Left out: what is here stays.
+    if (trustItems !== undefined) values.trustItems = trustItems;
+    if (look !== undefined) values.barAppearance = look;
     const saved = row ? await row.update(values, { transaction }) : await db.CartRewardSettings.create({ workspaceId, ...values }, { transaction });
-    const after = serialize(saved, currency);
+    const after = serialize(saved, currency, cartSpeedOf(workspace));
     await recordAudit({
       workspaceId,
       actorUserId: req.user.id,
@@ -118,14 +149,17 @@ async function activeSettings(workspaceId, { transaction } = {}) {
     allowCouponStacking: Boolean(row.allowCouponStacking),
     tiers: rules.sortTiers(row.tiers.map(cleanTier)),
     trustItems: row.trustItems || [],
+    appearance: row.barAppearance || null,
     currency: await storeCurrency(workspaceId, transaction),
   };
 }
 
 /**
  * What the storefront shows before it has a quote (GET /store/:id/cart-rewards):
- * the tiers with their names, the trust lines switched on, and whether a code
- * adds to the reward. null when not in force.
+ * the tiers with their names and icons, the bar's look, the trust lines
+ * switched on, and whether a code adds to the reward. null when not in force.
+ * (The trust lines also reach every store's cart sheet, rewards or not,
+ * inside GET /store/:id: storefront/cartSheet.js.)
  */
 async function publicConfig(workspaceId) {
   const settings = await activeSettings(workspaceId);
@@ -138,10 +172,12 @@ async function publicConfig(workspaceId) {
       type: tier.type,
       value: tier.type === 'free_shipping' ? null : tier.value,
       label: rules.labelOf(tier, settings.currency),
+      icon: appearance.iconOf(tier),
     })),
-    trustItems: settings.trustItems
-      .filter((item) => item.enabled !== false && item.text && (!blank(item.text.ar) || !blank(item.text.en)))
-      .map((item) => ({ text: { ar: item.text.ar || '', en: item.text.en || '' } })),
+    // How the bar looks (barAppearance.js): { mode: 'inherit' } or the custom look.
+    appearance: appearance.publicView(settings.appearance),
+    // The cart sheet's own lines (storefront/cartSheet.js), the same ones GET /store/:id gives.
+    trustItems: await require('../storefront/cartSheet').shownTrustItems(await db.Workspace.findByPk(workspaceId, { attributes: ['id', 'settings'] })),
   };
 }
 

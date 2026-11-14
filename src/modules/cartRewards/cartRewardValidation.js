@@ -2,6 +2,7 @@
 
 const Joi = require('joi');
 const { TYPES, MAX_TIERS, MAX_TRUST_ITEMS, LABEL_MAX, TRUST_TEXT_MAX } = require('./cartRewardRules');
+const appearance = require('./barAppearance');
 
 const workspaceId = Joi.string().uuid().required();
 // The most a threshold or a fixed reward may be: 100 million in major units of a two-decimal currency.
@@ -24,6 +25,11 @@ const tier = Joi.object({
   }),
   // The merchant's own name for the reward; empty in a language = the automatic one there.
   label: Joi.object({ ar: text(LABEL_MAX), en: text(LABEL_MAX) }).allow(null).default(null),
+  // The reward's icon on the bar (barAppearance.ICONS); null = by its kind.
+  icon: Joi.string()
+    .valid(...appearance.ICONS)
+    .allow(null)
+    .default(null),
 });
 
 const trustItem = Joi.object({
@@ -39,7 +45,13 @@ const schemas = {
       enabled: Joi.boolean().required(),
       allowCouponStacking: Joi.boolean().default(false),
       tiers: Joi.array().items(tier).max(MAX_TIERS).default([]),
-      trustItems: Joi.array().items(trustItem).max(MAX_TRUST_ITEMS).default([]),
+      // The lines under the checkout button moved to the store's cart behavior
+      // (storefront/cartSheet.js). Left out (today's dashboard), the ones kept
+      // here are left as they are; still taken from an older dashboard.
+      trustItems: Joi.array().items(trustItem).max(MAX_TRUST_ITEMS).optional(),
+      // The bar's look (barAppearance.js). Left out (a dashboard from before
+      // it), the look already saved is kept.
+      appearance: appearance.schema.optional(),
     }),
   },
   publicConfig: { params: Joi.object({ workspaceId }) },

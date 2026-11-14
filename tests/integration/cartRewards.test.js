@@ -139,14 +139,25 @@ describe('the settings', () => {
       allowCouponStacking: true,
       currency: 'EGP',
       tiers: [
-        { thresholdAmount: 50000, type: 'free_shipping', label: null, autoLabel: { en: 'Free shipping', ar: 'شحن مجاني' } },
-        { thresholdAmount: 100000, type: 'percent', value: 5, label: { ar: 'هدية', en: null }, autoLabel: { en: '5% off', ar: 'خصم 5%' } },
-        { thresholdAmount: 300000, type: 'fixed', value: 25000, label: null, autoLabel: expect.objectContaining({ en: expect.stringMatching(/^EGP\s250 off$/) }) },
+        { thresholdAmount: 50000, type: 'free_shipping', label: null, icon: null, shownIcon: 'truck', autoLabel: { en: 'Free shipping', ar: 'شحن مجاني' } },
+        { thresholdAmount: 100000, type: 'percent', value: 5, label: { ar: 'هدية', en: null }, icon: null, shownIcon: 'percent', autoLabel: { en: '5% off', ar: 'خصم 5%' } },
+        {
+          thresholdAmount: 300000,
+          type: 'fixed',
+          value: 25000,
+          label: null,
+          icon: null,
+          shownIcon: 'tag',
+          autoLabel: expect.objectContaining({ en: expect.stringMatching(/^EGP\s250 off$/) }),
+        },
       ],
       trustItems: [
         { text: { ar: 'الدفع عند الاستلام', en: 'Cash on delivery' }, enabled: true },
         { text: { ar: '', en: 'Inspect before paying' }, enabled: false },
       ],
+      // The bar's look (none chosen: the theme's) and the store's cart speed (barAppearance.js, storefront/cartSheet.js).
+      appearance: { mode: 'inherit', custom: null },
+      cartSpeed: 'fast',
     });
     expect((await ctx.api('get', '/cart-rewards')).body.cartRewards).toEqual(res.body.cartRewards);
     expect(await db.AuditLog.count({ where: { workspaceId: ctx.ws, action: 'cart_rewards.update' } })).toBe(1);
@@ -223,10 +234,11 @@ describe('the public config', () => {
       currency: 'EGP',
       allowCouponStacking: false,
       tiers: [
-        { thresholdAmount: 50000, type: 'free_shipping', value: null, label: { en: 'Free shipping', ar: 'شحن مجاني' } },
-        { thresholdAmount: 100000, type: 'percent', value: 5, label: { en: '5% off', ar: 'خصم 5%' } },
-        { thresholdAmount: 200000, type: 'percent', value: 10, label: { en: '10% off', ar: 'خصم 10%' } },
+        { thresholdAmount: 50000, type: 'free_shipping', value: null, label: { en: 'Free shipping', ar: 'شحن مجاني' }, icon: 'truck' },
+        { thresholdAmount: 100000, type: 'percent', value: 5, label: { en: '5% off', ar: 'خصم 5%' }, icon: 'percent' },
+        { thresholdAmount: 200000, type: 'percent', value: 10, label: { en: '10% off', ar: 'خصم 10%' }, icon: 'percent' },
       ],
+      appearance: { mode: 'inherit' },
       trustItems: [{ text: { ar: 'الدفع عند الاستلام', en: 'Cash on delivery' } }],
     });
   });

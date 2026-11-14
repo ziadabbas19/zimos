@@ -131,6 +131,8 @@ function progress(tiers, subtotal, currency = 'EGP') {
     type: tier.type,
     value: tier.type === 'free_shipping' ? null : Number(tier.value),
     label: labelOf(tier, currency),
+    // Shown on the bar's marker (barAppearance.js): the merchant's pick, else by kind.
+    icon: require('./barAppearance').iconOf(tier),
     reached: reached(tier, subtotal),
   }));
   const nextIndex = list.findIndex((tier) => !tier.reached);

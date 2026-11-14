@@ -128,6 +128,10 @@ module.exports = {
         social_links: socialLinksSchema.allow(null).optional(),
         floating_whatsapp: floatingWhatsappSchema.allow(null).optional(),
         store_seo: storeSeoSchema.allow(null).optional(),
+        // How the store's cart opens and moves (storefront/cartSheet.js): the
+        // taps that open it, bottom sheet / side drawer / popup, the speed.
+        // Sent whole and stored whole; `null` goes back to the defaults.
+        cart_sheet: require('../storefront/cartSheet').schema.allow(null).optional(),
         // The extra languages the store offers (modules/translations). Sent whole.
         store_languages: require('../translations/translations').storeLanguagesSchema.allow(null).optional(),
         // Storefront fraud rules — see modules/fraud/fraudRules.js. Same

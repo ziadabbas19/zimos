@@ -76,6 +76,9 @@ const STORE_ENTITIES = new Set([
   'Experiment',
   'Subscription',
   'WorkspaceFeatureOverride',
+  // The cart: the rewards bar's tiers and look, and the lines under the
+  // checkout button (GET /store/:id → cartSheet.trustItems).
+  'CartRewardSettings',
 ]);
 
 // Audited actions on those that change nothing a shopper sees: a read, a

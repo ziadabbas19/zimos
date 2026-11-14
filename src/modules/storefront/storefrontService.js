@@ -165,6 +165,11 @@ async function getStorefront(workspaceId) {
     // EMAIL_CAMPAIGNS_ENABLED is off or the plan lacks email_campaigns
     // (emailCampaigns/signupSettings.js). The same for every shopper.
     emailSignup: await require('../emailCampaigns/signupSettings').publicView(w),
+    // How the cart opens (the taps, bottom sheet / side drawer / popup, the
+    // speed) and the lines under its checkout button; the defaults for a store
+    // that never chose (storefront/cartSheet.js). Every store's, whatever its
+    // plan, and the same for every shopper.
+    cartSheet: await require('./cartSheet').publicView(w),
     // The browser ad-pixel IDs; the rest of settings stays private.
     ...(await publicTracking(w.id)),
   };
