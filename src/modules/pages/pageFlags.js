@@ -19,6 +19,7 @@ const pageFlagKeys = {
   showInHeader: Joi.boolean().optional(),
   showInFooter: Joi.boolean().optional(),
   isActive: Joi.boolean().optional(),
+  menuOrder: Joi.number().integer().min(0).max(100000).allow(null).optional(),
 };
 
 /** The flags present in a request body, ready to merge into a page patch. */
@@ -27,6 +28,7 @@ function pickPageFlags(data) {
   for (const key of FLAG_KEYS) {
     if (typeof data[key] === 'boolean') out[key] = data[key];
   }
+  if (data.menuOrder === null || Number.isInteger(data.menuOrder)) out.menuOrder = data.menuOrder;
   return out;
 }
 
@@ -60,7 +62,7 @@ async function publicNavPages(workspaceId) {
       [Op.or]: [{ showInHeader: true }, { showInFooter: true }],
     },
     attributes: ['path', 'showInHeader', 'showInFooter'],
-    order: [['path', 'ASC']],
+    order: [['menuOrder', 'ASC NULLS LAST'], ['path', 'ASC']],
   });
   const titles = new Map(snapPages.map((p) => [p.path, p.title]));
   return rows
