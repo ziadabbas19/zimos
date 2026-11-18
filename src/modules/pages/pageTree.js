@@ -7,6 +7,7 @@ const { fontPairProblems } = require('../fonts/fontValidation');
 const showcase = require('./showcaseElements');
 const builderExtras = require('./builderExtras');
 const xs = require('./xsElements');
+const videoEmbed = require('./videoEmbed');
 
 /**
  * Pages are stored as a structured JSON tree, never raw HTML. Shape:
@@ -329,6 +330,7 @@ const ELEMENT_PROP_RULES = {
   },
 };
 
+ELEMENT_PROP_RULES.video = videoEmbed.propRules(check);
 Object.assign(ELEMENT_PROP_RULES, showcase.propRules(check));
 Object.assign(ELEMENT_PROP_RULES, builderExtras.propRules(check));
 for (const [type, rules] of Object.entries(builderExtras.extraRules(check))) ELEMENT_PROP_RULES[type] = { ...(ELEMENT_PROP_RULES[type] || {}), ...rules };
