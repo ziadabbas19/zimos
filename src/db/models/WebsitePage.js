@@ -22,6 +22,8 @@ module.exports = (sequelize, DataTypes) => {
       showInHeader: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false, field: 'show_in_header' },
       showInFooter: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false, field: 'show_in_footer' },
       isActive: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: true, field: 'is_active' },
+      // The page's place in the store's menus; null follows the pages the merchant has ordered, by address.
+      menuOrder: { type: DataTypes.INTEGER, allowNull: true, field: 'menu_order' },
     },
     { tableName: 'website_pages', indexes: [{ unique: true, fields: ['website_id', 'path'] }] }
   );
