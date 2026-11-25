@@ -66,7 +66,8 @@ function sessionsSql(filters) {
       SELECT DISTINCT ON (v.session_id)
              v.session_id, v.created_at AS started_at, ${SOURCE_SQL} AS source,
              v.utm_source, v.utm_medium, v.utm_campaign, v.referrer_host, v.path AS landing,
-             v.country, v.governorate, v.device_class, v.browser, v.locale
+             v.country, v.governorate, v.device_class, v.browser, v.locale,
+             v.visitor_key, v.device_model, v.os, v.os_version, v.browser_version, v.screen, v.language
         FROM site_visits v
        WHERE v.created_at >= :from AND v.created_at < :to AND v.event = 'view'
        ORDER BY v.session_id, v.created_at, v.id
@@ -84,10 +85,48 @@ function sessionsSql(filters) {
              bool_or(r.event = 'cta_click' AND (r.cta_kind IS NULL OR r.cta_kind = 'register')) AS signup_click,
              bool_or(r.event = 'signup') AS signed_up,
              max(r.user_id::text) AS user_id,
+             bool_or(r.signed_in) AS signed_in,
              max(r.created_at) AS last_at
         FROM rows r GROUP BY r.session_id
     )`;
   return { sql, replacements };
+}
+
+// The Visits table's visitor (SITE_VISITOR_DETAILS_ENABLED, migration 752),
+// asked for the rows of one page only (page): the previous view by the same
+// visitor_key before this session began, through
+// site_visits_visitor_key_created_idx, and the account: the one this session
+// created, else the one the browser was tied to on sign-in.
+const VISITOR_SQL = `
+  prev.at AS previous_at, u.id AS account_id, u.full_name AS account_name, u.username AS account_username, u.email AS account_email
+  FROM page
+  LEFT JOIN LATERAL (
+    SELECT max(p.created_at) AS at FROM site_visits p
+     WHERE p.visitor_key = page.visitor_key AND p.created_at < page.started_at
+       AND p.session_id <> page.session_id AND p.event = 'view'
+  ) prev ON true
+  LEFT JOIN site_visitor_accounts va ON va.visitor_key = page.visitor_key
+  LEFT JOIN users u ON u.id = coalesce(CAST(page.user_id AS uuid), va.user_id)`;
+
+// "Windows 10" (detect-browser's name, whichever Windows it is) -> "Windows".
+const OS_NAMES = { 'Mac OS': 'macOS', 'Android OS': 'Android' };
+const osName = (os) => (!os ? null : /^Windows /.test(os) && os !== 'Windows Mobile' ? 'Windows' : OS_NAMES[os] || os);
+
+/** What the table and the drawer show of the visitor; null where it is not known. */
+function visitorOf(r) {
+  return {
+    model: r.device_model || null,
+    os: osName(r.os),
+    osVersion: r.os_version || null,
+    browserVersion: r.browser_version || null,
+    screen: r.screen || null,
+    language: r.language || null,
+    signedIn: r.signed_in === null || r.signed_in === undefined ? null : Boolean(r.signed_in),
+    // null: recorded without a visitor key (before SITE_VISITOR_DETAILS_ENABLED).
+    returning: r.visitor_key ? Boolean(r.previous_at) : null,
+    previousVisitAt: r.previous_at || null,
+    account: r.account_id ? { id: r.account_id, name: r.account_name || (r.account_username ? `@${r.account_username}` : r.account_email) } : null,
+  };
 }
 
 async function summary(query = {}) {
@@ -210,11 +249,16 @@ async function sessions(query = {}) {
     const [[count], rows] = await Promise.all([
       q(`WITH ${sql} SELECT count(*) AS n FROM s`, rep),
       q(
-        `WITH ${sql}
-         SELECT s.*, a.pages, a.seconds, a.cta_clicks, a.signed_up, a.user_id, a.last_at
-           FROM s JOIN a ON a.session_id = s.session_id
-          ORDER BY ${sort} DESC, s.session_id
-          LIMIT ${pageSize} OFFSET ${(page - 1) * pageSize}`,
+        `WITH ${sql},
+         page AS (
+           SELECT s.*, a.pages, a.seconds, a.cta_clicks, a.signed_up, a.user_id, a.last_at, a.signed_in,
+                  row_number() OVER (ORDER BY ${sort} DESC, s.session_id) AS n
+             FROM s JOIN a ON a.session_id = s.session_id
+            ORDER BY ${sort} DESC, s.session_id
+            LIMIT ${pageSize} OFFSET ${(page - 1) * pageSize}
+         )
+         SELECT page.*, ${VISITOR_SQL}
+          ORDER BY page.n`,
         rep
       ),
     ]);
@@ -243,6 +287,7 @@ async function sessions(query = {}) {
         ctaClicks: toNumber(r.cta_clicks),
         signedUp: Boolean(r.signed_up),
         userId: r.user_id || null,
+        ...visitorOf(r),
       })),
     };
   });
@@ -253,7 +298,8 @@ async function sessionTimeline(sessionId) {
   return readOnly(async (q) => {
     const events = await q(
       `SELECT v.event, v.path, v.created_at, v.seconds_on_page, v.cta_kind, v.user_id, v.country, v.governorate,
-              v.device_class, v.browser, v.utm_source, v.utm_medium, v.utm_campaign, v.referrer_host, v.locale
+              v.device_class, v.browser, v.utm_source, v.utm_medium, v.utm_campaign, v.referrer_host, v.locale,
+              v.visitor_key, v.device_model, v.os, v.os_version, v.browser_version, v.screen, v.language, v.signed_in
          FROM site_visits v WHERE v.session_id = :sessionId
         ORDER BY v.created_at, v.id LIMIT 500`,
       { sessionId }
@@ -261,6 +307,13 @@ async function sessionTimeline(sessionId) {
     if (events.length === 0) throw new NotFoundError('Visit');
     const first = events.find((e) => e.event === 'view') || events[0];
     const signup = events.find((e) => e.event === 'signup' && e.user_id);
+    const signedIn = events.some((e) => e.signed_in === true) ? true : events.some((e) => e.signed_in === false) ? false : null;
+    const [visitor] = await q(
+      `WITH page AS (SELECT CAST(:key AS varchar) AS visitor_key, CAST(:startedAt AS timestamptz) AS started_at,
+                            CAST(:sessionId AS varchar) AS session_id, CAST(:userId AS text) AS user_id)
+       SELECT ${VISITOR_SQL}`,
+      { key: first.visitor_key || null, startedAt: first.created_at, sessionId, userId: signup ? signup.user_id : null }
+    );
     return {
       session: {
         sessionId,
@@ -279,6 +332,7 @@ async function sessionTimeline(sessionId) {
         seconds: events.reduce((n, e) => n + toNumber(e.seconds_on_page), 0),
         // The console's user page: /users/<id>.
         userId: signup ? signup.user_id : null,
+        ...visitorOf({ ...first, ...visitor, signed_in: signedIn }),
       },
       events: events.map((e) => ({
         at: e.created_at,

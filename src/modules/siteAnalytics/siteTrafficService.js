@@ -7,6 +7,7 @@ const env = require('../../config/env');
 const logger = require('../../core/utils/logger');
 const { getClientInfo, getDevice, getLocation } = require('../analytics/clientDetect');
 const { governorateFromRegion } = require('../analytics/traffic/visitorDetails');
+const visitorDevice = require('./visitorDevice');
 
 /**
  * Anonymous visits to the marketing site (zimos.co), for the console.
@@ -18,6 +19,11 @@ const { governorateFromRegion } = require('../analytics/traffic/visitorDetails')
  * server's: a ping counts PING_SECONDS whatever the client says.
  *
  * Unique visitors over several days are therefore the sum of each day's.
+ *
+ * With SITE_VISITOR_DETAILS_ENABLED (and SITE_TRAFFIC_DETAILS_ENABLED) a
+ * second HMAC of the id, without the day, is kept too (visitor_key): the same
+ * browser is then known on a later day, for "first visit or returning", and
+ * can be tied to the account that signs in from it. Still no IP and no cookie.
  */
 
 const PING_SECONDS = 15;
@@ -36,6 +42,17 @@ function utcDay(date = new Date()) {
 
 function visitorHash(visitorId, date = new Date()) {
   return crypto.createHmac('sha256', hashKey()).update(`${visitorId}:${utcDay(date)}`).digest('hex');
+}
+
+// With SITE_VISITOR_DETAILS_ENABLED: an HMAC of the browser's id alone, with
+// its own derived key, so the same browser is the same visitor on any day
+// (first visit or returning). The id itself is still never stored.
+function visitorKeySecret() {
+  return crypto.createHmac('sha256', String(env.jwt.accessSecret)).update('site-analytics-visitor-key-v1').digest();
+}
+
+function visitorKey(visitorId) {
+  return crypto.createHmac('sha256', visitorKeySecret()).update(String(visitorId)).digest('hex');
 }
 
 function deviceClass(userAgent) {
@@ -110,13 +127,14 @@ async function recordDetailedEvent(body, req) {
     trustedGeo: env.analytics.geoHeaders,
   });
   const os = osColumn();
+  const visitor = visitorColumns(body, req, client);
   await db.sequelize.query(
     `INSERT INTO site_visits
        (visitor_hash, session_id, path, locale, referrer_host, utm_source, utm_medium, utm_campaign,
-        device_class, country, event, seconds_on_page, browser, governorate, cta_kind${os.column})
+        device_class, country, event, seconds_on_page, browser, governorate, cta_kind${os.column}${visitor.column})
      VALUES
        (:visitorHash, :sessionId, :path, :locale, :referrerHost, :utmSource, :utmMedium, :utmCampaign,
-        :deviceClass, :country, :event, :seconds, :browser, :governorate, :ctaKind${os.value})`,
+        :deviceClass, :country, :event, :seconds, :browser, :governorate, :ctaKind${os.value}${visitor.value})`,
     {
       replacements: {
         visitorHash: visitorHash(body.visitorId),
@@ -135,10 +153,43 @@ async function recordDetailedEvent(body, req) {
         governorate: governorateFromRegion(client.country, client.region),
         ctaKind: body.event === 'cta_click' ? body.cta || null : null,
         ...(os.column ? { os: client.os || null } : {}),
+        ...visitor.replacements,
       },
       type: QueryTypes.INSERT,
     }
   );
+}
+
+const VISITOR_COLUMNS = ['visitor_key', 'device_model', 'os_version', 'browser_version', 'screen', 'language', 'signed_in'];
+
+/**
+ * SITE_VISITOR_DETAILS_ENABLED (migration 752): the extra columns of a detailed
+ * visit, parsed here from what the request already carries; no read on the way
+ * in. Off: none, the same INSERT as before. The OS family (site_visits.os) is
+ * kept too, as with SITE_LIVE_ENABLED.
+ */
+function visitorColumns(body, req, client) {
+  if (!env.siteAnalytics.visitorDetailsEnabled) return { column: '', value: '', replacements: {} };
+  const device = visitorDevice.parseDevice({
+    userAgent: req.get('user-agent'),
+    getHeader: (name) => req.get(name),
+    hints: { model: body.uaModel, platformVersion: body.uaPlatformVersion },
+  });
+  const replacements = {
+    visitor_key: visitorKey(body.visitorId),
+    device_model: device.model,
+    os_version: device.osVersion,
+    browser_version: device.browserVersion,
+    screen: visitorDevice.screenOf(body.screen),
+    language: visitorDevice.languageOf(body.language, req.get('accept-language')),
+    signed_in: typeof body.signedIn === 'boolean' ? body.signedIn : null,
+  };
+  const columns = [...VISITOR_COLUMNS];
+  if (!env.siteAnalytics.liveEnabled) {
+    columns.push('os');
+    replacements.os = client.os || null;
+  }
+  return { column: columns.map((c) => `, ${c}`).join(''), value: columns.map((c) => `, :${c}`).join(''), replacements };
 }
 
 /**
@@ -208,6 +259,36 @@ async function linkSignup(userId, sessionId) {
   } catch (err) {
     logger.warn('site analytics: could not link the sign-up session', { userId, error: err.message });
   }
+}
+
+/**
+ * Ties the browser a session came from to an account (site_visitor_accounts):
+ * every visit with its visitor_key, earlier and later, then shows the account.
+ * One statement through site_visits_session_created_idx; nothing on
+ * site_visits is rewritten. The latest account to sign in from a browser wins.
+ * Sessions recorded without a visitor key (before the switch) tie nothing.
+ */
+async function attachVisitor(userId, sessionId) {
+  await db.sequelize.query(
+    `INSERT INTO site_visitor_accounts (visitor_key, user_id, linked_at)
+     SELECT v.visitor_key, :userId, now() FROM site_visits v
+      WHERE v.session_id = :sessionId AND v.visitor_key IS NOT NULL
+      ORDER BY v.created_at DESC LIMIT 1
+     ON CONFLICT (visitor_key) DO UPDATE SET user_id = EXCLUDED.user_id, linked_at = EXCLUDED.linked_at`,
+    { replacements: { userId, sessionId } }
+  );
+}
+
+/**
+ * Called by sign-up and sign-in with the marketing session (?sv=). Not
+ * awaited by them and never throws: the sign-in answers without waiting.
+ */
+function linkVisitor(userId, sessionId) {
+  const on = env.siteAnalytics.enabled && env.siteAnalytics.detailsEnabled && env.siteAnalytics.visitorDetailsEnabled;
+  if (!on || !userId || !sessionId) return;
+  service.attachVisitor(userId, sessionId).catch((err) => {
+    logger.warn('site analytics: could not tie the visitor to the account', { userId, error: err.message });
+  });
 }
 
 function rangeStart(range) {
@@ -324,11 +405,14 @@ const service = {
   PING_SECONDS,
   RANGES,
   visitorHash,
+  visitorKey,
   deviceClass,
   referrerHost,
   recordEvent,
   linkSession,
   linkSignup,
+  attachVisitor,
+  linkVisitor,
   summary,
   acquisitionFor,
   locationFor,

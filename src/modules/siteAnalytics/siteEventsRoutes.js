@@ -49,6 +49,13 @@ const eventSchema = Joi.object({
   utmSource: short.optional(),
   utmMedium: short.optional(),
   utmCampaign: short.optional(),
+  // Read only with SITE_VISITOR_DETAILS_ENABLED (siteTrafficService.visitorColumns);
+  // accepted either way, so a beacon that sends them is never refused.
+  screen: Joi.string().pattern(/^\d{1,5}x\d{1,5}$/).optional(),
+  language: Joi.string().max(35).optional(),
+  signedIn: Joi.boolean().strict().optional(),
+  uaModel: Joi.string().max(60).allow('').optional(),
+  uaPlatformVersion: Joi.string().max(20).allow('').optional(),
 }).unknown(false);
 // The same, with the details on: a cta_click may say which dashboard link it was.
 const detailedSchema = eventSchema.keys({ cta: Joi.string().valid('register', 'login').optional() });

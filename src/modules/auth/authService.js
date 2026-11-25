@@ -157,6 +157,8 @@ async function register({ email, password, fullName, phone, username, planId, bi
   await recordAudit({ actorUserId: user.id, action: 'user.register', entityType: 'User', entityId: user.id, req });
   // Never throws: analytics cannot fail a sign-up.
   await siteTraffic.linkSignup(user.id, siteSessionId);
+  // Not awaited: ties this browser's other visits to the account (SITE_VISITOR_DETAILS_ENABLED).
+  siteTraffic.linkVisitor(user.id, siteSessionId);
 
   if (verifying) {
     const sent = await verificationCodes.sendCode(user, 'email', { ip: req ? clientIp(req) : null, locale, req });
@@ -251,7 +253,7 @@ const getDummyHash = () => {
   return dummyHash;
 };
 
-async function login({ identifier, email, password, locale }, req) {
+async function login({ identifier, email, password, locale, siteSessionId }, req) {
   const user = await findForSignIn({ identifier, email });
   // Same error for "no such account" and "wrong password" — never reveal which
   // one it was, to avoid account enumeration via the login endpoint.
@@ -294,6 +296,10 @@ async function login({ identifier, email, password, locale }, req) {
   const challenge = await require('./twoFactorService').challengeIfNeeded(user, req, { locale, newDevice });
   if (challenge) return challenge;
 
+  // Not awaited: the marketing session this sign-in came from (?sv=) ties the
+  // browser's visits to the account (SITE_VISITOR_DETAILS_ENABLED). A sign-in
+  // that needs a code above ties nothing.
+  siteTraffic.linkVisitor(user.id, siteSessionId);
   return completeLogin(user, req);
 }
 

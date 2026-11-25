@@ -124,6 +124,8 @@ module.exports = {
       password: Joi.string().required(),
       // The language of a sign-up code sent to an account not confirmed yet.
       locale: Joi.string().valid('ar', 'en').optional(),
+      // The marketing-site session the sign-in link came from (?sv=), as on sign-up.
+      siteSessionId: Joi.string().pattern(/^[A-Za-z0-9-]{8,64}$/).optional(),
     }).or('identifier', 'email'),
   },
   // POST /auth/me/email/send-code — a code to confirm a signed-in account's email.
