@@ -1155,6 +1155,15 @@ const env = {
     // UTM, device, page) and no governorate, browser or link kind. Starts off
     // under NODE_ENV=test; a test flips it on this object.
     liveEnabled: process.env.NODE_ENV !== 'test' && process.env.SITE_LIVE_ENABLED === 'true',
+    // SITE_VISITOR_DETAILS_ENABLED (exactly "true"), read only while
+    // SITE_TRAFFIC_DETAILS_ENABLED is on: each visit also keeps a visitor key
+    // that does not change with the day (first visit or returning), the device
+    // model, OS and browser versions, screen size, language and whether the
+    // dashboard said the browser was signed in; a sign-up or sign-in from a
+    // marketing link ties the browser's visits to the account (migration 752).
+    // Off: the beacon stores what it did before and sign-in links nothing.
+    // Starts off under NODE_ENV=test; a test flips it on this object.
+    visitorDetailsEnabled: process.env.NODE_ENV !== 'test' && process.env.SITE_VISITOR_DETAILS_ENABLED === 'true',
   },
 
   // The storefront events guard (analytics/traffic). Off unless exactly
