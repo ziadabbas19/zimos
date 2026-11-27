@@ -16,6 +16,8 @@ const create = asyncHandler(async (req, res) => {
       referralCode: req.body.referralCode || null,
       planId: req.body.planId || null,
       billingCycle: req.body.billingCycle || null,
+      businessType: req.body.businessType || null,
+      businessTypeOther: req.body.businessTypeOther || null,
     },
     req
   );

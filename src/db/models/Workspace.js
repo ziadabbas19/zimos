@@ -32,6 +32,10 @@ module.exports = (sequelize, DataTypes) => {
       tagline: { type: DataTypes.STRING(300), allowNull: true },
       // Opaque theme blob owned by the storefront frontend; stored as-is, never validated.
       themeSettings: { type: DataTypes.JSONB, allowNull: false, defaultValue: {}, field: 'theme_settings' },
+      // What the store sells, from the store setup step (migration 753;
+      // workspaces/businessTypes.js). Optional; the text only with "other".
+      businessType: { type: DataTypes.STRING(32), allowNull: true, field: 'business_type' },
+      businessTypeOther: { type: DataTypes.STRING(80), allowNull: true, field: 'business_type_other' },
     },
     {
       tableName: 'workspaces',

@@ -28,6 +28,7 @@ const env = require('../../config/env');
 const { assertBumpOfferUsable } = require('../checkout/orderBump');
 const { checkLogoUrl } = require('./workspaceLogo');
 const invites = require('./inviteAcceptance');
+const { businessTypeColumns } = require('./businessTypes');
 
 /**
  * `token` is the accept link's for a pending invite; null when an existing
@@ -76,8 +77,12 @@ async function planForNewStore({ ownerUserId, planId, billingCycle }, transactio
   return { plan: await billingService.defaultPlan(transaction), billingCycle: billingCycle || 'monthly' };
 }
 
-async function createWorkspace({ name, ownerUserId, referralCode = null, planId = null, billingCycle = null }, req) {
+async function createWorkspace(
+  { name, ownerUserId, referralCode = null, planId = null, billingCycle = null, businessType = null, businessTypeOther = null },
+  req
+) {
   const baseSlug = toWorkspaceSlug(name);
+  const business = businessTypeColumns(businessType, businessTypeOther);
 
   return db.sequelize.transaction(async (t) => {
     // The plan first, then the owner's store limit for it (billing/
@@ -108,7 +113,7 @@ async function createWorkspace({ name, ownerUserId, referralCode = null, planId 
         // Savepoint: a duplicate-slug insert only rolls back to here, leaving
         // the outer transaction alive to retry (see orderService.createShipment).
         workspace = await db.sequelize.transaction({ transaction: t }, (sp) =>
-          db.Workspace.create({ name, slug, ownerUserId }, { transaction: sp })
+          db.Workspace.create({ name, slug, ownerUserId, ...business }, { transaction: sp })
         );
         break;
       } catch (err) {
