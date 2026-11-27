@@ -16,6 +16,7 @@ const {
 } = require('../storefront/generalSettings');
 const { FRAUD_ACTIONS, PHONE_VALIDATION_MODES } = require('../fraud/fraudRules');
 const { settingsSchema: checkoutOtpSettingsSchema } = require('../risk/checkoutOtp');
+const { BUSINESS_TYPES, BUSINESS_TYPE_OTHER_MAX } = require('./businessTypes');
 
 // A fraud rule is stored as its bare value (the older shape) or as { value, action }.
 const fraudAction = Joi.string().valid(...FRAUD_ACTIONS);
@@ -42,6 +43,10 @@ module.exports = {
       // plan chosen at sign-up.
       planId: uuid.allow(null).optional(),
       billingCycle: Joi.string().valid('monthly', 'yearly').allow(null).optional(),
+      // What the store sells (optional, one tap on the setup step); the text
+      // is kept only with "other" (workspaces/businessTypes.js).
+      businessType: Joi.string().valid(...BUSINESS_TYPES).allow(null).optional(),
+      businessTypeOther: Joi.string().trim().max(BUSINESS_TYPE_OTHER_MAX).allow('', null).optional(),
     }),
   },
   // Only the length is policed here: every other rule comes back as a `reason`

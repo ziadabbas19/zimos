@@ -409,6 +409,9 @@ async function listWorkspacesOverview() {
       status: w.status,
       defaultCurrency: w.defaultCurrency,
       createdAt: w.createdAt,
+      // What the store sells, from the store setup step (migration 753); null when not answered.
+      businessType: w.businessType || null,
+      businessTypeOther: w.businessTypeOther || null,
       // The primary domain when it can be served, else the platform subdomain (domains/primaryHost).
       storeUrl: origins.get(w.id) || null,
       // The platform subdomain, whatever domain the store has.
